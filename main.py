@@ -1,14 +1,11 @@
-import os
-import sys
 import json
 
-
 from src import *
+from src.FedGCN.FedGCN_server import FedGCNServer
+from src.FedPub.fedpub_server import FedPubServer
+from src.fedsage.fedsage_server import FedSAGEServer
 from src.GNN.GNN_server import GNNServer
 from src.MLP.MLP_server import MLPServer
-from src.FedGCN.FedGCN_server import FedGCNServer
-from src.fedsage.fedsage_server import FedSAGEServer
-from src.FedPub.fedpub_server import FedPubServer
 from src.utils.define_graph import define_graph
 from src.utils.graph_partitioning import (
     create_mend_graph,
@@ -78,43 +75,43 @@ def set_up_system():
 
     LOGGER.info("MLP")
     res = MLP_server.train_local_model()
-    results[f"server MLP"] = round(res["Test Acc"], 4)
+    results["server MLP"] = round(res["Test Acc"], 4)
 
     res = MLP_server.joint_train_g(FL=False)
-    results[f"local MLP"] = round(res["Average"]["Test Acc"], 4)
+    results["local MLP"] = round(res["Average"]["Test Acc"], 4)
 
     res = MLP_server.joint_train_g(FL=True)
-    results[f"flga MLP"] = round(res["Average"]["Test Acc"], 4)
+    results["flga MLP"] = round(res["Average"]["Test Acc"], 4)
 
     LOGGER.info("GNN")
     res = GNN_server.train_local_model(data_type="feature", fmodel_type="GNN")
-    results[f"Server F GNN"] = round(res["Test Acc"], 4)
+    results["Server F GNN"] = round(res["Test Acc"], 4)
 
     res = GNN_server.train_local_model(data_type="structure")
-    results[f"Server S GNN"] = round(res["Test Acc"], 4)
+    results["Server S GNN"] = round(res["Test Acc"], 4)
 
     res = GNN_server.train_local_model(data_type="f+s")
-    results[f"Server F+S GNN"] = round(res["Test Acc"], 4)
+    results["Server F+S GNN"] = round(res["Test Acc"], 4)
 
     res = GNN_server.joint_train_g(data_type="feature", FL=False)
-    results[f"Local F GNN"] = round(res["Average"]["Test Acc"], 4)
+    results["Local F GNN"] = round(res["Average"]["Test Acc"], 4)
 
     res = GNN_server.joint_train_g(data_type="structure", FL=False)
-    results[f"Local S GNN"] = round(res["Average"]["Test Acc"], 4)
+    results["Local S GNN"] = round(res["Average"]["Test Acc"], 4)
 
     res = GNN_server.joint_train_g(data_type="f+s", FL=False)
-    results[f"Local F+S GNN"] = round(res["Average"]["Test Acc"], 4)
+    results["Local F+S GNN"] = round(res["Average"]["Test Acc"], 4)
 
     res = GNN_server.joint_train_g(data_type="feature", FL=True)
-    results[f"FL F GNN"] = round(res["Average"]["Test Acc"], 4)
+    results["FL F GNN"] = round(res["Average"]["Test Acc"], 4)
 
     res = GNN_server.joint_train_g(data_type="structure", FL=True)
-    results[f"FL S GNN"] = round(res["Average"]["Test Acc"], 4)
+    results["FL S GNN"] = round(res["Average"]["Test Acc"], 4)
 
     res = GNN_server.joint_train_g(data_type="f+s", FL=True)
-    results[f"FL F+S GNN"] = round(res["Average"]["Test Acc"], 4)
-    results[f"FL F+S(F) GNN"] = round(res["Average"]["Test Acc F"], 4)
-    results[f"FL F+S(S) GNN"] = round(res["Average"]["Test Acc S"], 4)
+    results["FL F+S GNN"] = round(res["Average"]["Test Acc"], 4)
+    results["FL F+S(F) GNN"] = round(res["Average"]["Test Acc F"], 4)
+    results["FL F+S(S) GNN"] = round(res["Average"]["Test Acc S"], 4)
 
     # res = fedsage_server.train_fedSage_plus()
     # results[f"fedsage WA"] = round(res["WA"]["Average"]["Test Acc"], 4)
