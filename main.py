@@ -3,11 +3,6 @@ import sys
 import json
 
 
-pythonpath = os.getcwd()
-if pythonpath not in sys.path:
-    sys.path.append(pythonpath)
-
-
 from src import *
 from src.GNN.GNN_server import GNNServer
 from src.MLP.MLP_server import MLPServer
