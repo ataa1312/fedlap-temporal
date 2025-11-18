@@ -1,4 +1,9 @@
 import json
+import os
+from pathlib import Path
+
+curr_path = Path(__file__).parent.resolve()
+os.chdir(curr_path)
 
 from src import *
 from src.FedGCN.FedGCN_server import FedGCNServer
