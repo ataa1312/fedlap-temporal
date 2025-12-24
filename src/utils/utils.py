@@ -71,9 +71,9 @@ LOGGER = getLOGGER(
 
 
 @torch.no_grad()
-def calc_accuracy(pred_y, y):
+def calc_accuracy(pred_y, y) -> torch.Tensor:
     """Calculate accuracy."""
-    return ((pred_y == y).sum() / len(y)).item()
+    return (pred_y == y).sum() / len(y)
 
 
 @torch.no_grad()
@@ -93,7 +93,7 @@ def calc_precision_and_racall(pred_y, y):
 
 
 @torch.no_grad()
-def calc_precision(pred_y, y):
+def calc_precision(pred_y, y) -> torch.Tensor:
     """Calculate precision."""
     mask1 = pred_y == 1
     mask2 = pred_y == y
@@ -105,7 +105,7 @@ def calc_precision(pred_y, y):
 
 
 @torch.no_grad()
-def calc_recall(pred_y, y):
+def calc_recall(pred_y, y) -> torch.Tensor:
     """Calculate recall."""
     tp = ((pred_y == y) & (pred_y == 1)).sum()
     fn = ((pred_y != y) & (pred_y == 0)).sum()
@@ -113,14 +113,14 @@ def calc_recall(pred_y, y):
 
 
 @torch.no_grad()
-def calc_f1_score(pred_y, y):
+def calc_f1_score(pred_y, y) -> torch.Tensor:
     """Calculate F1 score."""
     precision, recall = calc_precision_and_racall(pred_y, y)
     # recall = calc_recall(pred_y, y)
     return 2 * (precision * recall) / (precision + recall + 1e-10)
 
 
-def calculate_average_precision(y_pred, y_true):
+def calculate_average_precision(y_pred, y_true) -> torch.Tensor:
     """
     Calculate the average precision for each label, then take the mean.
 
@@ -136,7 +136,7 @@ def calculate_average_precision(y_pred, y_true):
     y_pred_np = y_pred.detach().cpu().numpy()
 
     # Calculate average precision for each label
-    mean_ap = average_precision_score(y_true_np, y_pred_np)
+    mean_ap = torch.tensor(average_precision_score(y_true_np, y_pred_np))
     return mean_ap
 
 
@@ -617,7 +617,9 @@ def estimate_abar(edge_index, num_nodes, num_layers, num_expriments=100):
     return abar
 
 
-def calc_metrics(y, y_pred, mask=None, loss_function="cross_entropy"):
+def calc_metrics(
+    y, y_pred, mask=None, loss_function="cross_entropy"
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     if mask is None:
         y_masked = y
         y_pred_masked = y_pred
@@ -639,17 +641,17 @@ def calc_metrics(y, y_pred, mask=None, loss_function="cross_entropy"):
     try:
         f1_score_ = calc_f1_score(y_pred_masked.argmax(dim=1), y_masked)
     except:
-        f1_score_ = 0
+        f1_score_ = torch.tensor(0.0)
 
     try:
         precission = calc_precision(y_pred_masked.argmax(dim=1), y_masked)
     except:
-        precission = 0
+        precission = torch.tensor(0.0)
 
     try:
         recall = calc_recall(y_pred_masked.argmax(dim=1), y_masked)
     except:
-        recall = 0
+        recall = torch.tensor(0.0)
 
     return loss, acc, f1_score_, precission, recall
 

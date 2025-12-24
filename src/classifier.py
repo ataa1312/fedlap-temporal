@@ -124,13 +124,12 @@ class Classifier:
     def ambient_regularizer(self):
         return 0
 
-    def train_step(self, eval_=True):
+    def train_step(self, eval_=True) -> tuple[float, ...]:
         label_loss, train_acc = Classifier.calc_mask_metric(self, mask="train")
         intrinsic_loss = self.intrinsic_regularizer()
         # ambient_loss = self.ambient_regularizer()
         train_loss = (
-            1 * label_loss
-            + config.spectral.regularizer_coef * intrinsic_loss
+            1 * label_loss + config.spectral.regularizer_coef * intrinsic_loss
             # + 0 * ambient_loss
         )
 
@@ -161,19 +160,21 @@ class Classifier:
         )
 
     # @torch.no_grad()
-    def calc_metrics(model, y, mask, metric="", loss_function="cross_entropy"):
+    def calc_metrics(
+        model, y, mask, metric="", loss_function="cross_entropy"
+    ) -> tuple[float | torch.Tensor, ...]:
         # model.eval()
         y_pred = model.get_prediction()
-        loss, acc, f1_score, precission, recall = calc_metrics(
+        loss, acc, f1_score, precision, recall = calc_metrics(
             y, y_pred, mask, loss_function=loss_function
         )
 
         if metric == "acc":
-            return (acc,)
+            return (acc.item(),)
         elif metric == "f1":
             return (f1_score.item(),)
         elif metric == "precision":
-            return (precission.item(),)
+            return (precision.item(),)
         elif metric == "recall":
             return (recall.item(),)
         # elif metric == "ap":
@@ -181,4 +182,4 @@ class Classifier:
         elif metric == "loss":
             return (loss.item(),)
         else:
-            return loss, acc
+            return loss, acc.item()
