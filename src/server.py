@@ -174,8 +174,8 @@ class Server(Client):
         test_results = self.test_clients()
         average_result = sum_lod(test_results, coef)
         final_results = {}
-        for cleint, test_result in zip(self.clients, test_results):
-            final_results[f"Client{cleint.id}"] = test_result
+        for client, test_result in zip(self.clients, test_results):
+            final_results[f"Client{client.id}"] = test_result
         final_results["Average"] = average_result
         if log:
             self.report_test_results(final_results)
