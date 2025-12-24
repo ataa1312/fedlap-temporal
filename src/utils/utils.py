@@ -1,7 +1,6 @@
 import os
 import random
 import itertools
-from ast import List
 from datetime import datetime
 
 import imageio
@@ -23,7 +22,7 @@ from src.utils.logger import getLOGGER
 from src.utils.plot_graph import plot_graph
 
 load_dotenv()
-config_path = os.environ.get("CONFIGPATH")
+config_path = os.environ.get("CONFIGPATH", "")
 config = Config(config_path)
 
 plt.rcParams["figure.figsize"] = [16, 9]
@@ -141,6 +140,8 @@ def calculate_average_precision(y_pred, y_true):
     return mean_ap
 
 
+# FIXME: The function in the directed case just returns a repeated tensor of
+# the node itself.
 def find_neighbors_(
     node_id: int,
     edge_index: torch.Tensor,
@@ -308,14 +309,14 @@ def generate_gif(root_path, name="graph"):
 
 
 def create_adj(
-    edge_index,
-    normalization="normal",
-    self_loop=False,
-    num_nodes=None,
+    edge_index: torch.Tensor,
+    normalization: str = "normal",
+    self_loop: bool = False,
+    num_nodes: int | None = None,
     nodes=None,
 ):
     if num_nodes is None:
-        num_nodes = max(torch.flatten(edge_index)) + 1
+        num_nodes = int(edge_index.max()) + 1
     if nodes is None:
         nodes = torch.arange(num_nodes, device=edge_index.device)
     if self_loop:
@@ -359,14 +360,14 @@ def create_adj(
 
 
 def create_inc(
-    edge_index,
-    normalization="normal",
-    self_loop=False,
-    num_nodes=None,
+    edge_index: torch.Tensor,
+    normalization: str = "normal",
+    self_loop: bool = False,
+    num_nodes: int | None = None,
     nodes=None,
 ):
     if num_nodes is None:
-        num_nodes = max(torch.flatten(edge_index)) + 1
+        num_nodes = int(edge_index.max()) + 1
     if nodes is None:
         nodes = torch.arange(num_nodes)
     if self_loop:
@@ -493,24 +494,6 @@ def prune(abar, degree):
     abar = abar.coalesce()
 
     return abar
-
-
-def split_abar(abar: SparseTensor, nodes):
-    num_nodes = abar.size()[0]
-    # nodes = self.get_nodes().to(local_dev)
-    num_nodes_i = len(nodes)
-    indices = torch.arange(num_nodes_i, dtype=torch.long, device=local_dev)
-    vals = torch.ones(num_nodes_i, dtype=torch.float32, device=local_dev)
-    P = torch.sparse_coo_tensor(
-        torch.vstack([indices, nodes]),
-        vals,
-        (num_nodes_i, num_nodes),
-        device=local_dev,
-    )
-    abar_i = torch.matmul(P, abar)
-    if dev != "cuda:0":
-        abar_i = abar_i.to_dense().to(dev)
-    return abar_i
 
 
 def split_abar(abar: SparseTensor, nodes):
@@ -691,7 +674,7 @@ def lol2lol(list_of_lists):
     return res
 
 
-def sum_lod(x: List, coef=None):
+def sum_lod(x: list, coef=None):
     if len(x) == 0:
         return x
     if coef is None:
