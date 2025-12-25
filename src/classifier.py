@@ -1,5 +1,3 @@
-from typing import Literal
-
 import torch
 from src import *
 from src.utils.data import Data
@@ -191,9 +189,6 @@ class Classifier:
             return (loss.item(),)
         else:
             return loss, acc.item()
-
-
-LinkFeatureOperator = Literal["hadamard", "dot-product", "concat"]
 
 
 class EdgeClassifier(Classifier):

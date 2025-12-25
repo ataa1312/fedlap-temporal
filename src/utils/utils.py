@@ -2,6 +2,7 @@ import os
 import random
 import itertools
 from datetime import datetime
+from typing import Literal
 
 import imageio
 import torch
@@ -20,6 +21,8 @@ import matplotlib.cm as cm
 from src.utils.config_parser import Config
 from src.utils.logger import getLOGGER
 from src.utils.plot_graph import plot_graph
+
+LinkFeatureOperator = Literal["hadamard", "dot-product", "concat"]
 
 load_dotenv()
 config_path = os.environ.get("CONFIGPATH", "")
