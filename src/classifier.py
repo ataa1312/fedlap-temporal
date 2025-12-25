@@ -1,9 +1,10 @@
-import torch
+from typing import Literal
 
+import torch
 from src import *
-from src.models.model_binders import ModelBinder
-from src.utils.graph import Graph
 from src.utils.data import Data
+from src.utils.graph import Graph
+from src.models.model_binders import ModelBinder
 
 
 class Classifier:
@@ -160,13 +161,18 @@ class Classifier:
         )
 
     # @torch.no_grad()
+    @staticmethod
     def calc_metrics(
         model, y, mask, metric="", loss_function="cross_entropy"
     ) -> tuple[float | torch.Tensor, ...]:
         # model.eval()
         y_pred = model.get_prediction()
-        loss, acc, f1_score, precision, recall = calc_metrics(
-            y, y_pred, mask, loss_function=loss_function
+
+        loss, acc, f1_score, precision, recall, auc, ap = calc_metrics(
+            y,
+            y_pred,
+            mask,
+            loss_function=loss_function,
         )
 
         if metric == "acc":
@@ -177,8 +183,10 @@ class Classifier:
             return (precision.item(),)
         elif metric == "recall":
             return (recall.item(),)
-        # elif metric == "ap":
-        #     return f1_score
+        elif metric == "ap":
+            return (ap.item(),)
+        elif metric == "auc":
+            return (auc.item(),)
         elif metric == "loss":
             return (loss.item(),)
         else:

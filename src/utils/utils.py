@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 from torch_geometric.utils import degree, add_self_loops, scatter, remove_self_loops
 from dotenv import load_dotenv
 from sklearn.manifold import TSNE
-from sklearn.metrics import average_precision_score
+from sklearn.metrics import average_precision_score, roc_auc_score
 import matplotlib.cm as cm
 
 from src.utils.config_parser import Config
@@ -123,21 +123,27 @@ def calc_f1_score(pred_y, y) -> torch.Tensor:
 def calculate_average_precision(y_pred, y_true) -> torch.Tensor:
     """
     Calculate the average precision for each label, then take the mean.
+    Works for both binary (1D) and multi-label (2D) classification.
 
-    Parameters:
-    y_true (torch.Tensor): Ground truth binary labels, shape (n_samples, n_labels)
-    y_pred (torch.Tensor): Predicted probabilities, shape (n_samples, n_labels)
-
-    Returns:
-    float: Mean average precision score across all labels.
     """
     # Ensure the inputs are numpy arrays for compatibility with sklearn
     y_true_np = y_true.cpu().numpy()
     y_pred_np = y_pred.detach().cpu().numpy()
 
-    # Calculate average precision for each label
+    # Calculate average precision (works for both binary and multi-label)
     mean_ap = torch.tensor(average_precision_score(y_true_np, y_pred_np))
     return mean_ap
+
+
+@torch.no_grad()
+def calc_roc_auc(y_true, y_score) -> float:
+    """
+    Calculate ROC AUC score for binary classification.
+    """
+    y_true_np = y_true.cpu().numpy()
+    y_score_np = y_score.detach().cpu().numpy()
+    auc = roc_auc_score(y_true_np, y_score_np)
+    return float(auc)
 
 
 # FIXME: The function in the directed case just returns a repeated tensor of
@@ -619,7 +625,15 @@ def estimate_abar(edge_index, num_nodes, num_layers, num_expriments=100):
 
 def calc_metrics(
     y, y_pred, mask=None, loss_function="cross_entropy"
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
     if mask is None:
         y_masked = y
         y_pred_masked = y_pred
@@ -653,7 +667,29 @@ def calc_metrics(
     except:
         recall = torch.tensor(0.0)
 
-    return loss, acc, f1_score_, precission, recall
+    if loss_function == "BCELoss" and y_pred_masked.dim() == 1:
+        # Binary classification with logits - convert to probabilities
+        y_probs = torch.sigmoid(y_pred_masked)
+    elif y_pred_masked.dim() == 1:
+        # Already probabilities or single output
+        y_probs = y_pred_masked
+    else:
+        # Multi-class or multi-label - use softmax for probabilities
+        y_probs = torch.softmax(y_pred_masked, dim=-1)
+        if y_probs.shape[1] == 2:
+            # Binary classification with 2D output - take positive class
+            y_probs = y_probs[:, 1]
+    try:
+        auc = torch.tensor(calc_roc_auc(y_masked, y_probs))
+    except:
+        auc = torch.tensor(0.0)
+
+    try:
+        ap = calculate_average_precision(y_probs, y_masked)
+    except:
+        ap = torch.tensor(0.0)
+
+    return loss, acc, f1_score_, precission, recall, auc, ap
 
 
 def lod2dol(list_of_dicts):
