@@ -370,9 +370,9 @@ class EdgeClassifier(Classifier):
             self, mask="train", loss_function="BCELoss"
         )
         intrinsic_loss = self.intrinsic_regularizer()
-        total_loss = 1 * train_loss + config.spectral.regularizer_coef * intrinsic_loss
+        train_loss = 1 * train_loss + config.spectral.regularizer_coef * intrinsic_loss
 
-        total_loss.backward(retain_graph=True)
+        train_loss.backward(retain_graph=True)
 
         if eval_:
             (test_auc,) = EdgeClassifier.calc_mask_metric(
@@ -385,9 +385,9 @@ class EdgeClassifier(Classifier):
                 val_loss, val_auc = EdgeClassifier.calc_mask_metric(
                     self, mask="val", loss_function="BCELoss"
                 )
-                return total_loss.item(), train_auc, val_loss.item(), val_auc, test_auc
+                return train_loss.item(), train_auc, val_loss.item(), val_auc, test_auc
             else:
-                return total_loss.item(), train_auc, 0.0, 0.0, test_auc
+                return train_loss.item(), train_auc, 0.0, 0.0, test_auc
 
         else:
-            return total_loss.item(), train_auc
+            return train_loss.item(), train_auc
