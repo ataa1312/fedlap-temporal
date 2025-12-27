@@ -7,7 +7,7 @@ subgraph:
   train_ratio: 0.1
   test_ratio: 0.8
   partitioning: random
-  prune: False
+  prune: False # This should later be fixed
   pruning_th: 30
 model:
   num_samples: [5, 10]
@@ -21,7 +21,7 @@ model:
   smodel_type: LanczosLaplace # GNN, DGCN, CentralDGCN, Laplace, LanczosLaplace, SpectralLaplace, SpectralDGCN, LanczosDGCN
   fmodel_type: same #GNN, DGCN, same
   iterations: 75
-  metric: acc
+  metric: auc
 feature_model:
   gnn_layer_sizes: [32, 16]
   DGCN_layer_sizes: [64]
@@ -29,7 +29,7 @@ feature_model:
   DGCN_layers: 2
 structure_model:
   GNN_structure_layers_sizes: [128, 64, 32]
-  DGCN_structure_layers_size: [64]
+  DGCN_structure_layers_size: [16]
   DGCN_layers: 10
   # structure_type: degree
   # structure_type: GDV
@@ -48,7 +48,7 @@ spectral:
   lanczos_iter: 500
   L_type: "rw" # normal rw sym
   method: "arnoldi" # arnoldi lanczos
-  regularizer_coef: 10
+  regularizer_coef: 0
   matrix: "lap" # adj lap inc
   decompose: "eigh" # svd eigh
 node2vec:

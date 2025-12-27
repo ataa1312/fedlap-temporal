@@ -1,5 +1,5 @@
 dataset:
-  dataset_name: Cora
+  dataset_name: CustomEnron
   multi_label: False
 subgraph:
   num_subgraphs: 10
