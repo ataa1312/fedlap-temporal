@@ -1,34 +1,66 @@
 from copy import deepcopy
-from torch_sparse import SparseTensor
 
 from src import *
-from src.GNN.laplace import LanczosLaplace, SLaplace, SpectralLaplace
 from src.client import Client
-from src.classifier import Classifier
-from src.utils.graph import AGraph, Graph
-from src.GNN.fGNN import FGNN
 from src.GNN.DGCN import DGCN, SDGCN, SDGCNMaster, SpectralDGCN
-from src.GNN.sGNN import SClassifier, SGNNMaster, SGNNSlave
+from src.GNN.fGNN import FGNN, FEdgeGNN
+from src.GNN.sGNN import SGNNSlave, SGNNMaster, SClassifier
+from torch_sparse import SparseTensor
+from src.classifier import Classifier
+from src.GNN.laplace import (
+    SLaplace,
+    SEdgeLaplace,
+    LanczosLaplace,
+    SpectralLaplace,
+    LanczosEdgeLaplace,
+    SpectralEdgeLaplace,
+)
+from src.utils.graph import Graph, AGraph
 from src.GNN.GNN_classifier import (
     FedDGCN,
-    FedDGCNMaster,
-    FedGNNMaster,
-    FedLanczosLaplaceClassifier,
-    FedLaplaceClassifier,
-    FedMLPClassifier,
     FedSlave,
+    FedGNNMaster,
+    FedDGCNMaster,
     FedSpectralDGCN,
+    FedMLPClassifier,
+    FedLaplaceClassifier,
+    FedLaplaceEdgeClassifier,
+    FedLanczosLaplaceClassifier,
+    FedLanczosLaplaceEdgeClassifier,
     FedSpectralLaplaceClassifier,
+    FedSpectralLaplaceEdgeClassifier,
 )
 
 
 class GNNClient(Client):
+    # Edge prediction attributes that should be copied when creating new graphs
+    # Class variable (shared across all instances) - using tuple for immutability
+    EDGE_PREDICTION_ATTRS = (
+        "message_passing_edge_index",
+        "train_edge_label_index",
+        "train_edge_label",
+        "val_edge_label_index",
+        "val_edge_label",
+        "test_edge_label_index",
+        "test_edge_label",
+    )
+
     def __init__(self, graph: Graph, id: int = 0):
         super().__init__(graph=graph, id=id, classifier_type="GNN")
         # LOGGER.info(f"Number of edges: {self.graph.num_edges}")
         self.classifier: Classifier | None = None
         self.SFVs = []
         self.cf_score_list = []
+
+    def _extract_edge_prediction_attrs(self) -> dict:
+        """
+        Extract edge prediction attributes from the graph.
+        Returns a dictionary with all edge prediction attributes,
+        using None as default for missing attributes.
+        """
+        return {
+            attr: getattr(self.graph, attr, None) for attr in self.EDGE_PREDICTION_ATTRS
+        }
 
     def create_FDGCN_data(self) -> AGraph:
         A = create_adj(
@@ -60,6 +92,7 @@ class GNNClient(Client):
             requires_grad=SFV.requires_grad,
             device=dev,
         )
+
         graph = Graph(
             x=SFV_,
             y=self.graph.y,
@@ -71,6 +104,7 @@ class GNNClient(Client):
             val_mask=self.graph.val_mask,
             test_mask=self.graph.test_mask,
             num_classes=self.graph.num_classes,
+            **self._extract_edge_prediction_attrs() # This should later be fixed
         )
         return graph
 
