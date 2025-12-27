@@ -138,9 +138,15 @@ class GNNClient(Client):
         **kwargs,
     ) -> None:
         self.classifier = None
+        downstream_task: DownstreamTask = kwargs.get(
+            "downstream_task", "node-classification"
+        )
         if data_type == "feature":
             if fmodel_type == "GNN":
-                self.classifier = FGNN(self.graph)
+                if downstream_task == "node-classification":
+                    self.classifier = FGNN(self.graph)
+                elif downstream_task == "edge-prediction":
+                    self.classifier = FEdgeGNN(self.graph)
             else:
                 graph = self.create_FDGCN_data()
                 self.classifier = DGCN(graph)
@@ -167,17 +173,26 @@ class GNNClient(Client):
                     self.classifier = SGNNSlave(self.graph, server_embedding_func)
             elif smodel_type == "Laplace":
                 sgraph = self.create_SGNN_data(**kwargs)
-                self.classifier = SLaplace(sgraph)
+                if downstream_task == "node-classification":
+                    self.classifier = SLaplace(sgraph)
+                elif downstream_task == "edge-prediction":
+                    self.classifier = SEdgeLaplace(sgraph)
             elif smodel_type == "SpectralLaplace":
                 sgraph = self.create_SGNN_data(**kwargs)
-                self.classifier = SpectralLaplace(sgraph)
+                if downstream_task == "node-classification":
+                    self.classifier = SpectralLaplace(sgraph)
+                elif downstream_task == "edge-prediction":
+                    self.classifier = SpectralEdgeLaplace(sgraph)
                 if "U" in kwargs.keys():
                     U = kwargs.get("U", None)[self.graph.node_ids]
                     D = kwargs.get("D", None)
                     self.classifier.set_QD(U, D)
             elif smodel_type == "LanczosLaplace":
                 sgraph = self.create_SGNN_data(**kwargs)
-                self.classifier = LanczosLaplace(sgraph)
+                if downstream_task == "node-classification":
+                    self.classifier = LanczosLaplace(sgraph)
+                elif downstream_task == "edge-prediction":
+                    self.classifier = LanczosEdgeLaplace(sgraph)
                 if "U" in kwargs.keys():
                     U = kwargs.get("U", None)[self.graph.node_ids]
                     D = kwargs.get("D", None)
@@ -214,17 +229,26 @@ class GNNClient(Client):
                     self.classifier = FedSlave(fgraph, server_embedding_func)
             elif smodel_type == "Laplace":
                 sgraph = self.create_SGNN_data(**kwargs)
-                self.classifier = FedLaplaceClassifier(fgraph, sgraph)
+                if downstream_task == "node-classification":
+                    self.classifier = FedLaplaceClassifier(fgraph, sgraph)
+                elif downstream_task == "edge-prediction":
+                    self.classifier = FedLaplaceEdgeClassifier(fgraph, sgraph)
             elif smodel_type == "SpectralLaplace":
                 sgraph = self.create_SGNN_data(**kwargs)
-                self.classifier = FedSpectralLaplaceClassifier(fgraph, sgraph)
+                if downstream_task == "node-classification":
+                    self.classifier = FedSpectralLaplaceClassifier(fgraph, sgraph)
+                elif downstream_task == "edge-prediction":
+                    self.classifier = FedSpectralLaplaceEdgeClassifier(fgraph, sgraph)
                 if "U" in kwargs.keys():
                     U = kwargs.get("U", None)[self.graph.node_ids]
                     D = kwargs.get("D", None)
                     self.classifier.set_QD(U, D)
             elif smodel_type == "LanczosLaplace":
                 sgraph = self.create_SGNN_data(**kwargs)
-                self.classifier = FedLanczosLaplaceClassifier(fgraph, sgraph)
+                if downstream_task == "node-classification":
+                    self.classifier = FedLanczosLaplaceClassifier(fgraph, sgraph)
+                elif downstream_task == "edge-prediction":
+                    self.classifier = FedLanczosLaplaceEdgeClassifier(fgraph, sgraph)
                 if "U" in kwargs.keys():
                     U = kwargs.get("U", None)[self.graph.node_ids]
                     D = kwargs.get("D", None)
@@ -252,6 +276,7 @@ class GNNClient(Client):
             fmodel_type=fmodel_type,
             data_type=data_type,
             structure_type=structure_type,
+            **kwargs,
         )
         return super().train_local_model(
             epochs=epochs,
