@@ -1,7 +1,7 @@
 import torch
 
 from src import *
-from src.GNN.sGNN import SClassifier
+from src.GNN.sGNN import SClassifier, SEdgeClassifier
 from src.utils.graph import Graph
 
 # from src.GNN.MC import estimate
@@ -85,14 +85,11 @@ from src.utils.graph import Graph
 #         return s
 
 
-class SLaplace(SClassifier):
-    def __init__(
-        self,
-        graph: Graph,
-        hidden_layer_size=config.structure_model.DGCN_structure_layers_sizes,
-    ):
-        super().__init__(graph, hidden_layer_size)
-        self.graph.create_L()
+class LaplaceMixin:
+    """
+    Mixin that provides Laplace regularization functionality.
+    Works with both node classification and edge prediction.
+    """
 
     def intrinsic_regularizer(self):
         x = self.graph.x
@@ -104,13 +101,11 @@ class SLaplace(SClassifier):
         return s
 
 
-class SpectralLaplace(SClassifier):
-    def __init__(
-        self,
-        graph: Graph,
-        hidden_layer_size=config.structure_model.DGCN_structure_layers_sizes,
-    ):
-        super().__init__(graph, hidden_layer_size)
+class SpectralLaplaceMixin:
+    """
+    Mixin that provides spectral Laplace functionality.
+    Works with both node classification and edge prediction.
+    """
 
     def get_SFV(self):
         W = self.get_W()
@@ -159,6 +154,25 @@ class SpectralLaplace(SClassifier):
         return H
 
 
+class SLaplace(LaplaceMixin, SClassifier):
+    def __init__(
+        self,
+        graph: Graph,
+        hidden_layer_size=config.structure_model.DGCN_structure_layers_sizes,
+    ):
+        super().__init__(graph, hidden_layer_size)
+        self.graph.create_L()
+
+
+class SpectralLaplace(SpectralLaplaceMixin, SClassifier):
+    def __init__(
+        self,
+        graph: Graph,
+        hidden_layer_size=config.structure_model.DGCN_structure_layers_sizes,
+    ):
+        super().__init__(graph, hidden_layer_size)
+
+
 class LanczosLaplace(SpectralLaplace):
     def __init__(
         self,
@@ -166,6 +180,38 @@ class LanczosLaplace(SpectralLaplace):
         hidden_layer_size=config.structure_model.DGCN_structure_layers_sizes,
     ):
         super().__init__(graph, hidden_layer_size)
+
+
+# Edge prediction analogues
+class SEdgeLaplace(LaplaceMixin, SEdgeClassifier):
+    def __init__(
+        self,
+        graph: Graph,
+        link_feature_operator: LinkFeatureOperator = "hadamard",
+        hidden_layer_size=config.structure_model.DGCN_structure_layers_sizes,
+    ):
+        super().__init__(graph, link_feature_operator, hidden_layer_size)
+        self.graph.create_L()
+
+
+class SpectralEdgeLaplace(SpectralLaplaceMixin, SEdgeClassifier):
+    def __init__(
+        self,
+        graph: Graph,
+        link_feature_operator: LinkFeatureOperator = "hadamard",
+        hidden_layer_size=config.structure_model.DGCN_structure_layers_sizes,
+    ):
+        super().__init__(graph, link_feature_operator, hidden_layer_size)
+
+
+class LanczosEdgeLaplace(SpectralEdgeLaplace):
+    def __init__(
+        self,
+        graph: Graph,
+        link_feature_operator: LinkFeatureOperator = "hadamard",
+        hidden_layer_size=config.structure_model.DGCN_structure_layers_sizes,
+    ):
+        super().__init__(graph, link_feature_operator, hidden_layer_size)
 
 
 # class SLaplace(SClassifier):
