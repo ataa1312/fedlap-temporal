@@ -345,15 +345,15 @@ class EdgeClassifier(Classifier):
         """
         if mask == "train":
             self.train()
-            edge_index = self.graph.train_edge_index
+            edge_index = self.graph.train_edge_label_index
             edge_label = self.graph.train_edge_label
         elif mask == "val":
             self.eval()
-            edge_index = self.graph.val_edge_index
+            edge_index = self.graph.val_edge_label_index
             edge_label = self.graph.val_edge_label
         elif mask == "test":
             self.eval()
-            edge_index = self.graph.test_edge_index
+            edge_index = self.graph.test_edge_label_index
             edge_label = self.graph.test_edge_label
         else:
             raise ValueError(f"Unknown mask: {mask}")
@@ -379,8 +379,8 @@ class EdgeClassifier(Classifier):
                 self, mask="test", metric="auc", loss_function="BCELoss"
             )
             if (
-                hasattr(self.graph, "val_edge_index")
-                and self.graph.val_edge_index is not None
+                hasattr(self.graph, "val_edge_label_index")
+                and self.graph.val_edge_label_index is not None
             ):
                 val_loss, val_auc = EdgeClassifier.calc_mask_metric(
                     self, mask="val", loss_function="BCELoss"
