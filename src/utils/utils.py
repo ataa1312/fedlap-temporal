@@ -23,6 +23,7 @@ from src.utils.logger import getLOGGER
 from src.utils.plot_graph import plot_graph
 
 LinkFeatureOperator = Literal["hadamard", "dot-product", "concat"]
+DownstreamTask = Literal["node-classification", "edge-prediction"]
 
 load_dotenv()
 config_path = os.environ.get("CONFIGPATH", "")
@@ -651,10 +652,15 @@ def calc_metrics(
     elif loss_function == "BCELoss":
         criterion = torch.nn.BCEWithLogitsLoss()
     loss = criterion(y_pred_masked, y_masked)
-    if config.dataset.multi_label:
-        acc = calculate_average_precision(y_pred_masked, y_masked)
-    else:
-        acc = calc_accuracy(y_pred_masked.argmax(dim=1), y_masked)
+
+    try:
+        if config.dataset.multi_label:
+            acc = calculate_average_precision(y_pred_masked, y_masked)
+        else:
+            acc = calc_accuracy(y_pred_masked.argmax(dim=1), y_masked)
+    except:
+        acc = torch.tensor(0.0)
+
     try:
         f1_score_ = calc_f1_score(y_pred_masked.argmax(dim=1), y_masked)
     except:
