@@ -11,6 +11,8 @@ from sklearn.preprocessing import StandardScaler
 from torch_geometric.nn import MessagePassing
 from torch_sparse import SparseTensor
 from torch_geometric.utils import degree
+from torch_geometric.data import Data as TData
+from torch_geometric.transforms import RandomLinkSplit
 
 from src import *
 from src.GNN.Lanczos import estimate_eigh
@@ -76,6 +78,16 @@ class Graph(Data):
         self.structural_features = None
         self.L = None
 
+        # Edge prediction attrs
+        self.message_passing_edge_index = kwargs.get("message_passing_edge_index", None)
+        self.train_edge_label_index = kwargs.get("train_edge_label_index", None)
+        self.train_edge_label = kwargs.get("train_edge_label", None)
+        self.val_edge_label_index = kwargs.get("val_edge_label_index", None)
+        self.val_edge_label = kwargs.get("val_edge_label", None)
+        self.test_edge_label_index = kwargs.get("test_edge_label_index", None)
+        self.test_edge_label = kwargs.get("test_edge_label", None)
+
+
     def get_edges(self):
         # return only the original intra edges
         return self.original_edge_index
@@ -85,6 +97,42 @@ class Graph(Data):
         if self.inter_edges is not None:
             return torch.concat((self.original_edge_index, self.inter_edges), dim=1)
         return self.get_edges()
+
+    def split_edges(
+        self,
+        val_ratio: float = 0.15,
+        test_ratio: float = 0.15,
+        is_undirected: bool = True,
+        add_negative_train_samples: bool = True,
+        negative_ratio: float = 1.0,
+    ):
+        if val_ratio < 0 or test_ratio < 0:
+            raise ValueError("val_ratio and test_ratio must be non-negative")
+        if val_ratio + test_ratio >= 1.0:
+            raise ValueError(
+                f"Sum of val_ratio ({val_ratio}) and test_ratio ({test_ratio}) must be < 1.0. "
+                f"Training ratio will be {1.0 - val_ratio - test_ratio}"
+            )
+
+        transform = RandomLinkSplit(
+            val_ratio,
+            test_ratio,
+            is_undirected,
+            add_negative_train_samples=add_negative_train_samples,
+            neg_sampling_ratio=negative_ratio,
+        )
+
+        graph = TData(self.x, self.edge_index)
+
+        train_graph, val_graph, test_graph = transform(graph)
+
+        self.message_passing_edge_index = train_graph.edge_index
+        self.train_edge_label_index = train_graph.edge_label_index
+        self.train_edge_label = train_graph.edge_label
+        self.val_edge_label_index = val_graph.edge_label_index
+        self.val_edge_label = val_graph.edge_label
+        self.test_edge_label_index = test_graph.edge_label_index
+        self.test_edge_label = test_graph.edge_label
 
     def reindex_nodes(nodes, edges):
         node_map = {node.item(): ind for ind, node in enumerate(nodes)}
@@ -329,8 +377,8 @@ class Graph(Data):
             else:
                 if config.spectral.decompose == "svd":
                     L = sparse.csr_matrix(self.L.to_dense().cpu().numpy())
-                    if spectral_len <=0:
-                        k =min(L.shape)-1
+                    if spectral_len <= 0:
+                        k = min(L.shape) - 1
                     else:
                         k = spectral_len
                     U, D, V = sp.sparse.linalg.svds(L, k=k)
@@ -359,8 +407,8 @@ class Graph(Data):
             else:
                 if config.spectral.decompose == "svd":
                     L = sparse.csr_matrix(A.to_dense().cpu().numpy())
-                    if spectral_len <=0:
-                        k =min(A.shape)-1
+                    if spectral_len <= 0:
+                        k = min(A.shape) - 1
                     else:
                         k = spectral_len
                     U, D, V = sp.sparse.linalg.svds(L, k=k)
