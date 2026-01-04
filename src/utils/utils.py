@@ -1,26 +1,25 @@
 import os
 import random
 import itertools
+from typing import Any, Literal
 from datetime import datetime
-from typing import Literal
 
-import imageio
-import torch
 import numpy as np
+import torch
 import pandas as pd
+import imageio
 import networkx as nx
-from torch_sparse import SparseTensor
-from tqdm import tqdm
-import matplotlib.pyplot as plt
-from torch_geometric.utils import degree, add_self_loops, scatter, remove_self_loops
-from dotenv import load_dotenv
-from sklearn.manifold import TSNE
-from sklearn.metrics import average_precision_score, roc_auc_score
 import matplotlib.cm as cm
-
-from src.utils.config_parser import Config
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+from dotenv import load_dotenv
+from torch_sparse import SparseTensor
+from sklearn.metrics import roc_auc_score, average_precision_score
+from sklearn.manifold import TSNE
 from src.utils.logger import getLOGGER
 from src.utils.plot_graph import plot_graph
+from torch_geometric.utils import degree, scatter, add_self_loops, remove_self_loops
+from src.utils.config_parser import Config
 
 LinkFeatureOperator = Literal["hadamard", "dot-product", "concat"]
 DownstreamTask = Literal["node-classification", "edge-prediction"]
@@ -72,6 +71,12 @@ LOGGER = getLOGGER(
     log_on_file=True,
     save_path=save_path,
 )
+
+
+def is_attr_good(obj: Any, attr: str) -> bool:
+    if not hasattr(obj, attr) or getattr(obj, attr) is None:
+        return False
+    return True
 
 
 @torch.no_grad()

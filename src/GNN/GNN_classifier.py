@@ -1,6 +1,6 @@
 from src import *
 from src.GNN.DGCN import DGCN, SDGCN, SDGCNMaster, SpectralDGCN
-from src.GNN.fGNN import FGNN, FEdgeGNN
+from src.GNN.fGNN import FGNN, NewFGNN, FEdgeGNN
 from src.GNN.sGNN import SGNNSlave, SGNNMaster, SClassifier, SEdgeClassifier
 from src.classifier import Classifier, EdgeClassifier
 from src.utils.data import Data
@@ -8,16 +8,17 @@ from src.GNN.laplace import (
     SLaplace,
     SEdgeLaplace,
     LanczosLaplace,
-    LanczosEdgeLaplace,
     SpectralLaplace,
+    LanczosLaplaceNew,
+    LanczosEdgeLaplace,
     SpectralEdgeLaplace,
 )
 from src.utils.graph import Graph, AGraph
+from src.GNN.temporal import TemporalBlock
 from torch_geometric.loader import NeighborLoader
 
 
 class FedMixin:
-
     def state_dict(self):
         weights = super().state_dict()
         weights["fmodel"] = self.fmodel.state_dict()
@@ -150,7 +151,12 @@ class FedClassifier(FedMixin, Classifier):
 
 
 class FedEdgeClassifier(FedMixin, EdgeClassifier):
-    def __init__(self, fgraph: Graph, sgraph: Graph, link_feature_operator: LinkFeatureOperator = "hadamard"):
+    def __init__(
+        self,
+        fgraph: Graph,
+        sgraph: Graph,
+        link_feature_operator: LinkFeatureOperator = "hadamard",
+    ):
         super().__init__(fgraph, link_feature_operator)
         self.fmodel: EdgeClassifier = None
         self.create_fmodel(fgraph, link_feature_operator)
@@ -163,17 +169,16 @@ class FedEdgeClassifier(FedMixin, EdgeClassifier):
     def create_smodel(self, sgraph: Graph, link_feature_operator: LinkFeatureOperator):
         raise NotImplementedError
 
-    def create_fmodel(self, fgraph: Graph, link_feature_operator: LinkFeatureOperator) -> EdgeClassifier:
+    def create_fmodel(
+        self, fgraph: Graph, link_feature_operator: LinkFeatureOperator
+    ) -> EdgeClassifier:
         if isinstance(fgraph, Graph):
             self.fmodel = FEdgeGNN(fgraph, link_feature_operator)
         # Note: Edge prediction for AGraph/DGCN not yet implemented
         # if isinstance(fgraph, AGraph):
         #     self.fmodel = EdgeDGCN(fgraph, link_feature_operator)
 
-    def _get_edge_features(self, edge_index: torch.Tensor) -> torch.Tensor:
-        """
-        Override to use combined embeddings from fmodel and smodel.
-        """
+    def get_edge_embeddings(self, edge_index: torch.Tensor) -> torch.Tensor:
         H: torch.Tensor = self.get_embeddings()  # Combined H + S
         src_emb = H[edge_index[0]]  # [num_edges, embed_dim]
         tgt_emb = H[edge_index[1]]  # [num_edges, embed_dim]
@@ -296,3 +301,281 @@ class FedSpectralLaplaceEdgeClassifier(FedEdgeClassifier):
 class FedLanczosLaplaceEdgeClassifier(FedEdgeClassifier):
     def create_smodel(self, sgraph: Graph, link_feature_operator: LinkFeatureOperator):
         self.smodel = LanczosEdgeLaplace(sgraph, link_feature_operator)
+
+
+# Dynamic/Temporal Classifiers with temporal encoder support
+class FedDynamicClassifier(FedClassifier):
+    def __init__(self, fgraph: Graph, sgraph: Graph, num_ss: int):
+        super().__init__(fgraph, sgraph)
+        embed_dim = config.feature_model.gnn_layer_sizes[-1]
+        assert num_ss is not None
+        self.tmodel: TemporalBlock | None = None
+        self.create_tmodel(embed_dim=embed_dim, num_snapshots=num_ss)
+        self.stored_sfvs_grad: dict[int, torch.Tensor] = {
+            ss_idx: torch.zeros(
+                config.spectral.spectral_len,
+                config.structure_model.num_structural_features,
+            )
+            for ss_idx in range(num_ss)
+        }
+
+    def create_fmodel(self, fgraph) -> None:
+        if isinstance(fgraph, AGraph):
+            self.fmodel = DGCN(fgraph)
+        if isinstance(fgraph, Graph):
+            self.fmodel = NewFGNN(fgraph)
+
+    def create_tmodel(
+        self,
+        embed_dim: int,
+        num_snapshots: int,
+        num_temporal_layers: int = 1,
+        num_temporal_heads: int = 16,
+        temporal_dropout: float = 0.5,
+    ):
+        self.tmodel = TemporalBlock(
+            edim=embed_dim,
+            num_layers=num_temporal_layers,
+            num_heads=num_temporal_heads,
+            dropout=temporal_dropout,
+            num_ss=num_snapshots,
+        ).to(device)
+
+    def state_dict(self):
+        weights = super().state_dict()
+        if self.tmodel is not None:
+            weights["tmodel"] = self.tmodel.state_dict()
+        return weights
+
+    def load_state_dict(self, weights):
+        super().load_state_dict(weights)
+        if "tmodel" in weights and self.tmodel is not None:
+            self.tmodel.load_state_dict(weights["tmodel"])
+
+    def get_grads(self, just_SFV=False):
+        grads = super().get_grads(just_SFV)
+        _ = grads["smodel"].pop("SFV", None)  # Remove SFV if present
+        for key, val in self.stored_sfvs_grad.items():
+            if val.requires_grad and val.grad is not None:
+                grads["smodel"][f"SFVs-ss{key}"] = val.grad
+        if self.tmodel is not None:
+            grads["tmodel"] = self.tmodel.get_grads()
+        return grads
+
+    def set_grads(self, grads):
+        super().set_grads(grads)
+        if "smodel" in grads:
+            for key in self.stored_sfvs_grad.keys():
+                sfv_key = f"SFVs-ss{key}"
+                if sfv_key in grads["smodel"]:
+                    self.stored_sfvs_grad[key].grad = grads["smodel"][sfv_key]
+        if "tmodel" in grads and self.tmodel is not None:
+            self.tmodel.set_grads(grads["tmodel"])
+
+    def reset_parameters(self):
+        super().reset_parameters()
+        if self.tmodel is not None:
+            if hasattr(self.tmodel, "reset_parameters"):
+                self.tmodel.reset_parameters()
+            else:
+                for module in self.tmodel.modules():
+                    if isinstance(module, torch.nn.Linear):
+                        torch.nn.init.xavier_uniform_(module.weight)
+                        if module.bias is not None:
+                            torch.nn.init.zeros_(module.bias)
+
+    def parameters(self):
+        parameters = super().parameters()
+        if self.tmodel is not None:
+            parameters += list(self.tmodel.parameters())
+        for sfv in self.stored_sfvs_grad.values():
+            if sfv is not None and sfv.requires_grad:
+                parameters.append(sfv)
+        return parameters
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        if self.tmodel is not None:
+            self.tmodel.train(mode)
+
+    def eval(self):
+        super().eval()
+        if self.tmodel is not None:
+            self.tmodel.eval()
+
+    def zero_grad(self, set_to_none=False):
+        super().zero_grad(set_to_none=set_to_none)
+        if self.tmodel is not None:
+            self.tmodel.zero_grad(set_to_none=set_to_none)
+        for sfv in self.stored_sfvs_grad.values():
+            if sfv.requires_grad:
+                if set_to_none:
+                    sfv.grad = None
+                else:
+                    if sfv.grad is not None:
+                        sfv.grad.zero_()
+
+    def restart(self):
+        super().restart()
+        self.tmodel = None
+
+    def reset(self):
+        super().reset()
+        if self.tmodel is not None:
+            self.tmodel.zero_grad(set_to_none=True)
+        # Reset stored_sfvs_grad to zero tensors for new epoch
+        num_ss = len(self.stored_sfvs_grad)
+        self.stored_sfvs_grad = {
+            ss_idx: torch.zeros(
+                config.spectral.spectral_len,
+                config.structure_model.num_structural_features,
+            )
+            for ss_idx in range(num_ss)
+        }
+
+    def get_temporal_embeddings(self, stored_embeddings: list[dict]):
+        if self.tmodel is None:
+            raise ValueError(
+                "Temporal model (tmodel) is not initialized. Call create_tmodel first."
+            )
+        if len(stored_embeddings) == 0:
+            raise ValueError("No stored embeddings provided.")
+        max_num_nodes = max(map(lambda x: len(x["embeddings"]), stored_embeddings))
+        embeddings = []
+        for d in stored_embeddings:
+            emb = d["embeddings"]
+            num_nodes = emb.shape[0]
+            embed_dim = emb.shape[1]
+            zero_pad = torch.zeros(
+                max_num_nodes - num_nodes, embed_dim, device=emb.device, dtype=emb.dtype
+            )
+            emb = torch.cat([emb, zero_pad], dim=0)
+            emb = emb.unsqueeze(0)
+            embeddings.append(emb)
+        embeddings = torch.cat(embeddings, dim=0)
+        embeddings = embeddings.transpose(0, 1)
+        temporal_embeddings = self.tmodel(embeddings)
+        temporal_embeddings = temporal_embeddings.transpose(0, 1)
+        return temporal_embeddings
+
+    def get_edge_embeddings(
+        self,
+        edge_index: torch.Tensor,
+        embeddings: torch.Tensor,
+        operator: LinkFeatureOperator="hadamard",
+    ) -> np.ndarray:
+        match operator:
+            case "hadamard":
+                # Hadamard product: element-wise multiplication
+                src_emb = embeddings[edge_index[0]]  # [num_edges, embed_dim]
+                tgt_emb = embeddings[edge_index[1]]  # [num_edges, embed_dim]
+                return (src_emb * tgt_emb).cpu().numpy()
+            case "dot-product":
+                # Dot product: inner product (sum of element-wise multiplication)
+                src_emb = embeddings[edge_index[0]]  # [num_edges, embed_dim]
+                tgt_emb = embeddings[edge_index[1]]  # [num_edges, embed_dim]
+                return (src_emb * tgt_emb).sum(dim=-1).cpu().numpy()
+            case _:
+                raise NotImplementedError(f"Operator {operator} not implemented")
+
+    def compute_random_walk_loss(
+        self,
+        temporal_embeddings: torch.Tensor,
+        context_pairs: dict[int, list[int]],
+        snapshot_idx: int,
+        neg_sample_size: int = 10,
+        neg_weight: float = 1.0,
+        batch_size: int = 512,
+    ):
+        z = temporal_embeddings
+        context_dict = context_pairs
+
+        nodes_with_pairs = list(context_dict.keys())
+        if len(nodes_with_pairs) == 0:
+            return torch.tensor(0.0, device=z.device, requires_grad=True)
+
+        criterion = torch.nn.BCEWithLogitsLoss()
+        num_nodes = len(nodes_with_pairs)
+        num_batches = (num_nodes + batch_size - 1) // batch_size
+        step_losses = []
+
+        for batch_idx in range(num_batches):
+            start_idx = batch_idx * batch_size
+            end_idx = min(start_idx + batch_size, num_nodes)
+            batch_nodes = nodes_with_pairs[start_idx:end_idx]
+
+            node_1_list = []
+            node_2_list = []
+
+            for node in batch_nodes:
+                contexts = context_dict[node]
+                if len(contexts) > neg_sample_size:
+                    sampled_contexts = np.random.choice(
+                        contexts, neg_sample_size, replace=False
+                    ).tolist()
+                else:
+                    sampled_contexts = contexts
+
+                node_1_list.append(
+                    torch.full(
+                        (len(sampled_contexts),),
+                        node,
+                        dtype=torch.long,
+                        device=z.device,
+                    )
+                )
+                node_2_list.append(
+                    torch.tensor(sampled_contexts, dtype=torch.long, device=z.device)
+                )
+
+            if len(node_1_list) == 0:
+                continue
+
+            node_1 = torch.cat(node_1_list)
+            node_2 = torch.cat(node_2_list)
+
+            pos_emb_1 = z[node_1]
+            pos_emb_2 = z[node_2]
+            pos_scores = (pos_emb_1 * pos_emb_2).sum(dim=-1)
+
+            num_pos = len(node_1)
+            all_nodes = torch.arange(z.shape[0], device=z.device)
+
+            neg_nodes_list = []
+            for i in range(num_pos):
+                pos_context = node_2[i].item()
+                candidates = all_nodes[all_nodes != pos_context]
+                if len(candidates) < neg_sample_size:
+                    neg_samples = torch.randint(
+                        0, z.shape[0], (neg_sample_size,), device=z.device
+                    )
+                else:
+                    neg_samples = candidates[
+                        torch.randperm(len(candidates), device=z.device)[
+                            :neg_sample_size
+                        ]
+                    ]
+                neg_nodes_list.append(neg_samples)
+
+            neg_nodes = torch.stack(neg_nodes_list)
+            neg_emb = z[neg_nodes]
+            neg_scores = -(pos_emb_1.unsqueeze(1) * neg_emb).sum(dim=-1)
+
+            pos_labels = torch.ones_like(pos_scores)
+            pos_loss = criterion(pos_scores, pos_labels)
+
+            neg_labels = torch.ones_like(neg_scores)
+            neg_loss = criterion(neg_scores, neg_labels)
+
+            batch_loss = pos_loss + neg_weight * neg_loss
+            step_losses.append(batch_loss)
+
+        if len(step_losses) == 0:
+            return torch.tensor(0.0, device=z.device, requires_grad=True)
+
+        return torch.stack(step_losses).mean()
+
+
+class FedDynamicLanczosLaplaceClassifier(FedDynamicClassifier):
+    def create_smodel(self, sgraph: Graph):
+        self.smodel = LanczosLaplaceNew(sgraph)

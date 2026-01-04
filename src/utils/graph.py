@@ -1,6 +1,7 @@
 import os
 from copy import deepcopy
 from operator import itemgetter
+from collections import defaultdict
 
 from scipy import sparse
 import torch
@@ -10,7 +11,7 @@ import torch.nn.functional as F
 from sklearn.preprocessing import StandardScaler
 from torch_geometric.nn import MessagePassing
 from torch_sparse import SparseTensor
-from torch_geometric.utils import degree
+from torch_geometric.utils import degree, to_networkx
 from torch_geometric.data import Data as TData
 from torch_geometric.transforms import RandomLinkSplit
 
@@ -105,6 +106,7 @@ class Graph(Data):
         is_undirected: bool = True,
         add_negative_train_samples: bool = True,
         negative_ratio: float = 1.0,
+        **kwargs
     ):
         if val_ratio < 0 or test_ratio < 0:
             raise ValueError("val_ratio and test_ratio must be non-negative")
@@ -186,7 +188,7 @@ class Graph(Data):
         num_structural_features=100,
         num_spectral_features=None,
         save=False,
-    ):
+    ) -> torch.Tensor | None:
         if num_nodes is None:
             num_nodes = max(torch.flatten(edge_index)) + 1
 
@@ -499,3 +501,155 @@ class Graph(Data):
         # plt.show()
 
         return D, U
+    
+    def _random_walk(self, nx_G, start_node: int, walk_len: int, p: float, q: float) -> list[int]:
+        """
+        Simulate a single random walk starting from start_node.
+        For p=q=1.0, this is equivalent to DeepWalk (uniform random walk).
+        
+        Args:
+            nx_G: NetworkX graph
+            start_node: Starting node (local index)
+            walk_len: Length of the walk
+            p: Return parameter (node2vec)
+            q: In-out parameter (node2vec)
+        
+        Returns:
+            List of node indices (local) in the walk
+        """
+        walk = [start_node]
+        
+        while len(walk) < walk_len:
+            cur = walk[-1]
+            neighbors = list(nx_G.neighbors(cur))
+            
+            if len(neighbors) == 0:
+                break
+            
+            if len(walk) == 1:
+                # First step: uniform random
+                next_node = np.random.choice(neighbors)
+            else:
+                # Subsequent steps: node2vec-style (but with p=q=1.0, it's uniform)
+                prev = walk[-2]
+                next_node = self._node2vec_step(nx_G, prev, cur, neighbors, p, q)
+            
+            walk.append(next_node)
+        
+        return walk
+    
+    def _node2vec_step(self, nx_G, prev: int, cur: int, neighbors: list[int], p: float, q: float) -> int:
+        """
+        Choose next node using node2vec transition probabilities.
+        With p=q=1.0, this reduces to uniform random walk (DeepWalk).
+        
+        Args:
+            nx_G: NetworkX graph
+            prev: Previous node (local index)
+            cur: Current node (local index)
+            neighbors: List of neighbor nodes (local indices)
+            p: Return parameter (node2vec)
+            q: In-out parameter (node2vec)
+        
+        Returns:
+            Next node index (local)
+        """
+        if p == 1.0 and q == 1.0:
+            # DeepWalk: uniform random
+            return np.random.choice(neighbors)
+        
+        # node2vec: biased random walk
+        probs = []
+        for neighbor in neighbors:
+            if neighbor == prev:
+                # Return to previous node
+                prob = nx_G[cur][neighbor].get('weight', 1.0) / p
+            elif nx_G.has_edge(neighbor, prev):
+                # Common neighbor (triangle)
+                prob = nx_G[cur][neighbor].get('weight', 1.0)
+            else:
+                # New node
+                prob = nx_G[cur][neighbor].get('weight', 1.0) / q
+            probs.append(prob)
+        
+        # Normalize probabilities
+        total = sum(probs)
+        probs = [prob / total for prob in probs]
+        
+        # Sample based on probabilities
+        return np.random.choice(neighbors, p=probs)
+    
+    def generate_context_pairs(
+        self,
+        num_walks: int = 10,
+        walk_len: int = 40,
+        window_size: int = 10,
+        p: float = 1.0,
+        q: float = 1.0,
+        use_original_node_ids: bool = False,
+    ) -> dict[int, list[int]]:
+        """
+        Generate context pairs using random walk sampling (DySAT-style).
+        
+        Args:
+            num_walks: Number of walks per node
+            walk_len: Length of each walk
+            window_size: Context window size for generating pairs
+            p: Return parameter (node2vec), 1.0 = DeepWalk
+            q: In-out parameter (node2vec), 1.0 = DeepWalk
+            use_original_node_ids: If True, return pairs using original node_ids.
+                                 If False, return pairs using local indices (default).
+        
+        Returns:
+            Dictionary mapping node_id -> list of context node_ids.
+            If use_original_node_ids=True, uses original node_ids.
+            If use_original_node_ids=False, uses local indices.
+        """
+        # Convert Graph to PyG Data for random walk utilities
+        # Use edge_index (local indices) for random walks
+        pyg_data = TData(x=self.x, edge_index=self.edge_index)
+        
+        # Convert to NetworkX for random walk
+        nx_G = to_networkx(pyg_data, to_undirected=True)
+        
+        # Add edge weights (all 1.0 for unweighted graphs)
+        for edge in nx_G.edges():
+            if 'weight' not in nx_G[edge[0]][edge[1]]:
+                nx_G[edge[0]][edge[1]]['weight'] = 1.0
+        
+        # Generate random walks (using local indices)
+        walks = []
+        nodes = np.array(list(nx_G.nodes()))
+        
+        for _ in range(num_walks):
+            np.random.shuffle(nodes)
+            for start_node in nodes:
+                walk = self._random_walk(nx_G, start_node, walk_len, p, q)
+                walks.append(walk)
+        
+        # Generate context pairs using sliding window (local indices)
+        pairs_local: dict[int, list[int]] = defaultdict(list)
+        
+        for walk in walks:
+            for word_index, word in enumerate(walk):
+                # Context window: nodes within window_size distance
+                start_idx = max(word_index - window_size, 0)
+                end_idx = min(word_index + window_size, len(walk)) + 1
+                
+                for nb_word in walk[start_idx:end_idx]:
+                    if nb_word != word:
+                        pairs_local[word].append(nb_word)
+        
+        # Optionally map from local indices to original node_ids
+        if use_original_node_ids and self.node_ids is not None:
+            pairs_original: dict[int, list[int]] = defaultdict(list)
+            for local_idx, context_list in pairs_local.items():
+                original_node_id = int(self.node_ids[local_idx].item())
+                original_contexts = [
+                    int(self.node_ids[ctx_idx].item()) for ctx_idx in context_list
+                ]
+                pairs_original[original_node_id] = original_contexts
+            return dict(pairs_original)
+        else:
+            # Return pairs using local indices
+            return dict(pairs_local)

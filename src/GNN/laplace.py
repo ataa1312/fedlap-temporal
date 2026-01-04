@@ -1,8 +1,11 @@
 import torch
-
 from src import *
 from src.GNN.sGNN import SClassifier, SEdgeClassifier
 from src.utils.graph import Graph
+from src.models.model_binders import (
+    ModelSpecs,
+    ModelBinder,
+)
 
 # from src.GNN.MC import estimate
 
@@ -180,6 +183,32 @@ class LanczosLaplace(SpectralLaplace):
         hidden_layer_size=config.structure_model.DGCN_structure_layers_sizes,
     ):
         super().__init__(graph, hidden_layer_size)
+
+
+class LanczosLaplaceNew(LanczosLaplace):
+    def __init__(
+        self,
+        graph: Graph,
+        hidden_layer_size=config.structure_model.DGCN_structure_layers_sizes,
+    ):
+        super().__init__(graph, hidden_layer_size)
+
+    def create_smodel(self, hidden_layer_size=[]):
+        layer_sizes = (
+            [self.graph.num_features] + hidden_layer_size  # pyright: ignore
+        )
+
+        model_specs = [
+            ModelSpecs(
+                type="MLP",
+                layer_sizes=layer_sizes,
+                final_activation_function="linear",
+                normalization="layer",
+            ),
+        ]
+
+        self.model: ModelBinder = ModelBinder(model_specs)
+        self.model.to(device)
 
 
 # Edge prediction analogues

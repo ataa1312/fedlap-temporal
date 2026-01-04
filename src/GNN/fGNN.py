@@ -44,6 +44,41 @@ class FGNN(Classifier):
         return H
 
 
+class NewFGNN(FGNN):
+    def __init__(self, graph: Graph):
+        super().__init__(graph)
+
+    def create_smodel(self):
+        gnn_layer_sizes = [
+            self.graph.num_features  # pyright:ignore
+        ] + config.feature_model.gnn_layer_sizes
+        mlp_layer_sizes = [gnn_layer_sizes[-1]]
+
+        model_specs = [
+            ModelSpecs(
+                type="GNN",
+                layer_sizes=gnn_layer_sizes,
+                final_activation_function="linear",
+                # final_activation_function="relu",
+                normalization="layer",
+                # normalization="batch",
+            ),
+            ModelSpecs(
+                type="MLP",
+                layer_sizes=mlp_layer_sizes,
+                final_activation_function="linear",
+                normalization=None,
+            ),
+        ]
+
+        self.model: ModelBinder = ModelBinder(model_specs)
+        self.model.to(device)
+
+    def get_embeddings(self):
+        H = self.model(self.graph.x, self.graph.message_passing_edge_index)  # pyright: ignore
+        return H
+
+
 class FEdgeGNN(EdgeClassifier):
     def __init__(
         self, graph: Graph, link_feature_operator: LinkFeatureOperator = "hadamard"

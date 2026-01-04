@@ -1,15 +1,14 @@
 from itertools import chain
 from collections import defaultdict
 
-import torch
 import numpy as np
+import torch
 import networkx as nx
-from sklearn.cluster import k_means
-from torch_geometric.utils import subgraph
-
 from src import *
+from sklearn.cluster import k_means
 from src.utils.graph import Graph
-from src.FedGCN.utils import label_dirichlet_partition, get_in_comm_indexes
+from src.FedGCN.utils import get_in_comm_indexes, label_dirichlet_partition
+from torch_geometric.utils import subgraph
 
 
 def find_community(edge_index, num_nodes):
@@ -94,13 +93,18 @@ def assign_nodes_to_subgraphs(community_groups, num_nodes, num_subgraphs):
     return subgraph_node_ids
 
 
-def create_subgraps(graph: Graph, subgraph_node_ids: dict):
+def create_subgraphs(
+    graph: Graph,
+    subgraph_node_ids: dict[int, torch.Tensor],
+    **split_edges_kwargs,
+):
     subgraphs = []
     for community, subgraph_nodes in subgraph_node_ids.items():
         if not isinstance(subgraph_nodes, torch.Tensor):
             node_ids = torch.tensor(subgraph_nodes, device=device)
         else:
             node_ids = subgraph_nodes
+        assert graph.original_edge_index is not None
         edges = graph.original_edge_index
         edge_mask = edges.unsqueeze(2).eq(node_ids).any(2).any(0)
         edge_index = edges[:, edge_mask]
@@ -119,6 +123,7 @@ def create_subgraps(graph: Graph, subgraph_node_ids: dict):
         # all_edges = torch.cat((intra_edges, inter_edges), dim=0)
 
         # node_mask = torch.isin(graph.node_ids.to("cpu"), node_ids.to("cpu"))
+        assert graph.node_ids is not None
         node_mask = graph.node_ids.unsqueeze(1).eq(node_ids).any(1)
         sorted_node_ids = graph.node_ids[node_mask]
         if graph.x is not None:
@@ -146,6 +151,12 @@ def create_subgraps(graph: Graph, subgraph_node_ids: dict):
         else:
             val_mask = None
 
+        # INFO: In temporal graphs node_ids might be larger than the actual node_ids of
+        # the subgraph. Here, I am adjusting that assuming x is a one-hot vector.
+        # Later on this should be fixed!
+        if x is not None and node_ids.shape[0] > x.shape[0]:
+            sorted_node_ids = x.argmax(dim=1)
+
         subgraph_ = Graph(
             x=x,
             y=y,
@@ -158,6 +169,30 @@ def create_subgraps(graph: Graph, subgraph_node_ids: dict):
             val_mask=val_mask,
             num_classes=graph.num_classes,
         )
+
+        # Split edges for edge prediction if requested
+        # This ensures each subgraph has its own train/val/test edge splits
+        if (
+            split_edges_kwargs.get("split_edges_for_edge_prediction", None)
+            and intra_edges.shape[1] > 0
+        ):
+            # Use default values if not provided
+            val_ratio = split_edges_kwargs.get("val_ratio", 0.15)
+            test_ratio = split_edges_kwargs.get("test_ratio", 0.15)
+            is_undirected = split_edges_kwargs.get("is_undirected", True)
+            add_negative_train_samples = split_edges_kwargs.get(
+                "add_negative_train_samples", True
+            )
+            negative_ratio = split_edges_kwargs.get("negative_ratio", 1.0)
+
+            subgraph_.split_edges(
+                val_ratio=val_ratio,
+                test_ratio=test_ratio,
+                is_undirected=is_undirected,
+                add_negative_train_samples=add_negative_train_samples,
+                negative_ratio=negative_ratio,
+            )
+
         subgraphs.append(subgraph_)
 
     return subgraphs
@@ -348,20 +383,38 @@ def create_comm_indexes(graph: Graph, subgraph_node_ids: Graph, num_hops=2):
     return subgraphs
 
 
-def partition_graph(graph: Graph, num_subgraphs, method="random"):
+def partition_graph(graph: Graph, num_subgraphs, method="random", **kwargs):
     if method == "louvain":
         subgraph_node_ids = louvain_cut(
             graph.edge_index, graph.num_nodes, num_subgraphs
         )
     elif method == "random":
-        subgraph_node_ids = random_assign(graph.num_nodes, num_subgraphs)
+        num_nodes: int | None = kwargs.get("num_nodes", None)
+        if num_nodes is None:
+            subgraph_node_ids = random_assign(graph.num_nodes, num_subgraphs)
+        else:
+            subgraph_node_ids = random_assign(num_nodes, num_subgraphs)
     elif method == "kmeans":
         subgraph_node_ids = kmeans_cut(graph.x, num_subgraphs)
     elif method == "metis":
         subgraph_node_ids = metis_cut(graph.edge_index, graph.num_nodes, num_subgraphs)
 
-    subgraphs = create_subgraps(graph, subgraph_node_ids)
+    # Extract split_edges parameters from kwargs to pass to create_subgraps
+    split_edges_kwargs = {
+        k: v
+        for k, v in kwargs.items()
+        if k
+        in [
+            "split_edges_for_edge_prediction",
+            "val_ratio",
+            "test_ratio",
+            "is_undirected",
+            "add_negative_train_samples",
+            "negative_ratio",
+        ]
+    }
 
+    subgraphs = create_subgraphs(graph, subgraph_node_ids, **split_edges_kwargs)
     return subgraphs
 
 

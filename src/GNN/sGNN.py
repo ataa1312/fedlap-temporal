@@ -87,9 +87,7 @@ class SEdgeClassifier(SFVMixin, EdgeClassifier):
         self.create_smodel(hidden_layer_size)
 
     def create_smodel(self, hidden_layer_size=[]):
-        layer_sizes = (
-            [self.graph.num_features] + hidden_layer_size 
-        )
+        layer_sizes = [self.graph.num_features] + hidden_layer_size
 
         model_specs = [
             ModelSpecs(
