@@ -415,9 +415,9 @@ class GNNServer(Server, GNNClient):
         for client in self.clients:
             total_nodes = 0
             stored_embs = client.get_stored_embeddings()
-            assert stored_embs is not None and isinstance(stored_embs, list)
-            for se in stored_embs:
-                num_nodes = se["embeddings"].shape[0]
+            assert stored_embs is not None and isinstance(stored_embs, dict)
+            for embeddings in stored_embs.values():
+                num_nodes = embeddings.shape[0]
                 total_nodes += num_nodes
             client_node_counts.append(total_nodes)
 

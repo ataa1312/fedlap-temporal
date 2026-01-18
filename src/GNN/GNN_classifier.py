@@ -431,17 +431,20 @@ class FedDynamicClassifier(FedClassifier):
             for ss_idx in range(num_ss)
         }
 
-    def get_temporal_embeddings(self, stored_embeddings: list[dict]):
+    def get_temporal_embeddings(self, stored_embeddings: dict[int, torch.Tensor]):
         if self.tmodel is None:
             raise ValueError(
                 "Temporal model (tmodel) is not initialized. Call create_tmodel first."
             )
         if len(stored_embeddings) == 0:
             raise ValueError("No stored embeddings provided.")
-        max_num_nodes = max(map(lambda x: len(x["embeddings"]), stored_embeddings))
+        stored_embeddings_list = [
+            stored_embeddings[ss_idx]
+            for ss_idx in sorted(stored_embeddings.keys())
+        ]
+        max_num_nodes = max(map(lambda x: len(x), stored_embeddings_list))
         embeddings = []
-        for d in stored_embeddings:
-            emb = d["embeddings"]
+        for emb in stored_embeddings_list:
             num_nodes = emb.shape[0]
             embed_dim = emb.shape[1]
             zero_pad = torch.zeros(

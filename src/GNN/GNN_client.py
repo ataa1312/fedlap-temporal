@@ -58,8 +58,8 @@ class GNNClient(Client):
         self.SFVs = []
         self.cf_score_list = []
         # Storage for embeddings across snapshots
-        # Each element is a dict: {"embeddings": tensor, "node_ids": tensor, "snapshot_idx": int}
-        self.stored_embeddings = list[dict[str, torch.Tensor]]()
+        # Dictionary mapping snapshot_idx -> embeddings tensor
+        self.stored_embeddings = dict[int, torch.Tensor]()
         # Keep references to old SFVs to prevent gradient flow issues
         # When SFV is trainable (requires_grad=True), we need to keep old SFVs
         # so gradients can flow back to them through stored embeddings
@@ -420,24 +420,17 @@ class GNNClient(Client):
 
         embeddings = self.get_embeddings(detach=detach)
 
-        stored_embeddings = {
-            "embeddings": embeddings,
-            "snapshot_idx": snapshot_idx,
-        }
-
-        self.stored_embeddings.append(stored_embeddings)
+        # Store embeddings directly, keyed by snapshot_idx for O(1) lookup
+        self.stored_embeddings[snapshot_idx] = embeddings
 
     def get_stored_embeddings(self, snapshot_idx: int | None = None):
         if snapshot_idx is None:
             return self.stored_embeddings
         else:
-            for stored in self.stored_embeddings:
-                if stored["snapshot_idx"] == snapshot_idx:
-                    return stored
-            return None
+            return self.stored_embeddings.get(snapshot_idx)
 
     def clear_stored_embeddings(self):
-        self.stored_embeddings = list[dict[str, torch.Tensor]]()
+        self.stored_embeddings = dict[int, torch.Tensor]()
         # Reset stored_sfvs_grad so new SFVs can be stored in the next epoch
         if self.classifier is not None and is_attr_good(
             self.classifier, "stored_sfvs_grad"
@@ -492,11 +485,13 @@ class GNNClient(Client):
         if len(self.stored_embeddings) == 0:
             raise ValueError("No stored embeddings available. Encode snapshots first.")
 
-        stored_embeddings = self.stored_embeddings
-        max_num_nodes = max(map(lambda x: len(x["embeddings"]), stored_embeddings))
+        stored_embeddings_list = [
+            self.stored_embeddings[ss_idx]
+            for ss_idx in sorted(self.stored_embeddings.keys())
+        ]
+        max_num_nodes = max(map(lambda x: len(x), stored_embeddings_list))
         embeddings = []
-        for d in stored_embeddings:
-            emb = d["embeddings"]
+        for emb in stored_embeddings_list:
             zero_pad = torch.zeros(
                 max_num_nodes - emb.shape[0], emb.shape[1], device=emb.device
             )
@@ -670,8 +665,11 @@ class GNNClient(Client):
 
         operator = eval_config.link_feature_operator
         stored_embs = self.get_stored_embeddings()
-        assert isinstance(stored_embs, list)
-        embeddings = stored_embs[-1]["embeddings"]
+        assert isinstance(stored_embs, dict)
+        if len(stored_embs) == 0:
+            raise ValueError("No stored embeddings available for evaluation.")
+        last_snapshot_idx = max(stored_embs.keys())
+        embeddings = stored_embs[last_snapshot_idx]
         embeddings = embeddings.detach()
         train_data, val_data, _ = transform(self.eval_train_snapshot)
         train_data_feats, train_labels = self.extract_feats_and_labels(
