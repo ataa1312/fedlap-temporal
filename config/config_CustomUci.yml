@@ -1,6 +1,13 @@
+seed: 1234
+experiment: 0
+num_runs: 10
 dataset:
-  dataset_name: CustomUci
+  dataset_name: custom-uci
   multi_label: False
+  is_directed: False
+  shape: null # Set at runtime
+  num_classes: null # Set at runtime
+  normalize: False
 subgraph:
   num_subgraphs: 5
   delta: 20
@@ -20,7 +27,7 @@ model:
   gnn_layer_type: sage
   smodel_type: LanczosLaplace # GNN, DGCN, CentralDGCN, Laplace, LanczosLaplace, SpectralLaplace, SpectralDGCN, LanczosDGCN
   fmodel_type: GNN #, DGCN, same
-  iterations: 75
+  iterations: 200
   metric: auc
 feature_model:
   gnn_layer_sizes: [256, 128]
@@ -92,3 +99,64 @@ fedpub:
 fedgcn:
   num_hops: 2
   iid_beta: 10000
+dynamic:
+  model:
+    structural:
+      input_dimension: null # Set at runtime
+      output_dimension: 128
+      layer_dimensions: []
+      attention_heads: [16]
+      dropout: 0.1
+      residual: False
+    temporal:
+      input_dimension: 128
+      num_attention_layers: 1
+      attention_heads: 16
+      dropout: 0.5
+      num_snapshots: null # Set at runtime
+      use_feedforward: True
+  loss_fn: BCEWithLogitsLoss
+  min_snapshot: 2
+  max_snapshot: 13 # UCI has 13 snapshots
+  random_walk:
+    num: 10
+    length: 40
+    window_size: 10
+  unsupervised:
+    neg_sampling:
+      size: 10
+      weight: 1.0
+      retries: 5
+      distortion: 0.75
+      tempoal_window: -1
+    batch_size: 512
+    weight_decay: 0.0005
+  max_gradient_norm: 1.0
+  evaluation:
+    eval_freq: 1
+    first_epoch: True
+    last_epoch: True
+    mode: roland
+    link_feature_operator: hadamard
+    classifier:
+      num_epoch: 100
+      loss_fn: BCEWithLogitsLoss
+      tx:
+        fn: null
+        lr: 0.001
+        moment: 0.0
+        weight_decay: 0.0005
+        lr_decay_per_worker_epoch: 1.0
+        type_decay_per_worker_epoch: geometric
+    data:
+      num_val: 0.2
+      num_test: 0.6
+      is_directed: False
+      add_negative_train_samples: True
+      neg_sampling_ratio: 1
+wandb:
+  project: dynamic-fedlap
+  name: null
+  group: null
+  job_type: dynamic-fedlap-edge-prediction
+  mode: online

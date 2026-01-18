@@ -23,7 +23,7 @@ model:
   iterations: 75
   metric: acc
 feature_model:
-  gnn_layer_sizes: [32, 16]
+  gnn_layer_sizes: [64, 32]
   DGCN_layer_sizes: [64]
   mlp_layer_sizes: [256]
   DGCN_layers: 2

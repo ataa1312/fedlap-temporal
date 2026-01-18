@@ -1,9 +1,12 @@
+import operator
 from copy import deepcopy
 
 from src import *
 from src.server import Server
 from src.utils.graph import Graph
 from src.GNN.GNN_client import GNNClient
+from src.utils.define_graph import graph_to_pygdata
+from src.utils.config_parser import EvaluationConfig, RandomWalkConfig
 from src.utils.graph_partitioning import create_subgraphs
 
 
@@ -183,17 +186,6 @@ class GNNServer(Server, GNNClient):
         for client in self.clients:
             client.store_embeddings(snapshot_idx, detach=detach)
 
-    def encode_snapshot(
-        self,
-        snapshot_idx: int,
-        detach=False,
-        log=False,
-    ):
-        if log:
-            LOGGER.info(f"Encoding snapshot {snapshot_idx}...")
-
-        self.store_snapshot_embeddings(snapshot_idx, detach=detach)
-
     def clear_all_stored_embeddings(self):
         client: GNNClient
         for client in self.clients:
@@ -202,12 +194,12 @@ class GNNServer(Server, GNNClient):
     def generate_context_pairs_for_snapshot(
         self,
         snapshot_idx: int,
-        num_walks: int = 10,
-        walk_len: int = 30,
-        window_size: int = 10,
-        p: float = 1.0,
-        q: float = 1.0,
-        log: bool = False,
+        num_walks: int,
+        walk_len: int,
+        window_size: int,
+        p: float,
+        q: float,
+        log: bool,
     ):
         if log:
             LOGGER.info(
@@ -222,15 +214,6 @@ class GNNServer(Server, GNNClient):
                 window_size=window_size,
                 p=p,
                 q=q,
-            )
-
-        if log:
-            total_pairs = sum(
-                len(client.get_stored_context_pairs(snapshot_idx) or {})
-                for client in self.clients
-            )
-            LOGGER.info(
-                f"Generated context pairs for snapshot {snapshot_idx}: {total_pairs} total node-context mappings"
             )
 
     def clear_all_stored_context_pairs(self):
@@ -260,22 +243,24 @@ class GNNServer(Server, GNNClient):
                 and prev_U is not None
                 and prev_D is not None
             ):
-                D, U = prev_U, prev_D
                 if log:
-                    LOGGER.info("Keeping previous eigenvectors U and eigenvalues D")
+                    LOGGER.info("Keeping previous eigenvectors U and eigenvalues D...")
+                D, U = prev_U, prev_D
             elif (
                 spectral_update_mode == "update"
                 and prev_U is not None
                 and prev_D is not None
             ):
                 if log:
-                    LOGGER.info("Updating spectral features (recomputing)")
+                    LOGGER.info("Updating spectral features...")
                 raise NotImplementedError()
             else:
+                if log:
+                    LOGGER.info("Recomputing spectral features...")
                 D, U = self.graph.calc_eignvalues(
                     estimate=not (smodel_type.startswith("Spectral")),
                     spectral_len=spectral_len,
-                    log=log,
+                    log=False,
                 )
 
             share["D"] = D
@@ -311,6 +296,7 @@ class GNNServer(Server, GNNClient):
         snapshot: Graph,
         ss_idx: int,
         num_ss: int,
+        random_walk_config: RandomWalkConfig,
         smodel_type=config.model.smodel_type,
         fmodel_type=config.model.fmodel_type,
         data_type="feature",
@@ -345,6 +331,7 @@ class GNNServer(Server, GNNClient):
             self.shallow_initialize_classifier(
                 smodel_type, fmodel_type, data_type, ss_idx, num_ss, downstream_task
             )
+
         else:
             for client, subgraph in zip(self.clients, subgraphs):
                 client.update_graph(subgraph, ss_idx)
@@ -359,6 +346,21 @@ class GNNServer(Server, GNNClient):
                 f"Snapshot updated: {len(self.clients)} clients, "
                 f"{snapshot.num_nodes} nodes, {snapshot.num_edges} edges"
             )
+
+        if ss_idx == num_ss - 1 and self.eval_train_snapshot is None:
+            self.eval_train_snapshot = graph_to_pygdata(self.graph)
+            for client in self.clients:
+                client.eval_train_snapshot = graph_to_pygdata(client.graph)
+
+        self.generate_context_pairs_for_snapshot(
+            snapshot_idx=ss_idx,
+            num_walks=random_walk_config.num,
+            walk_len=random_walk_config.num,
+            window_size=random_walk_config.window_size,
+            p=1.0,
+            q=1.0,
+            log=log,
+        )
 
     def load_test_snapshot(
         self,
@@ -375,38 +377,17 @@ class GNNServer(Server, GNNClient):
     def train_temporal_models(
         self,
         snapshot_indices: list[int],
-        neg_sample_size: int = 10,
-        neg_weight: float = 1.0,
-        batch_size: int = 512,
-        num_walks: int = 10,
-        walk_len: int = 40,
-        window_size: int = 10,
-        p: float = 1.0,
-        q: float = 1.0,
-        log: bool = False,
+        neg_sample_size: int,
+        neg_weight: float,
+        batch_size: int,
+        log: bool,
     ):
         if log:
             LOGGER.info("Training temporal models on all clients...")
 
-        for ss_idx in snapshot_indices:
-            needs_generation = False
-            for client in self.clients:
-                if client.get_stored_context_pairs(ss_idx) is None:
-                    needs_generation = True
-                    break
-
-            if needs_generation:
-                self.generate_context_pairs_for_snapshot(
-                    snapshot_idx=ss_idx,
-                    num_walks=num_walks,
-                    walk_len=walk_len,
-                    window_size=window_size,
-                    p=p,
-                    q=q,
-                    log=log,
-                )
         total_loss: float = 0.0
         num_clients_with_loss = 0
+        client_losses = {}  # Store individual client losses
         for client in self.clients:
             loss = client.compute_random_walk_loss(
                 neg_sample_size=neg_sample_size,
@@ -416,28 +397,42 @@ class GNNServer(Server, GNNClient):
             )
 
             loss.backward(retain_graph=True)
+            client_loss = loss.item()
+            client_losses[client.id] = client_loss
             if log:
                 LOGGER.info(
-                    f"Client {client.id}: loss = {loss.item():.4f}, "
+                    f"Client {client.id}: loss = {client_loss:.4f}, "
                     f"optimizer step completed"
                 )
-            total_loss += loss.item()
+            total_loss += client_loss
             num_clients_with_loss += 1
 
-            # torch.nn.utils.clip_grad_norm_(
-            #     client.classifier.parameters(), max_norm=1.0
-            # )
+            torch.nn.utils.clip_grad_norm_(client.classifier.parameters(), max_norm=1.0)
 
         clients_grads = self.get_grads()
-        # FIXME: Get coef right
-        # grads = sum_lod(clients_grads, coef)
-        grads = sum_lod(clients_grads)
+
+        client_node_counts = []
+        for client in self.clients:
+            total_nodes = 0
+            stored_embs = client.get_stored_embeddings()
+            assert stored_embs is not None and isinstance(stored_embs, list)
+            for se in stored_embs:
+                num_nodes = se["embeddings"].shape[0]
+                total_nodes += num_nodes
+            client_node_counts.append(total_nodes)
+
+        total_nodes_all_clients = sum(client_node_counts)
+        coef = [count / total_nodes_all_clients for count in client_node_counts]
+
+        grads = sum_lod(clients_grads, coef)
         self.share_grads(grads)
         self.update_models()
 
+        avg_loss = (
+            total_loss / num_clients_with_loss if num_clients_with_loss > 0 else 0.0
+        )
         if log:
             if num_clients_with_loss > 0:
-                avg_loss = total_loss / num_clients_with_loss
                 LOGGER.info(
                     f"Temporal training completed: "
                     f"{num_clients_with_loss} clients, "
@@ -446,16 +441,56 @@ class GNNServer(Server, GNNClient):
             else:
                 LOGGER.warning("No clients were trained (all had zero loss or errors)")
 
-    def evaluate_with_sklearn_classifier(
-        self,
-        num_ss: int,
-        operator: LinkFeatureOperator = "hadamard",
-    ):
+        return client_losses, avg_loss
+
+    def train_evaluator(self, operator: LinkFeatureOperator):
+        pass
+
+    def evaluate_with_classifier(
+        self, eval_config: EvaluationConfig
+    ) -> tuple[dict, dict, dict, float, float, float]:
+        train_aucs = []
+        val_aucs = []
+        test_aucs = []
+        client_train_aucs = {}
+        client_val_aucs = {}
+        client_test_aucs = {}
+
+        operator = eval_config.link_feature_operator
         for client in self.clients:
-            val_results, test_results = client.evaluate_with_sklearn_classifier(
-                num_ss, operator
+            train_results, val_results, test_results = client.evaluate_with_classifier(
+                eval_config=eval_config
             )
+            train_auc = train_results[operator]
+            val_auc = val_results[operator]
+            test_auc = test_results[operator]
+            train_aucs.append(train_auc)
+            val_aucs.append(val_auc)
+            test_aucs.append(test_auc)
+            client_train_aucs[client.id] = train_auc
+            client_val_aucs[client.id] = val_auc
+            client_test_aucs[client.id] = test_auc
             LOGGER.info(
-                f"Client {client.id}: val auc = {val_results[operator]:.4f}, "
-                f"test auc = {test_results[operator]:.4f}"
+                f"Client {client.id}: train auc = {train_auc:.4f}, "
+                f"val auc = {val_auc:.4f}, "
+                f"test auc = {test_auc:.4f}"
             )
+
+        avg_train_auc = sum(train_aucs) / len(train_aucs) if train_aucs else 0.0
+        avg_val_auc = sum(val_aucs) / len(val_aucs) if val_aucs else 0.0
+        avg_test_auc = sum(test_aucs) / len(test_aucs) if test_aucs else 0.0
+
+        LOGGER.info(
+            f"Average across clients: train auc = {avg_train_auc:.4f}, "
+            f"val auc = {avg_val_auc:.4f}, "
+            f"test auc = {avg_test_auc:.4f}"
+        )
+
+        return (
+            client_train_aucs,
+            client_val_aucs,
+            client_test_aucs,
+            avg_train_auc,
+            avg_val_auc,
+            avg_test_auc,
+        )

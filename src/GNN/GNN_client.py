@@ -2,12 +2,13 @@ from copy import deepcopy
 
 import numpy as np
 from src import *
+from torch import nn
 from src.client import Client
 from src.GNN.DGCN import DGCN, SDGCN, SDGCNMaster, SpectralDGCN
 from src.GNN.fGNN import FGNN, FEdgeGNN
 from src.GNN.sGNN import SGNNSlave, SGNNMaster, SClassifier
-from torch_sparse import SparseTensor
 from src.classifier import Classifier
+from sklearn.metrics import roc_auc_score
 from src.GNN.laplace import (
     SLaplace,
     SEdgeLaplace,
@@ -17,8 +18,9 @@ from src.GNN.laplace import (
     SpectralEdgeLaplace,
 )
 from src.utils.graph import Graph, AGraph
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import roc_auc_score
+from torch_geometric import transforms
+from torch_geometric.data import Data as PyGData
+from torch_geometric.utils import negative_sampling
 from src.GNN.GNN_classifier import (
     FedDGCN,
     FedSlave,
@@ -33,6 +35,7 @@ from src.GNN.GNN_classifier import (
     FedLanczosLaplaceEdgeClassifier,
     FedDynamicLanczosLaplaceClassifier,
 )
+from src.utils.config_parser import BaseTxConfig, ClassifierConfig, EvaluationConfig
 
 
 class GNNClient(Client):
@@ -65,6 +68,7 @@ class GNNClient(Client):
         # Dictionary mapping snapshot_idx -> context_pairs dict
         # context_pairs maps node_id (original) -> list of context node_ids (original)
         self.stored_context_pairs = dict[int, dict[int, list[int]]]()
+        self.eval_train_snapshot: PyGData | None = None
 
     def _extract_edge_prediction_attrs(self) -> dict:
         """
@@ -342,11 +346,9 @@ class GNNClient(Client):
             if smodel_type == "LanczosLaplace":
                 stored_sfvs = self.get_stored_sfvs(ss_idx)
                 sgraph = self.create_SGNN_data(**{"SFV": stored_sfvs})
-                if downstream_task == "node-classification":
-                    self.classifier = FedLanczosLaplaceClassifier(fgraph, sgraph)
-                elif downstream_task == "edge-prediction":
+                if downstream_task == "edge-prediction":
                     self.classifier = FedDynamicLanczosLaplaceClassifier(
-                        fgraph, sgraph, num_ss
+                        fgraph, sgraph, num_ss, config.dynamic.model
                     )
                 if is_attr_good(self.classifier, "register_stored_sfvs"):
                     self.classifier.register_stored_sfvs(self.stored_sfvs)  # pyright:ignore
@@ -370,7 +372,7 @@ class GNNClient(Client):
             num_spectral_features = config.spectral.spectral_len
             assert num_spectral_features != 0
 
-            # This stuoid function does not return anything and assigns its returnee to
+            # This stupid function does not return anything and assigns its returnee to
             # self.graph.structural_features
             self.graph.add_structural_features(
                 structure_type=structure_type,
@@ -449,23 +451,6 @@ class GNNClient(Client):
                 ss_idx: torch.zeros(shape) for ss_idx in range(num_ss)
             }
 
-    def generate_context_pairs(
-        self,
-        num_walks: int = 10,
-        walk_len: int = 40,
-        window_size: int = 10,
-        p: float = 1.0,
-        q: float = 1.0,
-    ) -> dict[int, list[int]]:
-        return self.graph.generate_context_pairs(
-            num_walks=num_walks,
-            walk_len=walk_len,
-            window_size=window_size,
-            p=p,
-            q=q,
-            use_original_node_ids=False,
-        )
-
     def store_context_pairs(
         self,
         snapshot_idx: int,
@@ -476,7 +461,7 @@ class GNNClient(Client):
         q: float = 1.0,
     ):
         if snapshot_idx not in self.stored_context_pairs:
-            context_pairs = self.generate_context_pairs(
+            context_pairs = self.graph.generate_context_pairs(
                 num_walks=num_walks,
                 walk_len=walk_len,
                 window_size=window_size,
@@ -561,10 +546,16 @@ class GNNClient(Client):
 
             z = temporal_embeddings[ss_idx]
 
+            # Get edge_index for this snapshot from the graph
+            # Use original_edge_index which is the original edge_index before reindexing
+            # edge_index = self.graph.original_edge_index
+            edge_index = self.graph.edge_index
+
             snapshot_loss = self.classifier.compute_random_walk_loss(  # pyright: ignore
                 temporal_embeddings=z,
                 context_pairs=context_pairs,
                 snapshot_idx=ss_idx,
+                edge_index=edge_index,
                 neg_sample_size=neg_sample_size,
                 neg_weight=neg_weight,
                 batch_size=batch_size,
@@ -598,73 +589,225 @@ class GNNClient(Client):
                     sgraph = self.create_SGNN_data(**{"SFV": old_sfvs})
                     self.classifier.smodel.graph = sgraph  # pyright: ignore
 
-    def evaluate_with_sklearn_classifier(
-        self,
-        num_ss: int,
+    @staticmethod
+    def get_link_features(
+        edge_index: torch.Tensor,
+        embeddings: torch.Tensor,
         operator: LinkFeatureOperator = "hadamard",
-    ) -> tuple[dict, dict]:
-        stored_emb_data = self.get_stored_embeddings(num_ss - 1)
-        last_embeddings = stored_emb_data["embeddings"]
-        last_embeddings = last_embeddings.clone().detach()
-        train_pos_mask = self.graph.train_edge_label == 1
-        train_neg_mask = self.graph.train_edge_label == 0
-        train_pos_edges = self.graph.train_edge_label_index[:, train_pos_mask]  # pyright: ignore
-        train_neg_edges = self.graph.train_edge_label_index[:, train_neg_mask]  # pyright: ignore
+    ) -> torch.Tensor:
+        """
+        Compute link features for edges using embeddings.
 
-        val_pos_mask = self.graph.val_edge_label == 1
-        val_neg_mask = self.graph.val_edge_label == 0
-        val_pos_edges = self.graph.val_edge_label_index[:, val_pos_mask]  # pyright: ignore
-        val_neg_edges = self.graph.val_edge_label_index[:, val_neg_mask]  # pyright: ignore
+        Args:
+            edge_index: [2, num_edges] tensor of edge pairs
+            embeddings: [num_nodes, embed_dim] tensor of node embeddings
+            operator: Feature operator
 
-        test_pos_mask = self.graph.test_edge_label == 1
-        test_neg_mask = self.graph.test_edge_label == 0
-        test_pos_edges = self.graph.test_edge_label_index[:, test_pos_mask]  # pyright: ignore
-        test_neg_edges = self.graph.test_edge_label_index[:, test_neg_mask]  # pyright: ignore
+        Returns:
+            [num_edges, embed_dim] or [num_edges] tensor of link features (stays on same device)
+        """
+        match operator:
+            case "hadamard":
+                # Hadamard product: element-wise multiplication
+                src_emb = embeddings[edge_index[0]]  # [num_edges, embed_dim]
+                tgt_emb = embeddings[edge_index[1]]  # [num_edges, embed_dim]
+                return src_emb * tgt_emb
+            case "dot-product":
+                # Dot product: inner multiplication
+                src_emb = embeddings[edge_index[0]]  # [num_edges, embed_dim]
+                tgt_emb = embeddings[edge_index[1]]  # [num_edges, embed_dim]
+                return (src_emb * tgt_emb).sum(dim=-1, keepdim=True)  # [num_edges, 1]
+            case _:
+                raise NotImplementedError(f"Operator {operator} not implemented")
 
-        train_pos_feats = self.classifier.get_edge_embeddings(  # pyright: ignore
-            train_pos_edges, last_embeddings, operator
+    @staticmethod
+    def extract_feats_and_labels(
+        data: Graph,
+        embeddings: torch.Tensor,
+        edge_index_attr: str,
+        label_attr: str,
+        operator: LinkFeatureOperator,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        edge_label: torch.Tensor | None = getattr(data, label_attr, None)
+        edge_label_index: torch.Tensor | None = getattr(data, edge_index_attr, None)
+        if edge_label_index is None:
+            raise AttributeError(f"None attribute: {edge_label_index!r}")
+        if edge_label is None:
+            raise AttributeError(f"None attribute: {edge_label!r}")
+
+        pos_mask = edge_label == 1
+        neg_mask = edge_label == 0
+        pos_edges = edge_label_index[:, pos_mask]
+        neg_edges = edge_label_index[:, neg_mask]
+        pos_feats = GNNClient.get_link_features(pos_edges, embeddings, operator)
+        neg_feats = GNNClient.get_link_features(neg_edges, embeddings, operator)
+        device = embeddings.device
+        feats = torch.cat([pos_feats, neg_feats], dim=0).to(device)
+        labels = torch.cat(
+            [
+                torch.ones(len(pos_feats), device=device),
+                torch.zeros(len(neg_feats), device=device),
+            ],
+            dim=0,
         )
-        train_neg_feats = self.classifier.get_edge_embeddings(  # pyright: ignore
-            train_neg_edges, last_embeddings, operator
-        )
-        val_pos_feats = self.classifier.get_edge_embeddings(  # pyright: ignore
-            val_pos_edges, last_embeddings, operator
-        )
-        val_neg_feats = self.classifier.get_edge_embeddings(  # pyright: ignore
-            val_neg_edges, last_embeddings, operator
-        )
-        test_pos_feats = self.classifier.get_edge_embeddings(  # pyright: ignore
-            test_pos_edges, last_embeddings, operator
-        )
-        test_neg_feats = self.classifier.get_edge_embeddings(  # pyright: ignore
-            test_neg_edges, last_embeddings, operator
+        return feats, labels
+
+    def evaluate_with_classifier(
+        self,
+        eval_config: EvaluationConfig,
+    ) -> tuple[dict, dict, dict]:
+        transform = transforms.Compose(
+            [
+                transforms.RandomLinkSplit(
+                    num_val=eval_config.data.num_val,
+                    num_test=0.0,
+                    is_undirected=not eval_config.data.is_directed,
+                    add_negative_train_samples=eval_config.data.add_negative_train_samples,
+                    neg_sampling_ratio=eval_config.data.neg_sampling_ratio,
+                ),
+            ]
         )
 
-        train_data_feats = np.vstack([train_pos_feats, train_neg_feats])
-        train_labels = np.concatenate(
-            [np.ones(len(train_pos_feats)), np.zeros(len(train_neg_feats))]
+        operator = eval_config.link_feature_operator
+        stored_embs = self.get_stored_embeddings()
+        assert isinstance(stored_embs, list)
+        embeddings = stored_embs[-1]["embeddings"]
+        embeddings = embeddings.detach()
+        train_data, val_data, _ = transform(self.eval_train_snapshot)
+        train_data_feats, train_labels = self.extract_feats_and_labels(
+            train_data, embeddings, "edge_label_index", "edge_label", operator
+        )
+        val_data_feats, val_labels = self.extract_feats_and_labels(
+            val_data, embeddings, "edge_label_index", "edge_label", operator
         )
 
-        val_data_feats = np.vstack([val_pos_feats, val_neg_feats])
-        val_labels = np.concatenate(
-            [np.ones(len(val_pos_feats)), np.zeros(len(val_neg_feats))]
+        assert self.graph.edge_index is not None
+        test_pos_edges = self.graph.edge_index
+        num_test_pos = test_pos_edges.size(1)
+        num_test_neg = int(num_test_pos * eval_config.data.neg_sampling_ratio)
+        test_neg_edges = negative_sampling(
+            self.graph.edge_index,
+            self.graph.num_nodes,
+            num_neg_samples=num_test_neg,
+            method="sparse",
+            force_undirected=not eval_config.data.is_directed,
+        )
+        test_pos_feats = self.get_link_features(test_pos_edges, embeddings, operator)
+        test_neg_feats = self.get_link_features(test_neg_edges, embeddings, operator)
+
+        test_data_feats = torch.cat([test_pos_feats, test_neg_feats], dim=0)
+        test_labels = torch.cat(
+            [
+                torch.ones(len(test_pos_feats), device=embeddings.device),
+                torch.zeros(len(test_neg_feats), device=embeddings.device),
+            ],
+            dim=0,
         )
 
-        test_data_feats = np.vstack([test_pos_feats, test_neg_feats])
-        test_labels = np.concatenate(
-            [np.ones(len(test_pos_feats)), np.zeros(len(test_neg_feats))]
+        classifier_config = eval_config.classifier
+        classifier = train_logistic_regression(
+            train_data_feats,
+            train_labels,
+            classifier_config=classifier_config,
+            device=device,
         )
+        with torch.no_grad():
+            train_pred = torch.sigmoid(classifier(train_data_feats)).cpu().numpy()
+            val_pred = torch.sigmoid(classifier(val_data_feats)).cpu().numpy()
+            test_pred = torch.sigmoid(classifier(test_data_feats)).cpu().numpy()
 
-        classifier = LogisticRegression(max_iter=1000, random_state=42)
-        classifier.fit(train_data_feats, train_labels)
+        train_auc = roc_auc_score(train_labels.cpu().numpy(), train_pred)
+        val_auc = roc_auc_score(val_labels.cpu().numpy(), val_pred)
+        test_auc = roc_auc_score(test_labels.cpu().numpy(), test_pred)
 
-        val_pred = classifier.predict_proba(val_data_feats)[:, 1]
-        test_pred = classifier.predict_proba(test_data_feats)[:, 1]
-
-        val_auc = roc_auc_score(val_labels, val_pred)
-        test_auc = roc_auc_score(test_labels, test_pred)
-
+        train_results = {operator: train_auc}
         val_results = {operator: val_auc}
         test_results = {operator: test_auc}
 
-        return val_results, test_results
+        return train_results, val_results, test_results
+
+
+def get_optimizer(
+    net: torch.nn.Module, tx_config: BaseTxConfig
+) -> torch.optim.Optimizer:
+    tx = tx_config.fn
+    moment: float = getattr(tx_config, "moment", 0.0)
+    weight_decay: float = getattr(tx_config, "weight_decay", 0.0)
+    match tx:
+        case torch.optim.SGD:
+            return torch.optim.SGD(
+                net.parameters(),
+                lr=tx_config.lr,
+                momentum=moment,
+                weight_decay=weight_decay,
+            )
+        case torch.optim.Adam:
+            return torch.optim.Adam(
+                net.parameters(), lr=tx_config.lr, weight_decay=weight_decay
+            )
+        case torch.optim.AdamW:
+            return torch.optim.AdamW(
+                net.parameters(), lr=tx_config.lr, weight_decay=weight_decay
+            )
+        case torch.optim.Adagrad:
+            return torch.optim.Adagrad(
+                net.parameters(), lr=tx_config.lr, weight_decay=weight_decay
+            )
+        case _:
+            raise ValueError("Update `get_optimizer` or use available optimizers.")
+
+
+class LogisticRegressionClassifier(nn.Module):
+    def __init__(self, input_dim: int, device: torch.device):
+        super().__init__()
+        self.linear = nn.Linear(input_dim, 1, bias=True).to(device)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.linear(x).squeeze(-1)
+
+
+def train_logistic_regression(
+    train_features: torch.Tensor,
+    train_labels: torch.Tensor,
+    classifier_config: ClassifierConfig,
+    device: torch.device | None = None,
+) -> LogisticRegressionClassifier:
+    if device is None:
+        device = train_features.device
+
+    input_dim = train_features.shape[1]
+    classifier = LogisticRegressionClassifier(input_dim, device)
+    classifier.train()
+
+
+    criterion = getattr(torch.nn, classifier_config.loss_fn)()
+    tx_config = classifier_config.tx
+
+    if tx_config.fn is not None:
+        optimizer = get_optimizer(classifier, tx_config)
+    else:
+        optimizer = torch.optim.AdamW(
+            [
+                {
+                    "params": classifier.linear.weight,
+                    "lr": tx_config.lr,
+                    "weight_decay": tx_config.weight_decay,
+                },
+                {
+                    "params": classifier.linear.bias,
+                    "lr": tx_config.lr,
+                    "weight_decay": 0.0,
+                },
+            ],
+            lr=tx_config.lr,  # Default lr (can be overridden per parameter group)
+        )
+
+    for epoch in range(classifier_config.num_epoch):
+        optimizer.zero_grad()
+        logits = classifier(train_features)
+        loss = criterion(logits, train_labels)
+        loss.backward()
+        optimizer.step()
+
+    classifier.eval()
+    return classifier

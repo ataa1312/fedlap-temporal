@@ -21,6 +21,7 @@ from src.utils.plot_graph import plot_graph
 from torch_geometric.utils import degree, scatter, add_self_loops, remove_self_loops
 from src.utils.config_parser import Config
 
+DatasetName = Literal["custom-enron", "custom-uci"]
 LinkFeatureOperator = Literal["hadamard", "dot-product", "concat"]
 DownstreamTask = Literal["node-classification", "edge-prediction"]
 

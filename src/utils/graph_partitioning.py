@@ -106,8 +106,10 @@ def create_subgraphs(
             node_ids = subgraph_nodes
         assert graph.original_edge_index is not None
         edges = graph.original_edge_index
+        attrs = graph.edge_attr
         edge_mask = edges.unsqueeze(2).eq(node_ids).any(2).any(0)
         edge_index = edges[:, edge_mask]
+        edge_attr = attrs[edge_mask]
 
         all_nodes = torch.unique(edge_index.flatten())
         external_nodes = all_nodes[~all_nodes.unsqueeze(1).eq(node_ids).any(1)]
@@ -115,10 +117,14 @@ def create_subgraphs(
         if edge_index.shape[1] != 0:
             inter_edge_mask = edge_index.unsqueeze(2).eq(external_nodes).any(2).any(0)
             inter_edges = edge_index[:, inter_edge_mask]
+            inter_edge_attr = edge_attr[inter_edge_mask]
             intra_edges = edge_index[:, ~inter_edge_mask]
+            intra_edge_attr = edge_attr[~inter_edge_mask]
         else:
             intra_edges = edge_index
             inter_edges = edge_index
+            intra_edge_attr = edge_attr
+            inter_edge_attr = edge_attr
 
         # all_edges = torch.cat((intra_edges, inter_edges), dim=0)
 
@@ -161,9 +167,11 @@ def create_subgraphs(
             x=x,
             y=y,
             edge_index=intra_edges,
+            edge_attr=intra_edge_attr,
             node_ids=sorted_node_ids,
             external_nodes=external_nodes,
             inter_edges=inter_edges,
+            inter_edge_attr=inter_edge_attr,
             train_mask=train_mask,
             test_mask=test_mask,
             val_mask=val_mask,
@@ -172,26 +180,26 @@ def create_subgraphs(
 
         # Split edges for edge prediction if requested
         # This ensures each subgraph has its own train/val/test edge splits
-        if (
-            split_edges_kwargs.get("split_edges_for_edge_prediction", None)
-            and intra_edges.shape[1] > 0
-        ):
-            # Use default values if not provided
-            val_ratio = split_edges_kwargs.get("val_ratio", 0.15)
-            test_ratio = split_edges_kwargs.get("test_ratio", 0.15)
-            is_undirected = split_edges_kwargs.get("is_undirected", True)
-            add_negative_train_samples = split_edges_kwargs.get(
-                "add_negative_train_samples", True
-            )
-            negative_ratio = split_edges_kwargs.get("negative_ratio", 1.0)
+        # if (
+        #     split_edges_kwargs.get("split_edges_for_edge_prediction", None)
+        #     and intra_edges.shape[1] > 0
+        # ):
+        #     # Use default values if not provided
+        #     val_ratio = split_edges_kwargs.get("val_ratio", 0.15)
+        #     test_ratio = split_edges_kwargs.get("test_ratio", 0.15)
+        #     is_undirected = split_edges_kwargs.get("is_undirected", True)
+        #     add_negative_train_samples = split_edges_kwargs.get(
+        #         "add_negative_train_samples", True
+        #     )
+        #     negative_ratio = split_edges_kwargs.get("negative_ratio", 1.0)
 
-            subgraph_.split_edges(
-                val_ratio=val_ratio,
-                test_ratio=test_ratio,
-                is_undirected=is_undirected,
-                add_negative_train_samples=add_negative_train_samples,
-                negative_ratio=negative_ratio,
-            )
+        #     subgraph_.split_edges(
+        #         val_ratio=val_ratio,
+        #         test_ratio=test_ratio,
+        #         is_undirected=is_undirected,
+        #         add_negative_train_samples=add_negative_train_samples,
+        #         negative_ratio=negative_ratio,
+        #     )
 
         subgraphs.append(subgraph_)
 

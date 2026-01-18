@@ -15,7 +15,8 @@ from src.GNN.laplace import (
 )
 from src.utils.graph import Graph, AGraph
 from src.GNN.temporal import TemporalBlock
-from torch_geometric.loader import NeighborLoader
+from src.utils.define_graph import get_degrees
+from src.utils.config_parser import TrainModelConfig
 
 
 class FedMixin:
@@ -305,12 +306,15 @@ class FedLanczosLaplaceEdgeClassifier(FedEdgeClassifier):
 
 # Dynamic/Temporal Classifiers with temporal encoder support
 class FedDynamicClassifier(FedClassifier):
-    def __init__(self, fgraph: Graph, sgraph: Graph, num_ss: int):
+    def __init__(
+        self, fgraph: Graph, sgraph: Graph, num_ss: int, model_config: TrainModelConfig
+    ):
         super().__init__(fgraph, sgraph)
         embed_dim = config.feature_model.gnn_layer_sizes[-1]
         assert num_ss is not None
+        self.model_config = model_config
         self.tmodel: TemporalBlock | None = None
-        self.create_tmodel(embed_dim=embed_dim, num_snapshots=num_ss)
+        self.create_tmodel(edim=embed_dim, num_snapshots=num_ss)
         self.stored_sfvs_grad: dict[int, torch.Tensor] = {
             ss_idx: torch.zeros(
                 config.spectral.spectral_len,
@@ -325,19 +329,13 @@ class FedDynamicClassifier(FedClassifier):
         if isinstance(fgraph, Graph):
             self.fmodel = NewFGNN(fgraph)
 
-    def create_tmodel(
-        self,
-        embed_dim: int,
-        num_snapshots: int,
-        num_temporal_layers: int = 1,
-        num_temporal_heads: int = 16,
-        temporal_dropout: float = 0.5,
-    ):
+    def create_tmodel(self, edim: int, num_snapshots: int):
+        assert edim == self.model_config.temporal.input_dimension
         self.tmodel = TemporalBlock(
-            edim=embed_dim,
-            num_layers=num_temporal_layers,
-            num_heads=num_temporal_heads,
-            dropout=temporal_dropout,
+            edim=edim,
+            num_layers=self.model_config.temporal.num_attention_layers,
+            heads=self.model_config.temporal.attention_heads,
+            dropout=self.model_config.temporal.dropout,
             num_ss=num_snapshots,
         ).to(device)
 
@@ -462,7 +460,7 @@ class FedDynamicClassifier(FedClassifier):
         self,
         edge_index: torch.Tensor,
         embeddings: torch.Tensor,
-        operator: LinkFeatureOperator="hadamard",
+        operator: LinkFeatureOperator = "hadamard",
     ) -> np.ndarray:
         match operator:
             case "hadamard":
@@ -483,9 +481,12 @@ class FedDynamicClassifier(FedClassifier):
         temporal_embeddings: torch.Tensor,
         context_pairs: dict[int, list[int]],
         snapshot_idx: int,
+        edge_index: torch.Tensor,
         neg_sample_size: int = 10,
         neg_weight: float = 1.0,
         batch_size: int = 512,
+        neg_sampling_distortion: float = 0.75,
+        neg_sampling_retries: int = 5,
     ):
         z = temporal_embeddings
         context_dict = context_pairs
@@ -495,79 +496,88 @@ class FedDynamicClassifier(FedClassifier):
             return torch.tensor(0.0, device=z.device, requires_grad=True)
 
         criterion = torch.nn.BCEWithLogitsLoss()
+
+        # Compute degree-based unigram distribution for negative sampling
+        num_nodes_total = z.shape[0]
+        degrees = get_degrees(edge_index, None, num_nodes_total, device, "both")
+        unigram_probs = torch.pow(degrees + 1e-8, neg_sampling_distortion)
+        unigram_probs = unigram_probs / unigram_probs.sum()
+
         num_nodes = len(nodes_with_pairs)
         num_batches = (num_nodes + batch_size - 1) // batch_size
         step_losses = []
+        sample_size_tensor = torch.tensor(neg_sample_size, device=device)
 
         for batch_idx in range(num_batches):
             start_idx = batch_idx * batch_size
             end_idx = min(start_idx + batch_size, num_nodes)
             batch_nodes = nodes_with_pairs[start_idx:end_idx]
 
-            node_1_list = []
-            node_2_list = []
+            context_lengths = torch.tensor(
+                [len(context_dict[node]) for node in batch_nodes],
+                dtype=torch.long,
+                device=device,
+            )
+            actual_sample_sizes = torch.minimum(context_lengths, sample_size_tensor)
+            total_pairs = int(actual_sample_sizes.sum().item())
 
-            for node in batch_nodes:
-                contexts = context_dict[node]
-                if len(contexts) > neg_sample_size:
-                    sampled_contexts = np.random.choice(
-                        contexts, neg_sample_size, replace=False
-                    ).tolist()
-                else:
-                    sampled_contexts = contexts
-
-                node_1_list.append(
-                    torch.full(
-                        (len(sampled_contexts),),
-                        node,
-                        dtype=torch.long,
-                        device=z.device,
-                    )
-                )
-                node_2_list.append(
-                    torch.tensor(sampled_contexts, dtype=torch.long, device=z.device)
-                )
-
-            if len(node_1_list) == 0:
+            if total_pairs == 0:
                 continue
 
-            node_1 = torch.cat(node_1_list)
-            node_2 = torch.cat(node_2_list)
+            src_nodes = torch.zeros(total_pairs, dtype=torch.long, device=device)
+            tgt_nodes = torch.zeros(total_pairs, dtype=torch.long, device=device)
 
-            pos_emb_1 = z[node_1]
-            pos_emb_2 = z[node_2]
-            pos_scores = (pos_emb_1 * pos_emb_2).sum(dim=-1)
-
-            num_pos = len(node_1)
-            all_nodes = torch.arange(z.shape[0], device=z.device)
-
-            neg_nodes_list = []
-            for i in range(num_pos):
-                pos_context = node_2[i].item()
-                candidates = all_nodes[all_nodes != pos_context]
-                if len(candidates) < neg_sample_size:
-                    neg_samples = torch.randint(
-                        0, z.shape[0], (neg_sample_size,), device=z.device
+            offset = 0
+            for i, node in enumerate(batch_nodes):
+                contexts = context_dict[node]
+                num_samples = actual_sample_sizes[i].item()
+                if len(contexts) > num_samples:
+                    context_tensor = torch.tensor(
+                        contexts, dtype=torch.long, device=device
                     )
-                else:
-                    neg_samples = candidates[
-                        torch.randperm(len(candidates), device=z.device)[
-                            :neg_sample_size
-                        ]
+                    sampled_indices = torch.randperm(len(contexts), device=device)[
+                        :num_samples
                     ]
-                neg_nodes_list.append(neg_samples)
+                    sampled_contexts = context_tensor[sampled_indices]
+                else:
+                    sampled_contexts = torch.tensor(
+                        contexts, dtype=torch.long, device=device
+                    )
+                src_nodes[offset : offset + num_samples] = node
+                tgt_nodes[offset : offset + num_samples] = sampled_contexts
+                offset += num_samples
 
-            neg_nodes = torch.stack(neg_nodes_list)
-            neg_emb = z[neg_nodes]
-            neg_scores = -(pos_emb_1.unsqueeze(1) * neg_emb).sum(dim=-1)
+            pos_src_emb = z[src_nodes]
+            pos_tgt_emb = z[tgt_nodes]
+            pos_scores = (pos_src_emb * pos_tgt_emb).sum(dim=-1)
 
             pos_labels = torch.ones_like(pos_scores)
             pos_loss = criterion(pos_scores, pos_labels)
 
+            num_pos = len(src_nodes)
+            neg_nodes = torch.multinomial(
+                unigram_probs, num_pos * neg_sample_size, replacement=True
+            ).view(num_pos, neg_sample_size)
+            tgt_expanded = tgt_nodes.view(-1, 1)
+            for _ in range(neg_sampling_retries):
+                mask = neg_nodes == tgt_expanded
+                if not mask.any():
+                    break
+                resample = torch.multinomial(
+                    unigram_probs, int(mask.sum().item()), replacement=True
+                )
+                neg_nodes[mask] = resample
+            mask = neg_nodes == tgt_expanded
+            if mask.any():
+                fallback = (tgt_expanded + 1) % z.shape[0]
+                neg_nodes = torch.where(mask, fallback, neg_nodes)
+
+            neg_emb = z[neg_nodes]
+            neg_scores = (-1.0) * (pos_src_emb.unsqueeze(1) * neg_emb).sum(dim=-1)
             neg_labels = torch.ones_like(neg_scores)
             neg_loss = criterion(neg_scores, neg_labels)
+            batch_loss = pos_loss.mean() + neg_weight * neg_loss.mean()
 
-            batch_loss = pos_loss + neg_weight * neg_loss
             step_losses.append(batch_loss)
 
         if len(step_losses) == 0:

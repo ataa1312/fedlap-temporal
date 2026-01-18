@@ -75,7 +75,7 @@ class NewFGNN(FGNN):
         self.model.to(device)
 
     def get_embeddings(self):
-        H = self.model(self.graph.x, self.graph.message_passing_edge_index)  # pyright: ignore
+        H = self.model(self.graph.x, self.graph.edge_index)  # pyright: ignore
         return H
 
 
