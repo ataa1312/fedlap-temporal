@@ -4,7 +4,7 @@ from copy import deepcopy
 from src import *
 from src.server import Server
 from src.utils.graph import Graph
-from src.GNN.GNN_client import GNNClient
+from src.GNN.GNN_client import GNNClient, SpectralFeatures
 from src.utils.define_graph import graph_to_pygdata
 from src.utils.config_parser import EvaluationConfig, RandomWalkConfig
 from src.utils.graph_partitioning import create_subgraphs
@@ -201,11 +201,6 @@ class GNNServer(Server, GNNClient):
         q: float,
         log: bool,
     ):
-        if log:
-            LOGGER.info(
-                f"Generating context pairs for snapshot {snapshot_idx} on all clients..."
-            )
-
         for client in self.clients:
             client.store_context_pairs(
                 snapshot_idx=snapshot_idx,
@@ -349,12 +344,6 @@ class GNNServer(Server, GNNClient):
             for client in self.clients:
                 client.update_spectral_features(share)
 
-        if log:
-            LOGGER.info(
-                f"Snapshot updated: {len(self.clients)} clients, "
-                f"{snapshot.num_nodes} nodes, {snapshot.num_edges} edges"
-            )
-
         if ss_idx == num_ss - 1 and self.eval_train_snapshot is None:
             self.eval_train_snapshot = graph_to_pygdata(self.graph)
             for client in self.clients:
@@ -390,9 +379,6 @@ class GNNServer(Server, GNNClient):
         batch_size: int,
         log: bool,
     ):
-        if log:
-            LOGGER.info("Training temporal models on all clients...")
-
         total_loss: float = 0.0
         num_clients_with_loss = 0
         client_losses = {}  # Store individual client losses
