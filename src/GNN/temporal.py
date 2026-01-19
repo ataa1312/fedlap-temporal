@@ -38,6 +38,12 @@ class TemporalAttentionLayer(nn.Module):
         init.xavier_uniform_(self.k_proj.weight)
         init.xavier_uniform_(self.v_proj.weight)
 
+    def reset_parameters(self) -> None:
+        """Reset all learnable parameters using Xavier uniform initialization."""
+        init.xavier_uniform_(self.q_proj.weight)
+        init.xavier_uniform_(self.k_proj.weight)
+        init.xavier_uniform_(self.v_proj.weight)
+
     def forward(
         self, x: torch.Tensor, attn_mask: torch.Tensor | None = None
     ) -> torch.Tensor:
@@ -141,6 +147,20 @@ class TemporalBlock(nn.Module):
         self.heads = heads
         self.dropout = dropout
         self.num_ss = num_ss
+
+    def reset_parameters(self) -> None:
+        init.xavier_uniform_(self.pos_emb.weight)
+        for attn_layer in self.attn_layers:
+            attn_layer.reset_parameters()
+        for ff in self.feedforward:
+            for layer in ff:
+                if isinstance(layer, nn.Linear):
+                    if hasattr(layer, "reset_parameters"):
+                        layer.reset_parameters()
+                    else:
+                        init.xavier_uniform_(layer.weight)
+                        if layer.bias is not None:
+                            init.zeros_(layer.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # [N, T, F] where N=num_nodes, T=num_snapshots, F=embed_dim
