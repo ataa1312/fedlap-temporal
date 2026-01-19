@@ -1,15 +1,16 @@
 seed: 1234
 experiment: 0
-num_runs: 10
+num_runs: 3
+downstream_task: "edge-prediction"
 dataset:
   dataset_name: custom-uci
   multi_label: False
   is_directed: False
   shape: null # Set at runtime
   num_classes: null # Set at runtime
-  normalize: False
+  normalize: True
 subgraph:
-  num_subgraphs: 5
+  num_subgraphs: 3
   delta: 20
   train_ratio: 0.1
   test_ratio: 0.8
@@ -21,21 +22,22 @@ model:
   batch: False
   batch_size: 64
   local_epochs: 1
-  lr: 0.005
+  lr: 0.001
   weight_decay: 0.0005
-  dropout: 0.75
-  gnn_layer_type: sage
+  dropout: 0.1
+  gnn_layer_type: custom-gat
   smodel_type: LanczosLaplace # GNN, DGCN, CentralDGCN, Laplace, LanczosLaplace, SpectralLaplace, SpectralDGCN, LanczosDGCN
   fmodel_type: GNN #, DGCN, same
   iterations: 200
   metric: auc
 feature_model:
   gnn_layer_sizes: [256, 128]
+  heads: [32, 16]
   DGCN_layer_sizes: [64]
   mlp_layer_sizes: [256]
   DGCN_layers: 2
 structure_model:
-  GNN_structure_layers_sizes: [128, 64, 32]
+  GNN_structure_layers_sizes: []
   DGCN_structure_layers_size: [128]
   DGCN_layers: 10
   # structure_type: degree
@@ -58,6 +60,7 @@ spectral:
   regularizer_coef: 0
   matrix: "lap" # adj lap inc
   decompose: "eigh" # svd eigh
+  update_mode: "recompute"
 node2vec:
   epochs: 50
   walk_length: 20
@@ -104,8 +107,8 @@ dynamic:
     structural:
       input_dimension: null # Set at runtime
       output_dimension: 128
-      layer_dimensions: []
-      attention_heads: [16]
+      layer_dimensions: [256]
+      attention_heads: [32, 16]
       dropout: 0.1
       residual: False
     temporal:
@@ -117,7 +120,7 @@ dynamic:
       use_feedforward: True
   loss_fn: BCEWithLogitsLoss
   min_snapshot: 2
-  max_snapshot: 13 # UCI has 13 snapshots
+  max_snapshot: 12 # UCI has 13 snapshots
   random_walk:
     num: 10
     length: 40

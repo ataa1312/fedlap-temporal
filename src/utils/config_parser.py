@@ -9,6 +9,7 @@ class Config:
         self.seed = self.config.get("seed", 1234)
         self.experiment = self.config.get("experiment", 0)
         self.num_runs = self.config.get("num_runs", 10)
+        self.downstream_task = self.config.get("downstream_tasl", "edge-prediction")
 
         # Existing configs
         self.dataset = DatasetConfig(self.config["dataset"])
@@ -86,6 +87,7 @@ class FeatureModelConfig:
     def load_config(self, feature_model):
         self.gnn_layer_sizes = feature_model["gnn_layer_sizes"]
         self.mlp_layer_sizes = feature_model["mlp_layer_sizes"]
+        self.heads = feature_model["heads"]
         self.DGCN_layer_sizes = feature_model["DGCN_layer_sizes"]
         self.DGCN_layers = feature_model["DGCN_layers"]
 
@@ -119,6 +121,7 @@ class SpectralConfig:
         self.regularizer_coef = spectral_model["regularizer_coef"]
         self.matrix = spectral_model["matrix"]
         self.decompose = spectral_model["decompose"]
+        self.update_mode = spectral_model["update_mode"]
 
 
 class Node2VecConfig:
@@ -193,8 +196,8 @@ class ModelStructuralConfig:
     def load_config(self, structural):
         self.input_dimension = structural.get("input_dimension", None)
         self.output_dimension = structural.get("output_dimension", 128)
-        self.layer_dimensions = structural.get("layer_dimensions", [])
-        self.attention_heads = structural.get("attention_heads", [16])
+        self.layer_dimensions = structural.get("layer_dimensions", [256])
+        self.attention_heads = structural.get("attention_heads", [32, 16])
         self.dropout = structural.get("dropout", 0.1)
         self.residual = structural.get("residual", False)
 
