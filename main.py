@@ -1,12 +1,17 @@
 import os
 import json
+import random
 from typing import cast
 from pathlib import Path
+from datetime import datetime
+
+import numpy as np
+import torch
+import wandb
 
 curr_path = Path(__file__).parent.resolve()
 os.chdir(curr_path)
 
-import wandb
 from src import *
 from src.GNN.GNN_server import GNNServer
 from src.MLP.MLP_server import MLPServer
@@ -28,33 +33,33 @@ from src.utils.graph_partitioning import (
 )
 
 
-def main():
-    downstream_task: DownstreamTask = "edge-prediction"
+def get_group_name(config) -> str:
+    """Generate a meaningful group name for grouping multiple runs of the same experiment."""
+    name = ""
+    name += f"{config.dataset.dataset_name}|"
+    name += f"{config.model.smodel_type}-{config.model.fmodel_type}|"
+    name += f"{config.spectral.update_mode}|"
+    name += f"C{config.subgraph.num_subgraphs}|"
+    name += f"T{config.dynamic.min_snapshot}-{config.dynamic.max_snapshot}|"
+    name += datetime.now().strftime("%Y%m%d%H%M%S")
+    return name
+
+
+def get_run_name(config, run_idx: int) -> str:
+    """Generate a descriptive run name from config parameters."""
+    name = ""
+    name += f"{config.dataset.dataset_name}|"
+    name += f"{config.model.smodel_type}-{config.model.fmodel_type}|"
+    name += f"{config.spectral.update_mode}|"
+    name += f"C{config.subgraph.num_subgraphs}|"
+    name += f"T{config.dynamic.min_snapshot}-{config.dynamic.max_snapshot}|"
+    name += f"Run-{run_idx}"
+    return name
+
+
+def main(run: wandb.Run):
     detach_embeddings = False  # Keep gradients for backprop
     log = True
-
-    if log:
-        LOGGER.info(
-            f"Starting DySAT-style temporal training: {config.dynamic.evaluation.classifier.num_epoch} epochs per T, "
-            f"T from {config.dynamic.min_snapshot} to {config.dynamic.max_snapshot}"
-        )
-
-    # Initialize wandb
-    # wandb.init(
-    #     project=config.wandb.project,
-    #     name=config.wandb.name or f"fedlap-T{config.dynamic.min_snapshot}-{config.dynamic.max_snapshot}-epochs{config.dynamic.evaluation.classifier.num_epoch}",
-    #     group=config.wandb.group,
-    #     job_type=config.wandb.job_type,
-    #     config={
-    #         "min_T": config.dynamic.min_snapshot,
-    #         "max_T": config.dynamic.max_snapshot,
-    #         "num_epochs": config.dynamic.evaluation.classifier.num_epoch,
-    #         "dataset": config.dataset.dataset_name,
-    #         "num_clients": config.subgraph.num_subgraphs,
-    #         "downstream_task": downstream_task,
-    #     },
-    #     mode=config.wandb.mode,
-    # )
 
     data_path = curr_path / "datasets" / config.dataset.dataset_name
     graphs_and_features = load_dataset(config.dataset.dataset_name, data_path)
@@ -89,7 +94,8 @@ def main():
         # coef = [client.num_nodes() / num_nodes for client in gnn_server.clients]
 
         for epoch in range(config.model.iterations):
-            LOGGER.info( f"Epoch {epoch + 1}/{config.model.iterations}")
+            LOGGER.info(f"Epoch {epoch + 1}/{config.model.iterations}")
+
 
             if epoch > 0:
                 gnn_server.clear_all_stored_embeddings()
@@ -105,13 +111,13 @@ def main():
                     smodel_type=config.model.smodel_type,
                     fmodel_type=config.model.fmodel_type,
                     data_type="f+s",
-                    downstream_task=downstream_task,
+                    downstream_task=config.downstream_task,
                     spectral_len=config.spectral.spectral_len,
-                    spectral_update_mode="recompute",
+                    spectral_update_mode=config.spectral.update_mode,
                     subgraph_node_ids=subgraph_node_ids,
                     log=log,
-                    # **train_split_edges_kwargs,
-                )
+
+                )   
 
                 LOGGER.info(f"Encoding embeddings for snapshot #{ss_idx + 1}...")
                 gnn_server.store_snapshot_embeddings(
@@ -127,14 +133,6 @@ def main():
                 log=log,
             )
 
-            log_dict = {
-                f"tdx{tdx}/epoch": epoch + 1,
-                f"tdx{tdx}/server/train_loss": avg_loss,
-            }
-
-            for client_id, loss in client_losses.items():
-                log_dict[f"tdx{tdx}/client_{client_id}/train_loss"] = loss
-
             should_eval = (
                 (epoch % config.dynamic.evaluation.eval_freq == 0)
                 or (
@@ -144,16 +142,12 @@ def main():
                 or (epoch == 0 and config.dynamic.evaluation.first_epoch)
             )
 
-            if should_eval:
-                # test_split_edges_kwargs = {
-                #     "split_edges_for_edge_prediction": True,
-                #     "val_ratio": 0.2,  # Default, could be from config.dynamic.evaluation.data.num_val if available
-                #     "test_ratio": 0.6,  # Default, could be from config.dynamic.evaluation.data.num_test if available
-                #     "is_undirected": not config.dataset.is_directed,
-                #     "add_negative_train_samples": True,  # Default
-                #     "negative_ratio": 1.0,  # Default
-                # }
+            # Initialize AUC dictionaries to avoid NameError when should_eval is False
+            client_train_aucs = {}
+            client_val_aucs = {}
+            client_test_aucs = {}
 
+            if should_eval:
                 gnn_server.load_test_snapshot(
                     test_graph,
                     subgraph_node_ids,
@@ -172,71 +166,67 @@ def main():
                     eval_config=config.dynamic.evaluation
                 )
 
-                # # Log server (average) metrics
-                # log_dict.update(
-                #     {
-                #         f"tdx{tdx}/server/train_auc": avg_train_auc,
-                #         f"tdx{tdx}/server/val_auc": avg_val_auc,
-                #         f"tdx{tdx}/server/test_auc": avg_test_auc,
-                #     }
-                # )
+                if avg_val_auc > best_val_auc:
+                    best_train_auc = avg_train_auc
+                    best_val_auc = avg_val_auc
+                    best_test_auc = avg_test_auc
 
-                # Log individual client metrics
-                # for client_id in client_train_aucs.keys():
-                #     log_dict[f"tdx{tdx}/client_{client_id}/train_auc"] = (
-                #         client_train_aucs[client_id]
-                #     )
-                #     log_dict[f"tdx{tdx}/client_{client_id}/val_auc"] = client_val_aucs[
-                #         client_id
-                #     ]
-                #     log_dict[f"tdx{tdx}/client_{client_id}/test_auc"] = (
-                #         client_test_aucs[client_id]
-                #     )
+            if client_train_aucs:
+                log_dict = dict[str, torch.Tensor]()
+                for cid in client_train_aucs.keys():
+                    log_dict[f"tdx{tdx:02}/client_{cid:02}/train_loss"] = client_losses[cid]
+                    log_dict[f"tdx{tdx:02}/client_{cid:02}/train_auc"] = client_train_aucs[
+                        cid
+                    ]
+                    log_dict[f"tdx{tdx:02}/client_{cid:02}/val_auc"] = client_val_aucs[cid]
+                    log_dict[f"tdx{tdx:02}/client_{cid:02}/test_auc"] = client_test_aucs[
+                        cid
+                    ]
+                run.log(log_dict)
 
-                # Log to wandb
-                # wandb.log(log_dict, step=epoch + 1)
-
-                # Only update test AUC when validation AUC improves
-                # if avg_val_auc > best_val_auc:
-                #     best_val_auc = avg_val_auc
-                #     best_test_auc = avg_test_auc
-                #     if log:
-                #         LOGGER.info(
-                #             f"New best validation AUC: {best_val_auc:.4f} "
-                #             f"(test AUC: {best_test_auc:.4f})"
-                #         )
-            else:
-                wandb.log(log_dict, step=epoch + 1)
-
-            if log:
-                LOGGER.info(
-                    f"Best validation AUC: {best_val_auc:.4f}, "
-                    f"test AUC: {best_test_auc:.4f}"
-                )
+        run.log(
+            {
+                "tdx": tdx,
+                "server/loss": avg_loss,
+                "server/train_auc": best_train_auc,
+                "server/val_auc": best_val_auc,
+                "server/test_auc": best_test_auc,
+            },
+        )
 
         if log:
-            train_indices = list(range(tdx))
             LOGGER.info(
-                f"Completed tdx={tdx}: trained on {train_indices} snapshots, tested on snapshot {tdx}"
+                f"Best train AUC: {best_train_auc:.4f}, "
+                f"Best validation AUC: {best_val_auc:.4f}, "
+                f"Best test AUC: {best_test_auc:.4f}"
             )
 
 
 if __name__ == "__main__":
-    main()
+    wandb.login()
 
-    # train_split_edges_kwargs = {
-    #     "split_edges_for_edge_prediction": True,
-    #     "val_ratio": 0.00,
-    #     "test_ratio": 0.00,
-    #     "is_undirected": True,
-    #     "add_negative_train_samples": True,
-    #     "negative_ratio": 1.0,
-    # }
-    # test_split_edges_kwargs = {
-    #     "split_edges_for_edge_prediction": True,
-    #     "val_ratio": 0.10,
-    #     "test_ratio": 0.10,
-    #     "is_undirected": True,
-    #     "add_negative_train_samples": True,
-    #     "negative_ratio": 1.0,
-    # }
+    config.wandb.group = get_group_name(config)
+    base_seed = config.seed
+    for rdx in range(config.num_runs):
+        LOGGER.info(f"Starting run #{rdx + 1}/{config.num_runs}")
+        config.seed = base_seed + 100 * rdx
+        random.seed(config.seed)
+        np.random.seed(config.seed)
+        torch.manual_seed(config.seed)
+
+        config.wandb.name = get_run_name(config, rdx)
+
+        wandb_run = wandb.init(
+            project=config.wandb.project,
+            name=config.wandb.name,
+            config=config.config,
+            group=config.wandb.group,
+            job_type=config.wandb.job_type,
+            mode=config.wandb.mode,
+            save_code=True,
+        )
+
+        try:
+            main(wandb_run)
+        finally:
+            wandb_run.finish()
