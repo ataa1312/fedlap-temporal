@@ -220,19 +220,29 @@ class GNNServer(Server, GNNClient):
         for client in self.clients:
             client.clear_stored_context_pairs()
 
-    def get_previous_UD(self, spectral_update_mode: str):
+    def get_previous_UD(self, spectral_update_mode: str, ss_idx: int):
         prev_D, prev_U = None, None
-        if (
-            spectral_update_mode in ["keep", "update"]
-            and is_attr_good(self.classifier.smodel, "Q")  # pyright: ignore
-            and is_attr_good(self.classifier.smodel, "D")  # pyright: ignore
-        ):
-            prev_D, prev_U = self.classifier.smodel.D, self.classifier.smodel.Q  # pyright: ignore
+        # if (
+        #     spectral_update_mode in ["keep", "update"]
+        #     and is_attr_good(self.classifier.smodel, "Q")  # pyright: ignore
+        #     and is_attr_good(self.classifier.smodel, "D")  # pyright: ignore
+        # ):
+        # prev_D, prev_U = self.classifier.smodel.D, self.classifier.smodel.Q  # pyright: ignore
+
+        if spectral_update_mode in ["keep", "update"]:
+            if len(self.stored_spectrals) > 0:
+                first_spectrals = min(self.stored_spectrals.keys())
+                stored_spectral = self.stored_spectrals[first_spectrals]
+                prev_D, prev_U = stored_spectral.D, stored_spectral.U
+        else:
+            if ss_idx in self.stored_spectrals:
+                stored_spectral = self.stored_spectrals[ss_idx]
+                prev_D, prev_U = stored_spectral.D, stored_spectral.U
 
         return prev_D, prev_U
 
-    def compute_spectral_features(
-        self, smodel_type, spectral_len, spectral_update_mode, prev_U, prev_D, log
+    def get_spectral_features(
+        self, smodel_type, ss_idx, spectral_len, spectral_update_mode, prev_U, prev_D
     ):
         share = {}
         num_spectral_features = None
@@ -243,25 +253,27 @@ class GNNServer(Server, GNNClient):
                 and prev_U is not None
                 and prev_D is not None
             ):
-                if log:
-                    LOGGER.info("Keeping previous eigenvectors U and eigenvalues D...")
-                D, U = prev_U, prev_D
+                LOGGER.info("Keeping previous eigenvectors U and eigenvalues D...")
+                D, U = prev_D, prev_U
             elif (
                 spectral_update_mode == "update"
                 and prev_U is not None
                 and prev_D is not None
             ):
-                if log:
-                    LOGGER.info("Updating spectral features...")
+                LOGGER.info("Updating spectral features...")
                 raise NotImplementedError()
             else:
-                if log:
-                    LOGGER.info("Recomputing spectral features...")
-                D, U = self.graph.calc_eignvalues(
-                    estimate=not (smodel_type.startswith("Spectral")),
-                    spectral_len=spectral_len,
-                    log=False,
-                )
+                if ss_idx not in self.stored_spectrals:
+                    LOGGER.info("Computing spectral features...")
+                    D, U = self.graph.calc_eignvalues(
+                        estimate=not (smodel_type.startswith("Spectral")),
+                        spectral_len=spectral_len,
+                        log=False,
+                    )
+                    self.stored_spectrals[ss_idx] = SpectralFeatures(U=U, D=D)
+                else:
+                    stored_spectral = self.stored_spectrals[ss_idx]
+                    D, U = stored_spectral.D, stored_spectral.U
 
             share["D"] = D
             share["U"] = U
@@ -305,22 +317,18 @@ class GNNServer(Server, GNNClient):
         spectral_update_mode="recompute",
         subgraph_node_ids: dict | None = None,
         log=True,
-        **split_edges_kwargs,
     ):
-        if log:
-            LOGGER.info("Updating system with new snapshot...")
-
         self.update_graph(snapshot, ss_idx)
-        prev_D, prev_U = self.get_previous_UD(spectral_update_mode)
+        prev_D, prev_U = self.get_previous_UD(spectral_update_mode, ss_idx)
 
         if data_type in ["structure", "f+s"]:
-            share, _ = self.compute_spectral_features(
-                smodel_type, spectral_len, spectral_update_mode, prev_U, prev_D, log
+            share, _ = self.get_spectral_features(
+                smodel_type, ss_idx, spectral_len, spectral_update_mode, prev_U, prev_D
             )
 
         # INFO: Check if clients and classifier need initialization
         assert isinstance(subgraph_node_ids, dict)
-        subgraphs = create_subgraphs(snapshot, subgraph_node_ids, **split_edges_kwargs)
+        subgraphs = create_subgraphs(snapshot, subgraph_node_ids)
 
         needs_initialization = len(self.clients) == 0 or self.classifier is None
         if needs_initialization:
