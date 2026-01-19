@@ -295,7 +295,7 @@ def build_training_graphs(
 
     train_graphs.append(modified_graph)
     converted_train_graphs: list[Graph] = [
-        pygdata_to_graph(pyggraph) for pyggraph in train_graphs
+        pygdata_to_graph(pyggraph.to(device=device)) for pyggraph in train_graphs
     ]
 
     test_graph = cleaned_graphs[tdx].clone()
@@ -309,7 +309,7 @@ def build_training_graphs(
     #     num_old_nodes,  # pyright:ignore
     # )
 
-    converted_test_graph = pygdata_to_graph(test_graph)
+    converted_test_graph = pygdata_to_graph(test_graph.to(device=device))
 
     return converted_train_graphs, converted_test_graph
 

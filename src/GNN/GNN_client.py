@@ -367,8 +367,10 @@ class GNNClient(Client):
             return
 
         if "U" in share and "D" in share:
-            D_client = share["D"]
-            U_client = share["U"][self.graph.node_ids]
+            graph_device = self.graph.node_ids.device
+            D_client = share["D"].to(graph_device)
+            U = share["U"].to(graph_device)
+            U_client = U[self.graph.node_ids]
             self.classifier.smodel.set_QD(U_client, D_client)  # pyright: ignore
 
     def initialize_sfvs(self, num_ss: int):

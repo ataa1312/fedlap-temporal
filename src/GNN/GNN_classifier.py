@@ -319,7 +319,7 @@ class FedDynamicClassifier(FedClassifier):
             ss_idx: torch.zeros(
                 config.spectral.spectral_len,
                 config.structure_model.num_structural_features,
-            )
+            ).to(device=device)
             for ss_idx in range(num_ss)
         }
 
@@ -427,7 +427,7 @@ class FedDynamicClassifier(FedClassifier):
             ss_idx: torch.zeros(
                 config.spectral.spectral_len,
                 config.structure_model.num_structural_features,
-            )
+            ).to(device=device)
             for ss_idx in range(num_ss)
         }
 
