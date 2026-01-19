@@ -1,6 +1,11 @@
+import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from src.GNN.custom_gat import CustomGAT, MultiHeadCustomGAT
 from torch_geometric.nn import GATConv, GCNConv, SAGEConv, MessagePassing
 from torch_geometric.utils import add_self_loops
+from torch_geometric.typing import Adj, OptTensor
+from src.utils.config_parser import TrainModelConfig
 
 
 class GNN(nn.Module):
@@ -9,6 +14,7 @@ class GNN(nn.Module):
     def __init__(
         self,
         layer_sizes,
+        heads,
         last_layer="linear",
         layer_type="sage",
         dropout=0.5,
@@ -27,14 +33,15 @@ class GNN(nn.Module):
         self.normalization = normalization
         self.multiple_features = multiple_features
         self.feature_dims = feature_dims
+        self.heads = heads
 
-        self.layers = self.create_models(layer_sizes)
+        self.layers = self.create_models(layer_sizes, heads)
         # self.net = nn.Sequential(*self.layers)
 
     def __getitem__(self, item):
         return self.layers[item]
 
-    def create_models(self, layer_sizes):
+    def create_models(self, layer_sizes, heads=None):
         layers = nn.ParameterList()
         if self.multiple_features:
             mp_layer = nn.Linear(self.feature_dims, 1, bias=False)
@@ -74,8 +81,30 @@ class GNN(nn.Module):
                     layer_sizes[layer_num + 1],
                     aggr="mean",
                 )
+            # INFO: For custom-gat to work, no activation and normalization or any
+            # other type of layers should be added
+            elif self.layer_type == "custom-gat":
+                din = layer_sizes[layer_num]
+                dout = layer_sizes[layer_num + 1]
+                assert heads is not None
+                num_heads = heads[layer_num]
+                assert dout % num_heads == 0, (
+                    f"Final output dimension {dout} must be divisible by number of heads {num_heads}"
+                    f"when concat=True. Each head will output {dout // num_heads} features."
+                )
+                per_head_dout = dout // num_heads
+                layer = MultiHeadCustomGAT(
+                    din=din,
+                    dout=dout,
+                    num_heads=num_heads,
+                    per_head_out_dim=per_head_dout,
+                    attention_dropout=self.dropout,
+                    feedforward_dropout=self.dropout,
+                    residual=False,
+                )
+
             layers.append(layer)
-            if layer_num < self.num_layers - 1:
+            if layer_num < self.num_layers - 1 and self.layer_type != "custom-gat":
                 layers.append(nn.ReLU())
                 layers.append(nn.Dropout(p=self.dropout))
 
@@ -91,7 +120,8 @@ class GNN(nn.Module):
     def reset_parameters(self) -> None:
         for layer in self.layers:
             try:
-                layer.reset_parameters()
+                if hasattr(layer, "reset_parameters"):
+                    layer.reset_parameters()
             except:
                 pass
 
@@ -130,8 +160,8 @@ class GNN(nn.Module):
 
     def forward(self, x, edge_index, edge_weight=None):
         h = x
-        for layer in self.layers:
-            if isinstance(layer, MessagePassing):
+        for idx, layer in enumerate(self.layers):
+            if isinstance(layer, (MessagePassing, CustomGAT, MultiHeadCustomGAT)):
                 h = layer(h, edge_index, edge_weight)
             else:
                 h = layer(h)

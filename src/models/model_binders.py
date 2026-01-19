@@ -1,5 +1,4 @@
 import torch.nn as nn
-
 from src import *
 from src.MLP.MLP_model import MLP
 from src.GNN.GNN_models import GNN, DGCN
@@ -10,6 +9,7 @@ class ModelSpecs:
         self,
         type="GNN",
         layer_sizes=[],
+        heads=[],
         final_activation_function="linear",  # can be None, "layer", "batch", "instance"
         dropout=config.model.dropout,
         normalization=None,
@@ -18,6 +18,7 @@ class ModelSpecs:
     ):
         self.type = type
         self.layer_sizes = layer_sizes
+        self.heads = heads
         self.final_activation_function = final_activation_function
         self.dropout = dropout
         self.normalization = normalization
@@ -29,10 +30,7 @@ class ModelSpecs:
 
 
 class ModelBinder(nn.Module):
-    def __init__(
-        self,
-        models_specs=[],
-    ):
+    def __init__(self, models_specs=[]):
         super().__init__()
         self.models_specs = models_specs
 
@@ -48,6 +46,7 @@ class ModelBinder(nn.Module):
             if model_propertises.type == "GNN":
                 model = GNN(
                     layer_sizes=model_propertises.layer_sizes,
+                    heads=model_propertises.heads,
                     last_layer=model_propertises.final_activation_function,
                     layer_type=model_propertises.gnn_layer_type,
                     dropout=model_propertises.dropout,

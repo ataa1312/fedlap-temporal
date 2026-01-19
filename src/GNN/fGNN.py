@@ -1,7 +1,10 @@
 from src import *
+from torch import nn
 from src.classifier import Classifier, EdgeClassifier
 from src.utils.graph import Graph
+from src.GNN.custom_gat import CustomGAT
 from torch_geometric.loader import NeighborLoader
+from src.utils.config_parser import TrainModelConfig
 from src.models.model_binders import (
     ModelSpecs,
     ModelBinder,
@@ -52,30 +55,27 @@ class NewFGNN(FGNN):
         gnn_layer_sizes = [
             self.graph.num_features  # pyright:ignore
         ] + config.feature_model.gnn_layer_sizes
-        mlp_layer_sizes = [gnn_layer_sizes[-1]]
+        heads = config.feature_model.heads
+        dropout = config.model.dropout
 
         model_specs = [
             ModelSpecs(
                 type="GNN",
                 layer_sizes=gnn_layer_sizes,
-                final_activation_function="linear",
-                # final_activation_function="relu",
-                normalization="layer",
-                # normalization="batch",
-            ),
-            ModelSpecs(
-                type="MLP",
-                layer_sizes=mlp_layer_sizes,
-                final_activation_function="linear",
+                heads=heads,
+                final_activation_function="none",
+                dropout=dropout,
                 normalization=None,
-            ),
+                gnn_layer_type=config.model.gnn_layer_type,
+            )
         ]
 
         self.model: ModelBinder = ModelBinder(model_specs)
         self.model.to(device)
 
     def get_embeddings(self):
-        H = self.model(self.graph.x, self.graph.edge_index)  # pyright: ignore
+        H = self.model(self.graph.x, self.graph.edge_index, self.graph.edge_attr)  # pyright: ignore
+        # H = self.model(self.graph.x, self.graph.edge_index)  # pyright: ignore
         return H
 
 
