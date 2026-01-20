@@ -444,36 +444,32 @@ class GNNServer(Server, GNNClient):
     def evaluate_with_classifier(
         self, eval_config: EvaluationConfig
     ) -> tuple[dict, dict, dict, float, float, float]:
-        train_aucs = []
-        val_aucs = []
-        test_aucs = []
-        client_train_aucs = {}
-        client_val_aucs = {}
-        client_test_aucs = {}
+        train_aucs, val_aucs, test_aucs = 0.0, 0.0, 0.0
+        client_train_results = {}
+        client_val_results = {}
+        client_test_results = {}
 
         operator = eval_config.link_feature_operator
         for client in self.clients:
             train_results, val_results, test_results = client.evaluate_with_classifier(
                 eval_config=eval_config
             )
-            train_auc = train_results[operator]
-            val_auc = val_results[operator]
-            test_auc = test_results[operator]
-            train_aucs.append(train_auc)
-            val_aucs.append(val_auc)
-            test_aucs.append(test_auc)
-            client_train_aucs[client.id] = train_auc
-            client_val_aucs[client.id] = val_auc
-            client_test_aucs[client.id] = test_auc
+            train_aucs += train_results[operator]
+            val_aucs += val_results[operator]
+            test_aucs += test_results[operator]
+            client_train_results[client.id] = train_results
+            client_val_results[client.id] = val_results
+            client_test_results[client.id] = test_results
             LOGGER.info(
-                f"Client {client.id}: train auc = {train_auc:.4f}, "
-                f"val auc = {val_auc:.4f}, "
-                f"test auc = {test_auc:.4f}"
+                f"Client {client.id}: train auc = {train_results[operator]:.4f}, "
+                f"val auc = {val_results[operator]:.4f}, "
+                f"test auc = {test_results[operator]:.4f}"
             )
 
-        avg_train_auc = sum(train_aucs) / len(train_aucs) if train_aucs else 0.0
-        avg_val_auc = sum(val_aucs) / len(val_aucs) if val_aucs else 0.0
-        avg_test_auc = sum(test_aucs) / len(test_aucs) if test_aucs else 0.0
+        num_clients = len(client_train_results)
+        avg_train_auc = train_aucs / num_clients if num_clients > 0 else 0.0
+        avg_val_auc = val_aucs / num_clients if num_clients > 0 else 0.0
+        avg_test_auc = test_aucs / num_clients if num_clients > 0 else 0.0
 
         LOGGER.info(
             f"Average across clients: train auc = {avg_train_auc:.4f}, "
@@ -482,9 +478,9 @@ class GNNServer(Server, GNNClient):
         )
 
         return (
-            client_train_aucs,
-            client_val_aucs,
-            client_test_aucs,
+            client_train_results,
+            client_val_results,
+            client_test_results,
             avg_train_auc,
             avg_val_auc,
             avg_test_auc,

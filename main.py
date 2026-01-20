@@ -174,15 +174,27 @@ def main(run: wandb.Run):
                     best_test_auc = avg_test_auc
 
             if client_train_aucs:
+                operator = config.dynamic.evaluation.link_feature_operator
                 log_dict = dict[str, torch.Tensor]()
                 for cid in client_train_aucs.keys():
                     log_dict[f"tdx{tdx:02}/client_{cid:02}/train_loss"] = client_losses[cid]
+                    log_dict[f"tdx{tdx:02}/client_{cid:02}/train_eval_loss"] = client_train_aucs[
+                        cid
+                    ]["loss"]
                     log_dict[f"tdx{tdx:02}/client_{cid:02}/train_auc"] = client_train_aucs[
                         cid
+                    ][operator]
+                    log_dict[f"tdx{tdx:02}/client_{cid:02}/val_eval_loss"] = client_val_aucs[cid][
+                        "loss"
                     ]
-                    log_dict[f"tdx{tdx:02}/client_{cid:02}/val_auc"] = client_val_aucs[cid]
-                    log_dict[f"tdx{tdx:02}/client_{cid:02}/test_auc"] = client_test_aucs[
+                    log_dict[f"tdx{tdx:02}/client_{cid:02}/val_auc"] = client_val_aucs[cid][
+                        operator
+                    ]
+                    log_dict[f"tdx{tdx:02}/client_{cid:02}/test_eval_loss"] = client_test_aucs[
                         cid
+                    ]["loss"]
+                    log_dict[f"tdx{tdx:02}/client_{cid:02}/test_auc"] = client_test_aucs[cid][
+                        operator
                     ]
                 run.log(log_dict)
 

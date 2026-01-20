@@ -766,18 +766,28 @@ class GNNClient(Client):
             classifier_config=classifier_config,
             device=device,
         )
+
+        criterion = getattr(torch.nn, classifier_config.loss_fn)()
         with torch.no_grad():
-            train_pred = torch.sigmoid(classifier(train_data_feats)).cpu().numpy()
-            val_pred = torch.sigmoid(classifier(val_data_feats)).cpu().numpy()
-            test_pred = torch.sigmoid(classifier(test_data_feats)).cpu().numpy()
+            train_logits = classifier(train_data_feats)
+            val_logits = classifier(val_data_feats)
+            test_logits = classifier(test_data_feats)
+
+            train_loss = criterion(train_logits, train_labels).item()
+            val_loss = criterion(val_logits, val_labels).item()
+            test_loss = criterion(test_logits, test_labels).item()
+            
+            train_pred = torch.sigmoid(train_logits).cpu().numpy()
+            val_pred = torch.sigmoid(val_logits).cpu().numpy()
+            test_pred = torch.sigmoid(test_logits).cpu().numpy()
 
         train_auc = roc_auc_score(train_labels.cpu().numpy(), train_pred)
         val_auc = roc_auc_score(val_labels.cpu().numpy(), val_pred)
         test_auc = roc_auc_score(test_labels.cpu().numpy(), test_pred)
 
-        train_results = {operator: train_auc}
-        val_results = {operator: val_auc}
-        test_results = {operator: test_auc}
+        train_results = {operator: train_auc, "loss": train_loss}
+        val_results = {operator: val_auc, "loss": val_loss}
+        test_results = {operator: test_auc, "loss": test_loss}
 
         return train_results, val_results, test_results
 
