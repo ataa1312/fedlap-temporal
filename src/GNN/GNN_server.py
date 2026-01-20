@@ -314,9 +314,9 @@ class GNNServer(Server, GNNClient):
         log=True,
     ):
         self.update_graph(snapshot, ss_idx)
-        prev_D, prev_U = self.get_previous_UD(spectral_update_mode, ss_idx)
 
         if data_type in ["structure", "f+s"]:
+            prev_D, prev_U = self.get_previous_UD(spectral_update_mode, ss_idx)
             share, _ = self.get_spectral_features(
                 smodel_type, ss_idx, spectral_len, spectral_update_mode, prev_U, prev_D
             )
@@ -330,7 +330,8 @@ class GNNServer(Server, GNNClient):
             if len(self.clients) == 0:
                 for subgraph in subgraphs:
                     self.add_client(subgraph)
-            self.initialize_sfvs(num_ss=num_ss)
+            if data_type in ["structure", "f+s"]:
+                self.initialize_sfvs(num_ss=num_ss)
             self.shallow_initialize_classifier(
                 smodel_type, fmodel_type, data_type, ss_idx, num_ss, downstream_task
             )

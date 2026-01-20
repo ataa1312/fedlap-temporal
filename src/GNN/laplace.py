@@ -194,9 +194,7 @@ class LanczosLaplaceNew(LanczosLaplace):
         super().__init__(graph, hidden_layer_size)
 
     def create_smodel(self, hidden_layer_size=[]):
-        layer_sizes = (
-            [self.graph.num_features] + hidden_layer_size  # pyright: ignore
-        )
+        layer_sizes = [self.graph.num_features] + hidden_layer_size  # pyright: ignore
 
         model_specs = [
             ModelSpecs(
