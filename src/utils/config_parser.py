@@ -73,6 +73,7 @@ class ModelConfig:
         self.lr = model["lr"]
         self.weight_decay = model["weight_decay"]
         self.gnn_layer_type = model["gnn_layer_type"]
+        self.data_type = model["data_type"]
         self.smodel_type = model["smodel_type"]
         self.fmodel_type = model["fmodel_type"]
         self.dropout = model["dropout"]

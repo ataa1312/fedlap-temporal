@@ -110,7 +110,7 @@ def main(run: wandb.Run):
                     random_walk_config=config.dynamic.random_walk,
                     smodel_type=config.model.smodel_type,
                     fmodel_type=config.model.fmodel_type,
-                    data_type="f+s",
+                    data_type=config.model.data_type,
                     downstream_task=config.downstream_task,
                     spectral_len=config.spectral.spectral_len,
                     spectral_update_mode=config.spectral.update_mode,

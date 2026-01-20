@@ -26,6 +26,7 @@ model:
   weight_decay: 0.0005
   dropout: 0.1
   gnn_layer_type: custom-gat
+  data_type: feature
   smodel_type: LanczosLaplace # GNN, DGCN, CentralDGCN, Laplace, LanczosLaplace, SpectralLaplace, SpectralDGCN, LanczosDGCN
   fmodel_type: GNN #, DGCN, same
   iterations: 200
