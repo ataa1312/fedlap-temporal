@@ -6,7 +6,7 @@ from src import *
 from torch import nn
 from src.client import Client
 from src.GNN.DGCN import DGCN, SDGCN, SDGCNMaster, SpectralDGCN
-from src.GNN.fGNN import FGNN, FEdgeGNN
+from src.GNN.fGNN import FGNN, NewFGNN, FEdgeGNN
 from src.GNN.sGNN import SGNNSlave, SGNNMaster, SClassifier
 from src.classifier import Classifier
 from sklearn.metrics import roc_auc_score
@@ -31,6 +31,7 @@ from src.GNN.GNN_classifier import (
     FedMLPClassifier,
     FedLaplaceClassifier,
     FedLaplaceEdgeClassifier,
+    FedDynamicFeatureClassifier,
     FedLanczosLaplaceClassifier,
     FedSpectralLaplaceClassifier,
     FedLanczosLaplaceEdgeClassifier,
@@ -347,7 +348,12 @@ class GNNClient(Client):
         if self.classifier is not None:
             return
 
-        if data_type == "f+s":
+        if data_type == "feature":
+            if fmodel_type == "GNN":
+                if downstream_task == "edge-prediction":
+                    self.classifier = FedDynamicFeatureClassifier(self.graph, num_ss)
+
+        elif data_type == "f+s":
             if fmodel_type == "GNN":
                 fgraph = self.graph
 
@@ -356,7 +362,7 @@ class GNNClient(Client):
                 sgraph = self.create_SGNN_data(**{"SFV": stored_sfvs})
                 if downstream_task == "edge-prediction":
                     self.classifier = FedDynamicLanczosLaplaceClassifier(
-                        fgraph, sgraph, num_ss, config.dynamic.model
+                        fgraph, sgraph, num_ss
                     )
                 if is_attr_good(self.classifier, "register_stored_sfvs"):
                     self.classifier.register_stored_sfvs(self.stored_sfvs)  # pyright:ignore
@@ -421,11 +427,12 @@ class GNNClient(Client):
         return embeddings
 
     def store_embeddings(self, snapshot_idx: int, detach: bool = False):
-        current_sfv = self.classifier.smodel.graph.x  # pyright: ignore
-        if current_sfv.requires_grad:
-            self.classifier.stored_sfvs_grad[snapshot_idx] = current_sfv  # pyright: ignore
-            if current_sfv.grad is None:
-                current_sfv.retain_grad()
+        if is_attr_good(self.classifier, "smodel"):
+            current_sfv = self.classifier.smodel.graph.x  # pyright: ignore
+            if current_sfv.requires_grad:
+                self.classifier.stored_sfvs_grad[snapshot_idx] = current_sfv  # pyright: ignore
+                if current_sfv.grad is None:
+                    current_sfv.retain_grad()
 
         embeddings = self.get_embeddings(detach=detach)
 
@@ -450,7 +457,8 @@ class GNNClient(Client):
                 config.structure_model.num_structural_features,
             )
             self.classifier.stored_sfvs_grad = {  # pyright: ignore
-                ss_idx: torch.zeros(shape) for ss_idx in range(num_ss)
+                ss_idx: torch.zeros(shape, requires_grad=True)
+                for ss_idx in range(num_ss)
             }
 
     def store_context_pairs(
@@ -715,9 +723,7 @@ class GNNClient(Client):
         test_pos_edges = test_pos_edges[:, :num_edges]
         test_neg_edges = test_neg_edges[:, :num_edges]
 
-        perm_indices = torch.randperm(
-            num_edges, device=test_pos_edges.device
-        )
+        perm_indices = torch.randperm(num_edges, device=test_pos_edges.device)
         test_pos_edges = test_pos_edges[:, perm_indices]
         test_neg_edges = test_neg_edges[:, perm_indices]
 
