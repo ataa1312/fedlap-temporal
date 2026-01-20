@@ -325,6 +325,13 @@ class FedDynamicClassifier(FedClassifier):
             for ss_idx in range(num_ss)
         }
 
+    def structural_regularizer(self):
+        # FIX: Biases should be accounted for in the regularization
+        reg_loss = torch.tensor(0.0, device=self.fmodel.parameters()[0].device)
+        for param in self.fmodel.parameters():
+            reg_loss += config.model.weight_decay * torch.linalg.norm(param)
+        return reg_loss
+
     def create_fmodel(self, fgraph) -> None:
         if isinstance(fgraph, AGraph):
             self.fmodel = DGCN(fgraph)
@@ -443,8 +450,7 @@ class FedDynamicClassifier(FedClassifier):
         if len(stored_embeddings) == 0:
             raise ValueError("No stored embeddings provided.")
         stored_embeddings_list = [
-            stored_embeddings[ss_idx]
-            for ss_idx in sorted(stored_embeddings.keys())
+            stored_embeddings[ss_idx] for ss_idx in sorted(stored_embeddings.keys())
         ]
         max_num_nodes = max(map(lambda x: len(x), stored_embeddings_list))
         embeddings = []
@@ -590,7 +596,7 @@ class FedDynamicClassifier(FedClassifier):
         if len(step_losses) == 0:
             return torch.tensor(0.0, device=z.device, requires_grad=True)
 
-        return torch.stack(step_losses).mean()
+        return torch.stack(step_losses).mean() + self.structural_regularizer()
 
 
 class FedDynamicLanczosLaplaceClassifier(FedDynamicClassifier):

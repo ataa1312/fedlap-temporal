@@ -18,10 +18,8 @@ class Classifier:
         parameters = self.parameters()
         if len(parameters) == 0:
             return
-        self.optimizer = torch.optim.Adam(
-            parameters,
-            lr=config.model.lr,
-            weight_decay=config.model.weight_decay,
+        self.optimizer = torch.optim.AdamW(
+            parameters, lr=config.model.lr, weight_decay=0.0
         )
 
     def state_dict(self):
