@@ -364,8 +364,6 @@ class GNNClient(Client):
                     self.classifier = FedDynamicLanczosLaplaceClassifier(
                         fgraph, sgraph, num_ss
                     )
-                if is_attr_good(self.classifier, "register_stored_sfvs"):
-                    self.classifier.register_stored_sfvs(self.stored_sfvs)  # pyright:ignore
             self.classifier.create_optimizer()
 
     def update_spectral_features(self, share: dict):

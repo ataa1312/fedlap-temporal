@@ -438,9 +438,6 @@ class GNNServer(Server, GNNClient):
 
         return client_losses, avg_loss
 
-    def train_evaluator(self, operator: LinkFeatureOperator):
-        pass
-
     def evaluate_with_classifier(
         self, eval_config: EvaluationConfig
     ) -> tuple[dict, dict, dict, float, float, float]:
