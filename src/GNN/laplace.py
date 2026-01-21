@@ -208,6 +208,14 @@ class LanczosLaplaceNew(LanczosLaplace):
         self.model: ModelBinder = ModelBinder(model_specs)
         self.model.to(device)
 
+    def parameters(self):
+        parameters = super().parameters()
+        # Remove graph.x from parameters - it will be tracked via stored_sfvs_grad
+        # in FedDynamicClassifier instead
+        if self.graph.x is not None and self.graph.x.requires_grad:
+            parameters = [p for p in parameters if p is not self.graph.x]
+        return parameters
+
 
 # Edge prediction analogues
 class SEdgeLaplace(LaplaceMixin, SEdgeClassifier):
