@@ -335,6 +335,7 @@ class GNNServer(Server, GNNClient):
             self.shallow_initialize_classifier(
                 smodel_type, fmodel_type, data_type, ss_idx, num_ss, downstream_task
             )
+            self.share_weights()
 
         else:
             for client, subgraph in zip(self.clients, subgraphs):
