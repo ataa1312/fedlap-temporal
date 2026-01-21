@@ -410,17 +410,12 @@ class FedDynamicClassifier(FedClassifier):
         super().reset()
         if self.tmodel is not None:
             self.tmodel.zero_grad(set_to_none=True)
-        # Reset stored_sfvs_grad to zero tensors for new epoch
-        num_ss = len(self.stored_sfvs_grad)
-        self.stored_sfvs_grad = {
-            ss_idx: torch.zeros(
-                config.spectral.spectral_len,
-                config.structure_model.num_structural_features,
-                requires_grad=True,
-                device=device,
-            )
-            for ss_idx in range(num_ss)
-        }
+        for sfv in self.stored_sfvs_grad.values():
+            if sfv is not None and sfv.requires_grad:
+                if sfv.grad is not None:
+                    sfv.grad.zero_()
+                else:
+                    sfv.grad = None
 
     def get_temporal_embeddings(self, stored_embeddings: dict[int, torch.Tensor]):
         if self.tmodel is None:

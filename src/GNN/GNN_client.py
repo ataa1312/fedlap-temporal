@@ -447,19 +447,15 @@ class GNNClient(Client):
 
     def clear_stored_embeddings(self):
         self.stored_embeddings = dict[int, torch.Tensor]()
-        # Reset stored_sfvs_grad so new SFVs can be stored in the next epoch
         if self.classifier is not None and is_attr_good(
             self.classifier, "stored_sfvs_grad"
         ):
-            num_ss = len(self.classifier.stored_sfvs_grad)  # pyright: ignore
-            shape = (
-                config.spectral.spectral_len,
-                config.structure_model.num_structural_features,
-            )
-            self.classifier.stored_sfvs_grad = {  # pyright: ignore
-                ss_idx: torch.zeros(shape, requires_grad=True)
-                for ss_idx in range(num_ss)
-            }
+            for sfv in self.classifier.stored_sfvs_grad.values():  # pyright: ignore
+                if sfv is not None and sfv.requires_grad:
+                    if sfv.grad is not None:
+                        sfv.grad.zero_()
+                    else:
+                        sfv.grad = None
 
     def store_context_pairs(
         self,
