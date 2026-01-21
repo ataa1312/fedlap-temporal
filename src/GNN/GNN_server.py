@@ -1,6 +1,3 @@
-import operator
-from copy import deepcopy
-
 from src import *
 from src.server import Server
 from src.utils.graph import Graph
@@ -176,20 +173,35 @@ class GNNServer(Server, GNNClient):
             model_type=model_type,
         )
 
-    def get_all_clients_embeddings(self, detach=False):
+    def store_snapshot_sembeddings(self, snapshot_idx: int, detach=False):
         client: GNNClient
         for client in self.clients:
-            client.get_embeddings(detach=detach)
+            client.store_sembeddings(snapshot_idx, detach=detach)
 
-    def store_snapshot_embeddings(self, snapshot_idx: int, detach=False):
+    def clear_all_stored_sembeddings(self):
         client: GNNClient
         for client in self.clients:
-            client.store_embeddings(snapshot_idx, detach=detach)
+            client.clear_stored_sembeddings()
 
-    def clear_all_stored_embeddings(self):
+    def clear_all_stored_tembeddings(self):
         client: GNNClient
         for client in self.clients:
-            client.clear_stored_embeddings()
+            client.clear_stored_tembeddings()
+
+    def reconstruct_global_tembeddings(self):
+        # reconstruct tembeddings of last snapshot
+        total_num_nodes = self.graph.num_nodes
+        tdim = config.feature_model.gnn_layer_sizes[-1]
+        tembeddings = torch.zeros(
+            total_num_nodes, tdim, dtype=torch.float, device=device
+        )
+        for client in self.clients:
+            assert client.tembeddings is not None
+            last_snapshot_tembs = client.tembeddings[-1]
+            tembeddings[client.graph.node_ids] = last_snapshot_tembs
+
+        # Store as [1, N, F] Tensor to match GNNClient expectations
+        self.tembeddings = tembeddings.unsqueeze(0)
 
     def generate_context_pairs_for_snapshot(
         self,
@@ -351,6 +363,10 @@ class GNNServer(Server, GNNClient):
             for client in self.clients:
                 client.eval_train_snapshot = graph_to_pygdata(client.graph)
 
+        for client in self.clients:
+            if ss_idx not in client.edge_indices:
+                client.edge_indices[ss_idx] = client.graph.edge_index
+
         self.generate_context_pairs_for_snapshot(
             snapshot_idx=ss_idx,
             num_walks=random_walk_config.num,
@@ -410,7 +426,7 @@ class GNNServer(Server, GNNClient):
         client_node_counts = []
         for client in self.clients:
             total_nodes = 0
-            stored_embs = client.get_stored_embeddings()
+            stored_embs = client.get_stored_sembeddings()
             assert stored_embs is not None and isinstance(stored_embs, dict)
             for embeddings in stored_embs.values():
                 num_nodes = embeddings.shape[0]
@@ -443,42 +459,53 @@ class GNNServer(Server, GNNClient):
         self, eval_config: EvaluationConfig
     ) -> tuple[dict, dict, dict, float, float, float]:
         train_aucs, val_aucs, test_aucs = 0.0, 0.0, 0.0
-        client_train_results = {}
-        client_val_results = {}
-        client_test_results = {}
-
+        train_results, val_results, test_results = {}, {}, {}
         operator = eval_config.link_feature_operator
+
+        self.reconstruct_global_tembeddings()
+        train_result, val_result, test_result = super().evaluate_with_classifier(
+            eval_config=eval_config
+        )
+        train_results[self.id] = train_result
+        val_results[self.id] = val_result
+        test_results[self.id] = test_result
+
         for client in self.clients:
-            train_results, val_results, test_results = client.evaluate_with_classifier(
+            train_result, val_result, test_result = client.evaluate_with_classifier(
                 eval_config=eval_config
             )
-            train_aucs += train_results[operator]
-            val_aucs += val_results[operator]
-            test_aucs += test_results[operator]
-            client_train_results[client.id] = train_results
-            client_val_results[client.id] = val_results
-            client_test_results[client.id] = test_results
+            train_aucs += train_result[operator]
+            val_aucs += val_result[operator]
+            test_aucs += test_result[operator]
+            train_results[client.id] = train_result
+            val_results[client.id] = val_result
+            test_results[client.id] = test_result
             LOGGER.info(
-                f"Client {client.id}: train auc = {train_results[operator]:.4f}, "
-                f"val auc = {val_results[operator]:.4f}, "
-                f"test auc = {test_results[operator]:.4f}"
+                f"Client {client.id}: train auc = {train_result[operator]:.4f}, "
+                f"val auc = {val_result[operator]:.4f}, "
+                f"test auc = {test_result[operator]:.4f}"
             )
 
-        num_clients = len(client_train_results)
+        num_clients = len(self.clients)
         avg_train_auc = train_aucs / num_clients if num_clients > 0 else 0.0
         avg_val_auc = val_aucs / num_clients if num_clients > 0 else 0.0
         avg_test_auc = test_aucs / num_clients if num_clients > 0 else 0.0
 
+        # LOGGER.info(
+        #     f"Average across clients: train auc = {avg_train_auc:.4f}, "
+        #     f"val auc = {avg_val_auc:.4f}, "
+        #     f"test auc = {avg_test_auc:.4f}"
+        # )
         LOGGER.info(
-            f"Average across clients: train auc = {avg_train_auc:.4f}, "
-            f"val auc = {avg_val_auc:.4f}, "
-            f"test auc = {avg_test_auc:.4f}"
+            f"Global: train auc = {train_results[self.id][operator]:.4f}, "
+            f"val auc = {val_results[self.id][operator]:.4f}, "
+            f"test auc = {test_results[self.id][operator]:.4f}"
         )
 
         return (
-            client_train_results,
-            client_val_results,
-            client_test_results,
+            train_results,
+            val_results,
+            test_results,
             avg_train_auc,
             avg_val_auc,
             avg_test_auc,

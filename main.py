@@ -90,6 +90,7 @@ def main(run: wandb.Run):
         )
 
         gnn_server = GNNServer(None)  # pyright:ignore
+        operator = config.dynamic.evaluation.link_feature_operator
 
         # FIXME: This needs to be fixed
         # num_nodes = sum([client.num_nodes() for client in gnn_server.clients])
@@ -98,9 +99,9 @@ def main(run: wandb.Run):
         for epoch in range(config.model.iterations):
             LOGGER.info(f"Epoch {epoch + 1}/{config.model.iterations}")
 
-
             if epoch > 0:
-                gnn_server.clear_all_stored_embeddings()
+                gnn_server.clear_all_stored_sembeddings()
+                gnn_server.clear_all_stored_tembeddings()
                 gnn_server.reset_trainings()
                 gnn_server.set_train_mode()
 
@@ -118,11 +119,10 @@ def main(run: wandb.Run):
                     spectral_update_mode=config.spectral.update_mode,
                     subgraph_node_ids=subgraph_node_ids,
                     log=log,
-
-                )   
+                )
 
                 LOGGER.info(f"Encoding embeddings for snapshot #{ss_idx + 1}...")
-                gnn_server.store_snapshot_embeddings(
+                gnn_server.store_snapshot_sembeddings(
                     snapshot_idx=idx,
                     detach=detach_embeddings,
                 )
@@ -145,9 +145,9 @@ def main(run: wandb.Run):
             )
 
             # Initialize AUC dictionaries to avoid NameError when should_eval is False
-            client_train_aucs = {}
-            client_val_aucs = {}
-            client_test_aucs = {}
+            train_res = {}
+            val_res = {}
+            test_res = {}
 
             if should_eval:
                 gnn_server.load_test_snapshot(
@@ -158,9 +158,9 @@ def main(run: wandb.Run):
                 )
 
                 (
-                    client_train_aucs,
-                    client_val_aucs,
-                    client_test_aucs,
+                    train_res,
+                    val_res,
+                    test_res,
                     avg_train_auc,
                     avg_val_auc,
                     avg_test_auc,
@@ -168,34 +168,43 @@ def main(run: wandb.Run):
                     eval_config=config.dynamic.evaluation
                 )
 
-                if avg_val_auc > best_val_auc:
-                    best_train_auc = avg_train_auc
-                    best_val_auc = avg_val_auc
-                    best_test_auc = avg_test_auc
+                if val_res[gnn_server.id][operator] > best_val_auc:
+                    best_train_auc = train_res[gnn_server.id][operator]
+                    best_val_auc = val_res[gnn_server.id][operator]
+                    best_test_auc = test_res[gnn_server.id][operator]
 
-            if client_train_aucs:
-                operator = config.dynamic.evaluation.link_feature_operator
-                log_dict = dict[str, torch.Tensor]()
-                for cid in client_train_aucs.keys():
-                    log_dict[f"tdx{tdx:02}/client_{cid:02}/train_loss"] = client_losses[cid]
-                    log_dict[f"tdx{tdx:02}/client_{cid:02}/train_eval_loss"] = client_train_aucs[
-                        cid
-                    ]["loss"]
-                    log_dict[f"tdx{tdx:02}/client_{cid:02}/train_auc"] = client_train_aucs[
-                        cid
-                    ][operator]
-                    log_dict[f"tdx{tdx:02}/client_{cid:02}/val_eval_loss"] = client_val_aucs[cid][
-                        "loss"
-                    ]
-                    log_dict[f"tdx{tdx:02}/client_{cid:02}/val_auc"] = client_val_aucs[cid][
-                        operator
-                    ]
-                    log_dict[f"tdx{tdx:02}/client_{cid:02}/test_eval_loss"] = client_test_aucs[
-                        cid
-                    ]["loss"]
-                    log_dict[f"tdx{tdx:02}/client_{cid:02}/test_auc"] = client_test_aucs[cid][
-                        operator
-                    ]
+                # if avg_val_auc > best_val_auc:
+                #     best_train_auc = avg_train_auc
+                #     best_val_auc = avg_val_auc
+                #     best_test_auc = avg_test_auc
+
+            log_dict = dict[str, torch.Tensor | float]()
+
+            log_dict[f"tdx{tdx:02}/server/avg_train_auc"] = avg_train_auc
+            log_dict[f"tdx{tdx:02}/server/avg_val_auc"] = avg_val_auc
+            log_dict[f"tdx{tdx:02}/server/avg_test_auc"] = avg_test_auc
+
+            if train_res:
+                all_results_keys = set(train_res.keys())
+                
+                for cid in all_results_keys:
+                    if cid == gnn_server.id:
+                        prefix = f"tdx{tdx:02}/server"
+                    else:
+                        prefix = f"tdx{tdx:02}/client_{cid:02}"
+                    
+                    if cid in client_losses:
+                         log_dict[f"{prefix}/train_loss"] = client_losses[cid]
+
+                    log_dict[f"{prefix}/train_eval_loss"] = train_res[cid]["loss"]
+                    log_dict[f"{prefix}/train_auc"] = train_res[cid][operator]
+                    
+                    log_dict[f"{prefix}/val_eval_loss"] = val_res[cid]["loss"]
+                    log_dict[f"{prefix}/val_auc"] = val_res[cid][operator]
+                    
+                    log_dict[f"{prefix}/test_eval_loss"] = test_res[cid]["loss"]
+                    log_dict[f"{prefix}/test_auc"] = test_res[cid][operator]
+
                 run.log(log_dict)
 
         run.log(

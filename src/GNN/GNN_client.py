@@ -65,16 +65,11 @@ class GNNClient(Client):
         self.classifier: Classifier | None = None
         self.SFVs = []
         self.cf_score_list = []
-        # Storage for embeddings across snapshots
-        # Dictionary mapping snapshot_idx -> embeddings tensor
-        self.stored_embeddings = dict[int, torch.Tensor]()
-        # Keep references to old SFVs to prevent gradient flow issues
-        # When SFV is trainable (requires_grad=True), we need to keep old SFVs
-        # so gradients can flow back to them through stored embeddings
+
+        self.edge_indices = dict[int, torch.Tensor]()
+        self.sembeddings = dict[int, torch.Tensor]()
+        self.tembeddings: torch.Tensor | None = None
         self.stored_sfvs = dict[int, torch.Tensor]()
-        # Storage for context pairs from random walks (DySAT-style)
-        # Dictionary mapping snapshot_idx -> context_pairs dict
-        # context_pairs maps node_id (original) -> list of context node_ids (original)
         self.stored_context_pairs = dict[int, dict[int, list[int]]]()
         self.eval_train_snapshot: PyGData | None = None
         self.stored_spectrals = dict[int, SpectralFeatures]()
@@ -327,8 +322,6 @@ class GNNClient(Client):
 
     def update_model(self):
         super().update_model()
-        # After optimizer step, copy updated SFVs from stored_sfvs_grad to stored_sfvs
-        # for use in the next epoch
         if is_attr_good(self.classifier, "stored_sfvs_grad"):
             self.stored_sfvs = {
                 ss_idx: sfv.clone().detach()
@@ -413,7 +406,7 @@ class GNNClient(Client):
                 return self.stored_sfvs[ss_idx]
             raise KeyError(f"No SFVs stored for snapshot #{ss_idx}!")
 
-    def get_embeddings(self, detach=False):
+    def get_sembeddings(self, detach=False):
         if self.classifier is None:
             raise ValueError("Classifier not initialized. Call initialize() first.")
 
@@ -424,7 +417,7 @@ class GNNClient(Client):
 
         return embeddings
 
-    def store_embeddings(self, snapshot_idx: int, detach: bool = False):
+    def store_sembeddings(self, snapshot_idx: int, detach: bool = False):
         if is_attr_good(self.classifier, "smodel"):
             current_sfv = self.classifier.smodel.graph.x  # pyright: ignore
             if current_sfv.requires_grad:
@@ -432,19 +425,17 @@ class GNNClient(Client):
                 if current_sfv.grad is None:
                     current_sfv.retain_grad()
 
-        embeddings = self.get_embeddings(detach=detach)
+        sembeddings = self.get_sembeddings(detach=detach)
+        self.sembeddings[snapshot_idx] = sembeddings
 
-        # Store embeddings directly, keyed by snapshot_idx for O(1) lookup
-        self.stored_embeddings[snapshot_idx] = embeddings
-
-    def get_stored_embeddings(self, snapshot_idx: int | None = None):
+    def get_stored_sembeddings(self, snapshot_idx: int | None = None):
         if snapshot_idx is None:
-            return self.stored_embeddings
+            return self.sembeddings
         else:
-            return self.stored_embeddings.get(snapshot_idx)
+            return self.sembeddings.get(snapshot_idx)
 
-    def clear_stored_embeddings(self):
-        self.stored_embeddings = dict[int, torch.Tensor]()
+    def clear_stored_sembeddings(self):
+        self.sembeddings = dict[int, torch.Tensor]()
         if self.classifier is not None and is_attr_good(
             self.classifier, "stored_sfvs_grad"
         ):
@@ -490,22 +481,21 @@ class GNNClient(Client):
     def clear_stored_context_pairs(self):
         self.stored_context_pairs = dict[int, dict[int, list[int]]]()
 
-    def get_temporal_embeddings(self):
+    def get_tembeddings(self):
         if not is_attr_good(self.classifier, "tmodel"):
             raise ValueError(
                 "Classifier does not have tmodel. Initialize temporal encoder first."
             )
 
-        if len(self.stored_embeddings) == 0:
+        if len(self.sembeddings) == 0:
             raise ValueError("No stored embeddings available. Encode snapshots first.")
 
-        stored_embeddings_list = [
-            self.stored_embeddings[ss_idx]
-            for ss_idx in sorted(self.stored_embeddings.keys())
+        smbeddings_list = [
+            self.sembeddings[ss_idx] for ss_idx in sorted(self.sembeddings.keys())
         ]
-        max_num_nodes = max(map(lambda x: len(x), stored_embeddings_list))
+        max_num_nodes = max(map(lambda x: len(x), smbeddings_list))
         embeddings = []
-        for emb in stored_embeddings_list:
+        for emb in smbeddings_list:
             zero_pad = torch.zeros(
                 max_num_nodes - emb.shape[0], emb.shape[1], device=emb.device
             )
@@ -535,17 +525,18 @@ class GNNClient(Client):
                 "Classifier does not support random walk loss computation."
             )
 
-        if len(self.stored_embeddings) == 0:
-            raise ValueError("No stored embeddings available. Encode snapshots first.")
+        if len(self.sembeddings) == 0:
+            raise ValueError(
+                "No stored structural embeddings available. Encode snapshots first."
+            )
 
-        temporal_embeddings = self.get_temporal_embeddings()  # [T, N, F]
+        tembeddings = self.get_tembeddings()  # [T, N, F]
+        self.tembeddings = tembeddings
 
         if snapshot_indices is None:
             snapshot_indices = sorted(self.stored_context_pairs.keys())
 
-        total_loss = torch.tensor(
-            0.0, device=temporal_embeddings.device, requires_grad=True
-        )
+        total_loss = torch.tensor(0.0, device=tembeddings.device, requires_grad=True)
         num_snapshots = 0
 
         for ss_idx in snapshot_indices:
@@ -553,12 +544,13 @@ class GNNClient(Client):
             if context_pairs is None or len(context_pairs) == 0:
                 continue
 
-            z = temporal_embeddings[ss_idx]
+            z = tembeddings[ss_idx]
 
             # Get edge_index for this snapshot from the graph
             # Use original_edge_index which is the original edge_index before reindexing
             # edge_index = self.graph.original_edge_index
-            edge_index = self.graph.edge_index
+            assert isinstance(self.edge_indices, dict) and len(self.edge_indices) > 0
+            edge_index = self.edge_indices[ss_idx]
 
             snapshot_loss = self.classifier.compute_random_walk_loss(  # pyright: ignore
                 temporal_embeddings=z,
@@ -574,11 +566,17 @@ class GNNClient(Client):
             num_snapshots += 1
 
         if num_snapshots == 0:
-            return torch.tensor(
-                0.0, device=temporal_embeddings.device, requires_grad=True
-            )
+            return torch.tensor(0.0, device=tembeddings.device, requires_grad=True)
 
         return total_loss / num_snapshots
+
+    def get_stored_tembeddings(self) -> torch.Tensor:
+        if self.tembeddings is None:
+            raise ValueError("Temporal Embeddings are none!")
+        return self.tembeddings
+
+    def clear_stored_tembeddings(self) -> None:
+        self.tembeddings = None
 
     def update_graph(self, new_graph: Graph, ss_idx: int, test: bool = False):
         self.graph = new_graph
@@ -673,7 +671,7 @@ class GNNClient(Client):
         transform = transforms.Compose(
             [
                 transforms.RandomLinkSplit(
-                    num_val=0.0,
+                    num_val=eval_config.data.num_val,
                     num_test=0.0,
                     is_undirected=not eval_config.data.is_directed,
                     add_negative_train_samples=eval_config.data.add_negative_train_samples,
@@ -683,21 +681,17 @@ class GNNClient(Client):
         )
 
         operator = eval_config.link_feature_operator
-        stored_embs = self.get_stored_embeddings()
-        assert isinstance(stored_embs, dict)
-        if len(stored_embs) == 0:
-            raise ValueError("No stored embeddings available for evaluation.")
-        last_snapshot_idx = max(stored_embs.keys())
-        embeddings = stored_embs[last_snapshot_idx]
+        tembs = self.get_stored_tembeddings()
+        embeddings = tembs[-1]
         embeddings = embeddings.detach()
-        train_data, _, _ = transform(self.eval_train_snapshot)
+        train_data, val_data, _ = transform(self.eval_train_snapshot)
         train_data_feats, train_labels = self.extract_feats_and_labels(
             train_data, embeddings, "edge_label_index", "edge_label", operator
         )
 
-        # val_data_feats, val_labels = self.extract_feats_and_labels(
-        #     val_data, embeddings, "edge_label_index", "edge_label", operator
-        # )
+        val_data_feats, val_labels = self.extract_feats_and_labels(
+            val_data, embeddings, "edge_label_index", "edge_label", operator
+        )
 
         assert self.graph.edge_index is not None
         test_pos_edges = self.graph.edge_index
@@ -721,25 +715,25 @@ class GNNClient(Client):
         test_pos_edges = test_pos_edges[:, perm_indices]
         test_neg_edges = test_neg_edges[:, perm_indices]
 
-        val_num = int(val_ratio * perm_indices.numel())
+        # val_num = int(val_ratio * perm_indices.numel())
+        #
+        # val_pos_edges = test_pos_edges[:, :val_num]
+        # val_neg_edges = test_neg_edges[:, :val_num]
+        #
+        # val_pos_feats = self.get_link_features(val_pos_edges, embeddings, operator)
+        # val_neg_feats = self.get_link_features(val_neg_edges, embeddings, operator)
+        #
+        # val_data_feats = torch.cat([val_pos_feats, val_neg_feats], dim=0)
+        # val_labels = torch.cat(
+        #     [
+        #         torch.ones(len(val_pos_feats), device=embeddings.device),
+        #         torch.zeros(len(val_neg_feats), device=embeddings.device),
+        #     ],
+        #     dim=0,
+        # )
 
-        val_pos_edges = test_pos_edges[:, :val_num]
-        val_neg_edges = test_neg_edges[:, :val_num]
-
-        val_pos_feats = self.get_link_features(val_pos_edges, embeddings, operator)
-        val_neg_feats = self.get_link_features(val_neg_edges, embeddings, operator)
-
-        val_data_feats = torch.cat([val_pos_feats, val_neg_feats], dim=0)
-        val_labels = torch.cat(
-            [
-                torch.ones(len(val_pos_feats), device=embeddings.device),
-                torch.zeros(len(val_neg_feats), device=embeddings.device),
-            ],
-            dim=0,
-        )
-
-        test_pos_edges = test_pos_edges[:, val_num:]
-        test_neg_edges = test_neg_edges[:, val_num:]
+        # test_pos_edges = test_pos_edges[:, val_num:]
+        # test_neg_edges = test_neg_edges[:, val_num:]
 
         test_pos_feats = self.get_link_features(test_pos_edges, embeddings, operator)
         test_neg_feats = self.get_link_features(test_neg_edges, embeddings, operator)
@@ -770,7 +764,7 @@ class GNNClient(Client):
             train_loss = criterion(train_logits, train_labels).item()
             val_loss = criterion(val_logits, val_labels).item()
             test_loss = criterion(test_logits, test_labels).item()
-            
+
             train_pred = torch.sigmoid(train_logits).cpu().numpy()
             val_pred = torch.sigmoid(val_logits).cpu().numpy()
             test_pred = torch.sigmoid(test_logits).cpu().numpy()
