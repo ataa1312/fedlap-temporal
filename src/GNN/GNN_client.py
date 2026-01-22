@@ -44,6 +44,7 @@ from src.utils.config_parser import BaseTxConfig, ClassifierConfig, EvaluationCo
 class SpectralFeatures:
     U: torch.Tensor
     D: torch.Tensor
+    V: torch.Tensor | None = None
 
 
 class GNNClient(Client):

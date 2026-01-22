@@ -362,6 +362,23 @@ class Graph(Data):
 
         return abar
 
+    def update_eigpairs(
+        self,
+        prev_V: torch.Tensor,
+        prev_D: torch.Tensor,
+        self_loop=True,
+    ):
+        self.create_L(
+            normalization=config.spectral.L_type,
+            self_loop=self_loop,
+        )
+        assert self.L is not None
+        next_H = prev_V.T @ self.L @ prev_V
+        next_D, next_U = torch.linalg.eigh(next_H)
+        next_U = prev_V @ next_U
+
+        return next_D, next_U
+
     def calc_eignvalues(self, estimate=False, self_loop=True, log=True, spectral_len=0):
         if config.spectral.matrix == "lap":
             self.create_L(
@@ -369,7 +386,7 @@ class Graph(Data):
                 self_loop=self_loop,
             )
             if estimate:
-                D, U = estimate_eigh(
+                D, U, V = estimate_eigh(
                     self.L,
                     config.spectral.lanczos_iter,
                     method=config.spectral.method,
@@ -398,7 +415,7 @@ class Graph(Data):
                 nodes=self.node_ids,
             )
             if estimate:
-                D, U = estimate_eigh(
+                D, U, _ = estimate_eigh(
                     A,
                     # A @ A.T,
                     config.spectral.lanczos_iter,
@@ -442,7 +459,7 @@ class Graph(Data):
                 nodes=self.node_ids,
             )
             if estimate:
-                D, U = estimate_eigh(
+                D, U, _ = estimate_eigh(
                     E @ E.T,
                     config.spectral.lanczos_iter,
                     method=config.spectral.method,
@@ -461,6 +478,8 @@ class Graph(Data):
 
                 U = U[:, sorted_indices]
                 D = D[sorted_indices]
+                if V is not None:
+                    V = V[:, sorted_indices]
                 # self.V_t = self.V_t[:, sorted_indices]
         # elif len(D.shape) == 2:
         #     if spectral_len > 0:
@@ -481,6 +500,9 @@ class Graph(Data):
         # ss = torch.sign(U[0, :])
         U = torch.einsum("i,ji->ji", ss, U)
 
+        if V is not None:
+            V = torch.einsum("i,ji->ji", ss, V)
+
         # AA = torch.diag(DD) @ U @ torch.diag(-D) @ U.T
         # AA[AA > 1] = 1
         # AA[AA < 0] = 0
@@ -499,7 +521,7 @@ class Graph(Data):
         # plt.tight_layout()
         # plt.show()
 
-        return D, U
+        return D, U, V
 
     def _random_walk(
         self, nx_G, start_node: int, walk_len: int, p: float, q: float

@@ -228,7 +228,7 @@ class GNNServer(Server, GNNClient):
             client.clear_stored_context_pairs()
 
     def get_previous_UD(self, spectral_update_mode: str, ss_idx: int):
-        prev_D, prev_U = None, None
+        prev_D, prev_U, prev_V = None, None, None
         # if (
         #     spectral_update_mode in ["keep", "update"]
         #     and is_attr_good(self.classifier.smodel, "Q")  # pyright: ignore
@@ -240,16 +240,31 @@ class GNNServer(Server, GNNClient):
             if len(self.stored_spectrals) > 0:
                 first_spectrals = min(self.stored_spectrals.keys())
                 stored_spectral = self.stored_spectrals[first_spectrals]
-                prev_D, prev_U = stored_spectral.D, stored_spectral.U
+                prev_D, prev_U, prev_V = (
+                    stored_spectral.D,
+                    stored_spectral.U,
+                    stored_spectral.V,
+                )
         else:
             if ss_idx in self.stored_spectrals:
                 stored_spectral = self.stored_spectrals[ss_idx]
-                prev_D, prev_U = stored_spectral.D, stored_spectral.U
+                prev_D, prev_U, prev_V = (
+                    stored_spectral.D,
+                    stored_spectral.U,
+                    stored_spectral.V,
+                )
 
-        return prev_D, prev_U
+        return prev_D, prev_U, prev_V
 
     def get_spectral_features(
-        self, smodel_type, ss_idx, spectral_len, spectral_update_mode, prev_U, prev_D
+        self,
+        smodel_type,
+        ss_idx,
+        spectral_len,
+        spectral_update_mode,
+        prev_U,
+        prev_D,
+        prev_V,
     ):
         share = {}
         num_spectral_features = None
@@ -267,20 +282,27 @@ class GNNServer(Server, GNNClient):
                 and prev_U is not None
                 and prev_D is not None
             ):
-                LOGGER.info("Updating spectral features...")
-                raise NotImplementedError()
+                if ss_idx not in self.stored_spectrals:
+                    LOGGER.info("Updating spectral features...")
+                    D, U = self.graph.update_eigpairs(prev_V, prev_D)
+                    self.stored_spectrals[ss_idx] = SpectralFeatures(U=U, D=D, V=prev_V)
+                else:
+                    stored_spectral = self.stored_spectrals[ss_idx]
+                    D, U, V = stored_spectral.D, stored_spectral.U, stored_spectral.V
+
             else:
                 if ss_idx not in self.stored_spectrals:
                     LOGGER.info("Computing spectral features...")
-                    D, U = self.graph.calc_eignvalues(
+                    D, U, V = self.graph.calc_eignvalues(
                         estimate=not (smodel_type.startswith("Spectral")),
                         spectral_len=spectral_len,
                         log=False,
                     )
-                    self.stored_spectrals[ss_idx] = SpectralFeatures(U=U, D=D)
+                    assert V is not None
+                    self.stored_spectrals[ss_idx] = SpectralFeatures(U=U, D=D, V=V)
                 else:
                     stored_spectral = self.stored_spectrals[ss_idx]
-                    D, U = stored_spectral.D, stored_spectral.U
+                    D, U, V = stored_spectral.D, stored_spectral.U, stored_spectral.V
 
             share["D"] = D
             share["U"] = U
@@ -328,9 +350,15 @@ class GNNServer(Server, GNNClient):
         self.update_graph(snapshot, ss_idx)
 
         if data_type in ["structure", "f+s"]:
-            prev_D, prev_U = self.get_previous_UD(spectral_update_mode, ss_idx)
+            prev_D, prev_U, prev_V = self.get_previous_UD(spectral_update_mode, ss_idx)
             share, _ = self.get_spectral_features(
-                smodel_type, ss_idx, spectral_len, spectral_update_mode, prev_U, prev_D
+                smodel_type,
+                ss_idx,
+                spectral_len,
+                spectral_update_mode,
+                prev_U,
+                prev_D,
+                prev_V,
             )
 
         # INFO: Check if clients and classifier need initialization

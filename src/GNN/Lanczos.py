@@ -17,7 +17,7 @@ def estimate_eigh(A, m, X=None, method="lanczos", p=5, log=True):
         T, V = block_lanczos(A, X, m=m, p=p, log=log)
     elif method == "Randomized":
         D, U2 = randomized_eig(A, m)
-        return D, U2
+        return D, U2, None
 
     D, U = torch.linalg.eigh(T)
 
@@ -49,7 +49,8 @@ def estimate_eigh(A, m, X=None, method="lanczos", p=5, log=True):
     D = D.float()
 
     # return T.float(), V.float()
-    return D, U2
+    V = V.float()
+    return D, U2, V
 
 
 # dev = "cpu"
