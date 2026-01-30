@@ -1,9 +1,19 @@
 import numpy as np
 import torch
-from torch import nn
-from sklearn.metrics import roc_auc_score, average_precision_score
-from src.utils.utils import is_attr_good, getLOGGER
 from src import *
+from torch import nn
+from sklearn.metrics import (
+    f1_score,
+    recall_score,
+    roc_auc_score,
+    accuracy_score,
+    precision_score,
+    matthews_corrcoef,
+    precision_recall_curve,
+    average_precision_score,
+)
+from src.utils.utils import getLOGGER, is_attr_good
+
 
 def get_link_features(
     edge_index: torch.Tensor,
@@ -41,7 +51,6 @@ def get_link_features(
             raise NotImplementedError(f"Operator {operator} not implemented")
 
 
-
 def sample_negative_edges(
     edge_index: torch.Tensor,
     num_pos_samples: int,
@@ -71,10 +80,14 @@ def sample_negative_edges(
 
         if num_neg_samples_per_pos == -1:
             # Sample all nodes except positive targets and the node itself
-            all_nodes_mask = torch.ones(num_nodes, device=edge_index.device, dtype=torch.bool)
+            all_nodes_mask = torch.ones(
+                num_nodes, device=edge_index.device, dtype=torch.bool
+            )
             all_nodes_mask[pos_targets] = False
             all_nodes_mask[node] = False
-            neg_tgt_nodes = torch.arange(num_nodes, device=edge_index.device)[all_nodes_mask]
+            neg_tgt_nodes = torch.arange(num_nodes, device=edge_index.device)[
+                all_nodes_mask
+            ]
         else:
             neg_tgt_nodes = torch.randint(
                 num_nodes, size=(num_neg_samples_per_pos,), device=edge_index.device
@@ -153,7 +166,7 @@ def compute_ranking_metrics(
         # 2. Mean Reciprocal Rank (MRR)
         # For each positive, rank it against ALL negatives
         # Rank = 1 + number of negatives with score > positive score
-        
+
         # Expand dims for broadcasting: [num_pos, 1] vs [1, num_neg]
         rank_indices = (pos_scores.unsqueeze(1) < neg_scores.unsqueeze(0)).sum(1) + 1
         reciprocal_ranks = 1.0 / rank_indices.float()
@@ -164,8 +177,32 @@ def compute_ranking_metrics(
         "mrr": float(np.mean(mrrs)) if mrrs else 0.0,
     }
 
+
 def get_metrics(labels, preds):
+    precision, recall, thresholds = precision_recall_curve(labels, preds)
+
+    numerator = 2 * precision * recall
+    denominator = precision + recall
+    f1_scores = np.divide(
+        numerator, denominator, out=np.zeros_like(numerator), where=denominator != 0
+    )
+
+    best_idx = np.argmax(f1_scores)
+
+    if best_idx < len(thresholds):
+        best_threshold = thresholds[best_idx]
+    else:
+        best_threshold = 0.5
+
+    preds_binary = (preds >= best_threshold).astype(int)
+
     return {
         "auc": roc_auc_score(labels, preds),
         "ap": average_precision_score(labels, preds),
+        "best_threshold": float(best_threshold),
+        "accuracy": accuracy_score(labels, preds_binary),
+        "f1": f1_score(labels, preds_binary),
+        "precision": precision_score(labels, preds_binary),
+        "recall": recall_score(labels, preds_binary),
+        "mcc": matthews_corrcoef(labels, preds_binary),
     }

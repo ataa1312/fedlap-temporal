@@ -203,12 +203,23 @@ def main(run: wandb.Run):
 
                     log_dict[f"{prefix}/train_eval_loss"] = train_res[cid]["loss"]
                     log_dict[f"{prefix}/train_auc"] = train_res[cid][operator]["auc"]
-                    
+                    log_dict[f"{prefix}/train_ap"] = train_res[cid][operator]["ap"]
+                    log_dict[f"{prefix}/train_acc"] = train_res[cid][operator]["accuracy"]
+                    log_dict[f"{prefix}/train_f1"] = train_res[cid][operator]["f1"]
+
                     log_dict[f"{prefix}/val_eval_loss"] = val_res[cid]["loss"]
                     log_dict[f"{prefix}/val_auc"] = val_res[cid][operator]["auc"]
+                    log_dict[f"{prefix}/val_ap"] = val_res[cid][operator]["ap"]
+                    log_dict[f"{prefix}/val_acc"] = val_res[cid][operator]["accuracy"]
+                    log_dict[f"{prefix}/val_f1"] = val_res[cid][operator]["f1"]
                     
                     log_dict[f"{prefix}/test_eval_loss"] = test_res[cid]["loss"]
                     log_dict[f"{prefix}/test_auc"] = test_res[cid][operator]["auc"]
+                    log_dict[f"{prefix}/test_ap"] = test_res[cid][operator]["ap"]
+                    log_dict[f"{prefix}/test_acc"] = test_res[cid][operator]["accuracy"]
+                    log_dict[f"{prefix}/test_f1"] = test_res[cid][operator]["f1"]
+                    log_dict[f"{prefix}/test_mcc"] = test_res[cid][operator]["mcc"]
+                    log_dict[f"{prefix}/test_best_threshold"] = test_res[cid][operator]["best_threshold"]
 
                 run.log(log_dict)
 
@@ -224,6 +235,12 @@ def main(run: wandb.Run):
                 "server/test_ap": best_test_metrics["ap"],
                 "server/test_mrr": best_test_metrics["mrr"],
                 "server/test_ranking_ap": best_test_metrics["ranking_ap"],
+                "server/test_acc": best_test_metrics["accuracy"],
+                "server/test_f1": best_test_metrics["f1"],
+                "server/test_precision": best_test_metrics["precision"],
+                "server/test_recall": best_test_metrics["recall"],
+                "server/test_mcc": best_test_metrics["mcc"],
+                "server/test_best_threshold": best_test_metrics["best_threshold"],
             },
         )
 
