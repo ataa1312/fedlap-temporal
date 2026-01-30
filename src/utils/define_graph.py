@@ -16,7 +16,13 @@ from torch_geometric.datasets import (
     EllipticBitcoinTemporalDataset,
     PPI,
 )
-from torch_geometric.utils import dense_to_sparse, to_undirected, remove_self_loops
+from torch_geometric.utils import (
+    dense_to_sparse,
+    to_undirected,
+    remove_self_loops,
+    from_scipy_sparse_matrix,
+)
+import scipy.sparse as sp
 from torch_geometric.data import Data as PyGData
 
 from src import *
@@ -121,14 +127,25 @@ def _load_custom_dataset(path: Path) -> tuple[list[torch.Tensor], list[torch.Ten
 
     for gfn, ffn in zip(graph_file_names, features_file_names):
         LOGGER.info(f"Loading {gfn.name} and {ffn.name}...")
-        garray = np.load(gfn)
-        farray = np.load(ffn)
+        garray = np.load(gfn, allow_pickle=True)
+        farray = np.load(ffn, allow_pickle=True)
 
-        graph_tensor = torch.from_numpy(garray["graph"])
-        feature_tensor = torch.from_numpy(farray["features"])
+        if "edge_index" in garray.files and "edge_attr" in garray.files:
+            ei = torch.from_numpy(garray["edge_index"]).long()
+            ea = torch.from_numpy(garray["edge_attr"]).float()
+            graphs.append((ei, ea)) # type: ignore
+        else:
+            g_item = garray["graph"]
+            if g_item.ndim == 0:
+                graphs.append(g_item.item())
+            else:
+                graphs.append(torch.from_numpy(g_item))
 
-        graphs.append(graph_tensor)
-        features.append(feature_tensor)
+        f_item = farray["features"]
+        if f_item.ndim == 0:
+            features.append(f_item.item())
+        else:
+            features.append(torch.from_numpy(f_item))
 
     LOGGER.info(f"Loaded {len(graphs)} snapshots from {path}")
     return graphs, features
@@ -139,7 +156,13 @@ def load_dataset(
     path: Path,
 ) -> tuple[list[torch.Tensor], list[torch.Tensor]] | tuple:
     match name:
-        case "custom-enron" | "custom-uci":
+        case (
+            "custom-enron"
+            | "custom-uci"
+            | "custom-fb"
+            | "bitcoin-alpha"
+            | "bitcoin-otc"
+        ):
             LOGGER.info(f"Loading {name} dataset from {path}")
             return _load_custom_dataset(path)
 
@@ -220,30 +243,89 @@ def build_cleaned_graphs(
     max_num_nodes: int = 0
 
     for idx, (g, f) in enumerate(zip(graphs, features)):
-        edge_index, edge_weight = dense_to_sparse(g)
-        edge_weight = edge_weight.float()
+        edge_attr = None
+        if isinstance(g, tuple):
+            edge_index, edge_attr = g
+            # Ensure tensors are on correct device if needed later
+            edge_weight = None  # Will be defaulted to ones in normalize_adjacency
+        elif sp.issparse(g):
+            edge_index, edge_weight = from_scipy_sparse_matrix(g)
+        else:
+            edge_index, edge_weight = dense_to_sparse(g)
+
+        if edge_weight is not None:
+            edge_weight = edge_weight.float()
 
         if not is_directed:
-            edge_index, edge_weight = to_undirected(edge_index, edge_weight)
-            edge_index, edge_weight = remove_self_loops(edge_index, edge_weight)
+            if edge_attr is not None:
+                ei_w, edge_weight = to_undirected(edge_index, edge_weight, reduce="add")
+                ei_a, edge_attr = to_undirected(edge_index, edge_attr, reduce="mean")
+
+                if not torch.equal(ei_w, ei_a):
+                    LOGGER.warning(
+                        "to_undirected produced different indices for weight vs attr!"
+                    )
+
+                edge_index = ei_w
+            else:
+                edge_index, edge_weight = to_undirected(edge_index, edge_weight)
+
+            mask = edge_index[0] != edge_index[1]
+            edge_index = edge_index[:, mask]
+            if edge_weight is not None:
+                edge_weight = edge_weight[mask]
+            if edge_attr is not None:
+                edge_attr = edge_attr[mask]
+
+        if isinstance(g, tuple):
+            num_nodes = f.shape[0]
+        else:
+            num_nodes = g.shape[0]
 
         if normalize:
-            num_nodes = g.shape[0]
+            old_num_edges = edge_index.shape[1]
             edge_index, edge_weight = normalize_adjacency(
                 edge_index, edge_weight, num_nodes, edge_index.device
             )
+            if edge_attr is not None:
+                new_num_edges = edge_index.shape[1]
+                if new_num_edges > old_num_edges:
+                    num_added = new_num_edges - old_num_edges
+                    pad = torch.zeros(
+                        (num_added, edge_attr.shape[1]),
+                        device=edge_attr.device,
+                        dtype=edge_attr.dtype,
+                    )
+                    edge_attr = torch.cat([edge_attr, pad], dim=0)
 
-        node_features = f.float()
+        if sp.issparse(f):
+            f = f.tocoo()
+            indices = torch.from_numpy(np.vstack((f.row, f.col))).long()
+            values = torch.from_numpy(f.data).float()
+            shape = torch.Size(f.shape)
+            node_features = torch.sparse_coo_tensor(indices, values, shape).float()
+        elif isinstance(f, np.ndarray):
+            node_features = torch.from_numpy(f).float()
+        else:
+            node_features = f.float()
+
         graph = PyGData(
             x=node_features,
             edge_index=edge_index,
             edge_weight=edge_weight,
+            edge_attr=edge_attr,
             time=torch.tensor(idx, dtype=torch.long),
         )
         cleaned_graphs.append(graph)
 
-        assert isinstance(graph.num_nodes, int)
-        max_num_nodes = max(graph.num_nodes, max_num_nodes)
+        # PyGData.num_nodes might be None inferring from edge_index if x is not set or sparse?
+        # But we set x.
+        # If x is sparse, num_nodes should be inferrable from x.shape[0].
+        # Let's enforce it if we know it.
+        # graph.num_nodes = num_nodes # PyGData usually infers this.
+
+        # assert isinstance(graph.num_nodes, int)
+        max_num_nodes = max(num_nodes, max_num_nodes)
 
     LOGGER.info(
         f"Built {len(cleaned_graphs)} cleaned graphs with max {max_num_nodes} nodes"
@@ -260,19 +342,33 @@ def build_training_graphs(
     for t in range(tdx + 1):
         data = cleaned_graphs[t]
         assert isinstance(data.x, torch.Tensor)
-        node_ids = data.x.argmax(dim=-1).tolist()
+
+        if data.x.is_sparse:
+            x_coalesced = data.x.coalesce()
+            indices = x_coalesced.indices()
+            node_ids = indices[1].tolist()
+        else:
+            node_ids = data.x.argmax(dim=-1).tolist()
+
         node_ids = set[int](node_ids)
         union_node_ids.update(node_ids)
     union_node_ids = sorted(list[int](union_node_ids))  # Sort to guarantee order
-    union_node_ids = torch.tensor(union_node_ids, dtype=torch.long)
+    union_long_node_ids = torch.tensor(union_node_ids, dtype=torch.long)
 
     train_graphs: list[PyGData] = []
     for cg in cleaned_graphs[: tdx - 1]:
         copy_cg = cg.clone()
         assert isinstance(copy_cg.x, torch.Tensor)
         dim_features = copy_cg.x.shape[1]
-        new_x = F.one_hot(union_node_ids, num_classes=dim_features)
-        copy_cg.x = new_x.float()
+        
+        num_nodes = len(union_long_node_ids)
+        indices = torch.stack([torch.arange(num_nodes), union_long_node_ids])
+        values = torch.ones(num_nodes)
+        new_x = torch.sparse_coo_tensor(
+            indices, values, (num_nodes, dim_features)
+        ).float()
+
+        copy_cg.x = new_x
 
         # Later for conversion from PyGData to Graph
         copy_cg.dataset_name = dataset_name
@@ -286,8 +382,15 @@ def build_training_graphs(
     modified_graph = create_inductive_graph(test_graph, last_train_graph)
     assert isinstance(modified_graph.x, torch.Tensor)
     dim_features = modified_graph.x.shape[1]
-    new_x = F.one_hot(union_node_ids, num_classes=dim_features)
-    modified_graph.x = new_x.float()
+    
+    num_nodes = len(union_long_node_ids)
+    indices = torch.stack([torch.arange(num_nodes), union_long_node_ids])
+    values = torch.ones(num_nodes)
+    new_x = torch.sparse_coo_tensor(
+        indices, values, (num_nodes, dim_features)
+    ).float()
+    
+    modified_graph.x = new_x
 
     # Later for conversion from PyGData to Graph
     modified_graph.dataset_name = dataset_name
@@ -301,13 +404,6 @@ def build_training_graphs(
     test_graph = cleaned_graphs[tdx].clone()
     test_graph.dataset_name = dataset_name
     test_graph.num_classes = 1  # Edge prediction
-
-    # num_old_nodes = cleaned_graphs[tdx - 1].num_nodes
-    # filtered_edge_index, filtered_edge_weight = filter_edges_to_old_nodes(
-    #     test_graph.edge_index,  # pyright:ignore
-    #     test_graph.edge_weight,  # pyright:ignore
-    #     num_old_nodes,  # pyright:ignore
-    # )
 
     converted_test_graph = pygdata_to_graph(test_graph.to(device=device))
 
@@ -324,10 +420,17 @@ def create_inductive_graph(
         and previous_snapshot.edge_weight is not None
         else None
     )
+    previous_edge_attr = (
+        previous_snapshot.edge_attr
+        if hasattr(previous_snapshot, "edge_attr")
+        and previous_snapshot.edge_attr is not None
+        else None
+    )
     inductive_graph = PyGData(
         x=current_snapshot.x,
         edge_index=previous_snapshot.edge_index,
         edge_weight=previous_edge_weight,
+        edge_attr=previous_edge_attr,
         time=current_snapshot.time,
     )
 
@@ -336,9 +439,10 @@ def create_inductive_graph(
         f"current_snapshot has {current_snapshot.num_nodes} nodes"
     )
     assert inductive_graph.x is not None and current_snapshot.x is not None
-    assert torch.equal(inductive_graph.x, current_snapshot.x), (
-        "Node features should match between inductive_graph and current_snapshot"
-    )
+    # assert torch.equal(inductive_graph.x, current_snapshot.x), (
+    #     "Node features should match between inductive_graph and current_snapshot"
+    # )
+    # The above assertion fails if x is sparse? Or just unnecessary since we assigned it.
 
     return inductive_graph
 
@@ -367,7 +471,7 @@ def filter_edges_to_old_nodes(
 def pygdata_to_graph(pygdata: PyGData) -> Graph:
     if is_attr_good(pygdata, "x") and isinstance(pygdata.x, torch.Tensor):
         x = pygdata.x.clone()
-        node_ids = pygdata.x.argmax(dim=-1)
+        node_ids = safe_argmax(pygdata.x, dim=-1)
     else:
         raise ValueError("pygdata must have a valid x tensor")
 

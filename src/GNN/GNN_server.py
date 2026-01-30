@@ -502,16 +502,21 @@ class GNNServer(Server, GNNClient):
             train_result, val_result, test_result = client.evaluate_with_classifier(
                 eval_config=eval_config
             )
-            train_aucs += train_result[operator]
-            val_aucs += val_result[operator]
-            test_aucs += test_result[operator]
+            # train_aucs += train_result[operator]
+            # val_aucs += val_result[operator]
+            # test_aucs += test_result[operator]
+
+            train_aucs += train_result[operator]["auc"]
+            val_aucs += val_result[operator]["auc"]
+            test_aucs += test_result[operator]["auc"]
+
             train_results[client.id] = train_result
             val_results[client.id] = val_result
             test_results[client.id] = test_result
             LOGGER.info(
-                f"Client {client.id}: train auc = {train_result[operator]:.4f}, "
-                f"val auc = {val_result[operator]:.4f}, "
-                f"test auc = {test_result[operator]:.4f}"
+                f"Client {client.id}: train auc = {train_result[operator]["auc"]:.4f}, "
+                f"val auc = {val_result[operator]["auc"]:.4f}, "
+                f"test auc = {test_result[operator]["auc"]:.4f}"
             )
 
         num_clients = len(self.clients)
@@ -525,9 +530,9 @@ class GNNServer(Server, GNNClient):
         #     f"test auc = {avg_test_auc:.4f}"
         # )
         LOGGER.info(
-            f"Global: train auc = {train_results[self.id][operator]:.4f}, "
-            f"val auc = {val_results[self.id][operator]:.4f}, "
-            f"test auc = {test_results[self.id][operator]:.4f}"
+            f"Global: train auc = {train_results[self.id][operator]["auc"]:.4f}, "
+            f"val auc = {val_results[self.id][operator]["auc"]:.4f}, "
+            f"test auc = {test_results[self.id][operator]["auc"]:.4f}"
         )
 
         return (

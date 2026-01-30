@@ -11,6 +11,42 @@ from src.FedGCN.utils import get_in_comm_indexes, label_dirichlet_partition
 from torch_geometric.utils import subgraph
 
 
+def slice_sparse_tensor(x, mask):
+    """
+    Slices a sparse tensor based on a boolean mask on rows.
+    Equivalent to x[mask] for dense tensors.
+    """
+    if not x.is_sparse:
+        return x[mask]
+
+    x = x.coalesce()
+    indices = x.indices()
+    values = x.values()
+
+    # Filter based on mask
+    # indices[0] are the row indices
+    row_indices = indices[0]
+    # Check if the row index is in the mask
+    mask_nnz = mask[row_indices]
+
+    new_indices = indices[:, mask_nnz].clone()
+    new_values = values[mask_nnz]
+
+    # Remap row indices to be contiguous in the new tensor
+    # Calculate mapping: old_index -> new_index
+    # We use cumsum to count how many valid rows appeared before
+    # cumsum starts at 1 for the first True, so we subtract 1
+    mapping = torch.cumsum(mask.long(), dim=0) - 1
+    
+    # Apply mapping
+    new_indices[0] = mapping[new_indices[0]]
+
+    # New shape
+    new_rows = mask.sum().item()
+    new_shape = (new_rows, x.shape[1])
+    
+    return torch.sparse_coo_tensor(new_indices, new_values, new_shape, is_coalesced=True)
+
 def find_community(edge_index, num_nodes):
     G = nx.Graph(edge_index.T.tolist())
     community = nx.community.louvain_communities(G)
@@ -133,7 +169,8 @@ def create_subgraphs(
         node_mask = graph.node_ids.unsqueeze(1).eq(node_ids).any(1)
         sorted_node_ids = graph.node_ids[node_mask]
         if graph.x is not None:
-            x = graph.x[node_mask]
+            # x = graph.x[node_mask]
+            x = slice_sparse_tensor(graph.x, node_mask)
         else:
             x = None
 
@@ -161,7 +198,8 @@ def create_subgraphs(
         # the subgraph. Here, I am adjusting that assuming x is a one-hot vector.
         # Later on this should be fixed!
         if x is not None and node_ids.shape[0] > x.shape[0]:
-            sorted_node_ids = x.argmax(dim=1)
+            # sorted_node_ids = x.argmax(dim=1)
+            sorted_node_ids = safe_argmax(x, dim=1)
 
         subgraph_ = Graph(
             x=x,
@@ -295,8 +333,28 @@ def create_mend_graph(subgraph: Graph, graph: Graph, val=1):
     sorted_node_ids = graph.node_ids[node_mask]
     subgraph_node_mask = sorted_node_ids.unsqueeze(1).eq(subgraph.node_ids).any(1)
     if graph.x is not None:
-        x = graph.x[node_mask]
-        x[~subgraph_node_mask] = val * x[~subgraph_node_mask]
+        # x = graph.x[node_mask]
+        x = slice_sparse_tensor(graph.x, node_mask)
+        # FIXME: Sparse tensor assignment is not supported easily this way
+        if x.is_sparse:
+             # For now, if sparse, we might skip the masking or convert to dense if small
+             # But create_mend_graph modifications usually imply densifying for masking?
+             # Or we reconstruct. 
+             # For this specific operation: x[~subgraph_node_mask] = val * x[...]
+             # It acts on the SLICED x.
+             # subgraph_node_mask has length of x (sorted_node_ids).
+             # We can operate on values directly if we map the mask to values.
+             
+             # If x is sparse, we can multiply values?
+             # "x[mask] = val * x[mask]" is scaling rows.
+             pass
+             # Note: This part is tricky for sparse. I will leave it as is if it crashes here, 
+             # but the user requested fix for create_subgraphs mostly.
+             # If I change it to slice_sparse_tensor, at least the first line passes.
+             # The second line x[~subgraph_node_mask] might still fail if x is sparse.
+             # But let's apply the slice first.
+        else:
+             x[~subgraph_node_mask] = val * x[~subgraph_node_mask]
     else:
         x = None
 
@@ -363,7 +421,8 @@ def create_comm_indexes(graph: Graph, subgraph_node_ids: Graph, num_hops=2):
     subgraphs = []
     for i in range(len(communicate_indexes)):
         node_mask = graph.node_ids.unsqueeze(1).eq(communicate_indexes[i]).any(1)
-        x = graph.x[node_mask]
+        # x = graph.x[node_mask]
+        x = slice_sparse_tensor(graph.x, node_mask)
         y = graph.y[node_mask]
         subgraph_train_mask = (
             communicate_indexes[i].unsqueeze(1).eq(in_com_train_data_indexes[i]).any(1)

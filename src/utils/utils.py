@@ -21,7 +21,13 @@ from src.utils.plot_graph import plot_graph
 from torch_geometric.utils import degree, scatter, add_self_loops, remove_self_loops
 from src.utils.config_parser import Config
 
-DatasetName = Literal["custom-enron", "custom-uci"]
+DatasetName = Literal[
+    "custom-enron",
+    "custom-uci",
+    "custom-fb",
+    "bitcoin-alpha",
+    "bitcoin-otc",
+]
 LinkFeatureOperator = Literal["hadamard", "dot-product", "concat"]
 DownstreamTask = Literal["node-classification", "edge-prediction"]
 
@@ -128,6 +134,15 @@ def calc_f1_score(pred_y, y) -> torch.Tensor:
     precision, recall = calc_precision_and_racall(pred_y, y)
     # recall = calc_recall(pred_y, y)
     return 2 * (precision * recall) / (precision + recall + 1e-10)
+
+
+def safe_argmax(x: torch.Tensor, dim: int = -1) -> torch.Tensor:
+    """
+    Safely computes argmax for one-hot sparse tensors.
+    """
+    if x.is_sparse:
+        return x.coalesce().indices()[1]
+    return x.argmax(dim=dim)
 
 
 def calculate_average_precision(y_pred, y_true) -> torch.Tensor:

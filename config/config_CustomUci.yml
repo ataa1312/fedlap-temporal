@@ -26,7 +26,7 @@ model:
   weight_decay: 0.0005
   dropout: 0.1
   gnn_layer_type: custom-gat
-  data_type: feature
+  data_type: f+s
   smodel_type: LanczosLaplace # GNN, DGCN, CentralDGCN, Laplace, LanczosLaplace, SpectralLaplace, SpectralDGCN, LanczosDGCN
   fmodel_type: GNN #, DGCN, same
   iterations: 200
@@ -61,7 +61,7 @@ spectral:
   regularizer_coef: 0
   matrix: "lap" # adj lap inc
   decompose: "eigh" # svd eigh
-  update_mode: "recompute"
+  update_mode: update
 node2vec:
   epochs: 50
   walk_length: 20
@@ -104,6 +104,7 @@ fedgcn:
   num_hops: 2
   iid_beta: 10000
 dynamic:
+  use_edge_features: False
   model:
     structural:
       input_dimension: null # Set at runtime
@@ -158,9 +159,13 @@ dynamic:
       is_directed: False
       add_negative_train_samples: True
       neg_sampling_ratio: 1
+    query:
+      num_pos_samples: -1
+      num_neg_samples_per_pos: -1
+      num_retries: 5
 wandb:
   project: dynamic-fedlap
   name: null
   group: null
   job_type: dynamic-fedlap-edge-prediction
-  mode: online
+  mode: offline

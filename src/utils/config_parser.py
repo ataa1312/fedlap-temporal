@@ -27,6 +27,9 @@ class Config:
         self.dynamic = DynamicConfig(self.config["dynamic"])
         self.wandb = WandbConfig(self.config["wandb"])
 
+        if self.dynamic.evaluation.data.is_directed is None:
+            self.dynamic.evaluation.data.is_directed = self.dataset.is_directed
+
     def load_config(path):
         with open(path) as f:
             config = yaml.load(f, yaml.FullLoader)
@@ -201,6 +204,7 @@ class ModelStructuralConfig:
         self.attention_heads = structural.get("attention_heads", [32, 16])
         self.dropout = structural.get("dropout", 0.1)
         self.residual = structural.get("residual", False)
+        self.edge_dimension = structural.get("edge_dimension", 0)
 
 
 class ModelTemporalConfig:
@@ -214,6 +218,8 @@ class ModelTemporalConfig:
         self.dropout = temporal.get("dropout", 0.5)
         self.num_snapshots = temporal.get("num_snapshots", None)
         self.use_feedforward = temporal.get("use_feedforward", True)
+        self.residual = temporal.get("residual", False)
+        self.layer_norm = temporal.get("layer_norm", False)
 
 
 class TrainModelConfig:
@@ -268,6 +274,7 @@ class DynamicConfig:
         self.max_snapshot = train.get("max_snapshot", 12)
         self.random_walk = RandomWalkConfig(train["random_walk"])
         self.unsupervised = UnsupervisedTrainingConfig(train["unsupervised"])
+        self.use_edge_features = train["use_edge_features"]
         self.max_gradient_norm = train.get("max_gradient_norm", 1.0)
         self.evaluation = EvaluationConfig(train["evaluation"])
 
@@ -297,6 +304,16 @@ class ClassifierConfig:
         self.tx = BaseTxConfig(classifier["tx"])
 
 
+class QueryConfig:
+    def __init__(self, query):
+        self.load_config(query)
+
+    def load_config(self, query):
+        self.num_pos_samples = query.get("num_pos_samples", -1)
+        self.num_neg_samples_per_pos = query.get("num_neg_samples_per_pos", -1)
+        self.num_retries = query.get("num_retries", 5)
+
+
 class EvaluationDataConfig:
     def __init__(self, data):
         self.load_config(data)
@@ -304,7 +321,7 @@ class EvaluationDataConfig:
     def load_config(self, data):
         self.num_val = data.get("num_val", 0.2)
         self.num_test = data.get("num_test", 0.6)
-        self.is_directed = data.get("is_directed", False)
+        self.is_directed = data.get("is_directed", None)
         self.add_negative_train_samples = data.get("add_negative_train_samples", True)
         self.neg_sampling_ratio = data.get("neg_sampling_ratio", 1.0)
 
@@ -321,6 +338,7 @@ class EvaluationConfig:
         self.link_feature_operator = evaluation.get("link_feature_operator", "hadamard")
         self.classifier = ClassifierConfig(evaluation["classifier"])
         self.data = EvaluationDataConfig(evaluation["data"])
+        self.query = QueryConfig(evaluation.get("query", {}))
 
 
 class WandbConfig:

@@ -3,6 +3,8 @@ from dataclasses import dataclass
 
 import numpy as np
 from src import *
+from src.utils.utils import create_adj, calc_abar, split_abar
+from src.utils.eval_utils import sample_negative_edges, compute_ranking_metrics, get_metrics
 from torch import nn
 from src.client import Client
 from src.GNN.DGCN import DGCN, SDGCN, SDGCNMaster, SpectralDGCN
@@ -706,36 +708,6 @@ class GNNClient(Client):
             force_undirected=not eval_config.data.is_directed,
         )
 
-        val_ratio: float = eval_config.data.num_val
-
-        num_edges = min(num_test_pos, test_neg_edges.shape[1])
-        test_pos_edges = test_pos_edges[:, :num_edges]
-        test_neg_edges = test_neg_edges[:, :num_edges]
-
-        perm_indices = torch.randperm(num_edges, device=test_pos_edges.device)
-        test_pos_edges = test_pos_edges[:, perm_indices]
-        test_neg_edges = test_neg_edges[:, perm_indices]
-
-        # val_num = int(val_ratio * perm_indices.numel())
-        #
-        # val_pos_edges = test_pos_edges[:, :val_num]
-        # val_neg_edges = test_neg_edges[:, :val_num]
-        #
-        # val_pos_feats = self.get_link_features(val_pos_edges, embeddings, operator)
-        # val_neg_feats = self.get_link_features(val_neg_edges, embeddings, operator)
-        #
-        # val_data_feats = torch.cat([val_pos_feats, val_neg_feats], dim=0)
-        # val_labels = torch.cat(
-        #     [
-        #         torch.ones(len(val_pos_feats), device=embeddings.device),
-        #         torch.zeros(len(val_neg_feats), device=embeddings.device),
-        #     ],
-        #     dim=0,
-        # )
-
-        # test_pos_edges = test_pos_edges[:, val_num:]
-        # test_neg_edges = test_neg_edges[:, val_num:]
-
         test_pos_feats = self.get_link_features(test_pos_edges, embeddings, operator)
         test_neg_feats = self.get_link_features(test_neg_edges, embeddings, operator)
 
@@ -756,27 +728,45 @@ class GNNClient(Client):
             device=device,
         )
 
+        with torch.no_grad():
+            train_pred = torch.sigmoid(classifier(train_data_feats)).cpu().numpy()
+            val_pred = torch.sigmoid(classifier(val_data_feats)).cpu().numpy()
+            test_pred = torch.sigmoid(classifier(test_data_feats)).cpu().numpy()
+        
         criterion = getattr(torch.nn, classifier_config.loss_fn)()
         with torch.no_grad():
-            train_logits = classifier(train_data_feats)
-            val_logits = classifier(val_data_feats)
-            test_logits = classifier(test_data_feats)
+            train_loss = criterion(classifier(train_data_feats), train_labels).item()
+            val_loss = criterion(classifier(val_data_feats), val_labels).item()
+            test_loss = criterion(classifier(test_data_feats), test_labels).item()
+             
+        # Ranking Metrics Logic from Roland (eval.py)
+        if eval_config.query.num_pos_samples == -1:
+            num_pos_samples = test_pos_edges.size(1)
+        else:
+            num_pos_samples = eval_config.query.num_pos_samples
 
-            train_loss = criterion(train_logits, train_labels).item()
-            val_loss = criterion(val_logits, val_labels).item()
-            test_loss = criterion(test_logits, test_labels).item()
+        ranking_samples = sample_negative_edges(
+            test_pos_edges,
+            num_pos_samples=num_pos_samples,
+            num_neg_samples_per_pos=eval_config.query.num_neg_samples_per_pos,
+            sampling_retries=eval_config.query.num_retries,
+            num_nodes=self.graph.num_nodes, 
+        )
+        ranking_metrics_dict = compute_ranking_metrics(
+            ranking_samples, classifier, embeddings, operator
+        )
 
-            train_pred = torch.sigmoid(train_logits).cpu().numpy()
-            val_pred = torch.sigmoid(val_logits).cpu().numpy()
-            test_pred = torch.sigmoid(test_logits).cpu().numpy()
+        train_metrics = get_metrics(train_labels.cpu().numpy(), train_pred)
+        val_metrics = get_metrics(val_labels.cpu().numpy(), val_pred)
+        test_metrics = get_metrics(test_labels.cpu().numpy(), test_pred)
 
-        train_auc = roc_auc_score(train_labels.cpu().numpy(), train_pred)
-        val_auc = roc_auc_score(val_labels.cpu().numpy(), val_pred)
-        test_auc = roc_auc_score(test_labels.cpu().numpy(), test_pred)
+        test_metrics.update(ranking_metrics_dict)
 
-        train_results = {operator: train_auc, "loss": train_loss}
-        val_results = {operator: val_auc, "loss": val_loss}
-        test_results = {operator: test_auc, "loss": test_loss}
+        # Original FedLap expects {"operator": val, "loss": loss} or {"operator": dict, "loss": loss}
+        # The aggregation logic I updated previously expects dicts.
+        train_results = {operator: train_metrics, "loss": train_loss}
+        val_results = {operator: val_metrics, "loss": val_loss}
+        test_results = {operator: test_metrics, "loss": test_loss}
 
         return train_results, val_results, test_results
 

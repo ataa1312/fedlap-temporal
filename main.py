@@ -42,6 +42,7 @@ def get_group_name(config) -> str:
     name += f"{config.spectral.update_mode}|"
     name += f"C{config.subgraph.num_subgraphs}|"
     name += f"T{config.dynamic.min_snapshot}-{config.dynamic.max_snapshot}|"
+    name += f"EM-{config.dynamic.evaluation.mode}|"
     name += datetime.now().strftime("%Y%m%d%H%M%S")
     return name
 
@@ -55,6 +56,7 @@ def get_run_name(config, run_idx: int) -> str:
     name += f"{config.spectral.update_mode}|"
     name += f"C{config.subgraph.num_subgraphs}|"
     name += f"T{config.dynamic.min_snapshot}-{config.dynamic.max_snapshot}|"
+    name += f"EM-{config.dynamic.evaluation.mode}|"
     name += f"Run-{run_idx}"
     return name
 
@@ -80,7 +82,10 @@ def main(run: wandb.Run):
     subgraph_node_ids = random_assign(max_num_nodes, config.subgraph.num_subgraphs)
 
     for tdx in range(config.dynamic.min_snapshot, config.dynamic.max_snapshot + 1):
-        best_val_auc, best_test_auc, best_train_auc = 0.0, 0.0, 0.0
+        best_val_auc = 0.0
+        best_train_metrics: dict[str, float] = {}
+        best_val_metrics: dict[str, float] = {}
+        best_test_metrics: dict[str, float] = {}
         LOGGER.info(f"Training on the first {tdx} snapshot(s)...")
 
         train_graphs, test_graph = build_training_graphs(
@@ -168,10 +173,11 @@ def main(run: wandb.Run):
                     eval_config=config.dynamic.evaluation
                 )
 
-                if val_res[gnn_server.id][operator] > best_val_auc:
-                    best_train_auc = train_res[gnn_server.id][operator]
-                    best_val_auc = val_res[gnn_server.id][operator]
-                    best_test_auc = test_res[gnn_server.id][operator]
+                if val_res[gnn_server.id][operator]["auc"] > best_val_auc:
+                    best_train_metrics = train_res[gnn_server.id][operator]
+                    best_val_metrics = val_res[gnn_server.id][operator]
+                    best_test_metrics = test_res[gnn_server.id][operator]
+                    best_val_auc = val_res[gnn_server.id][operator]["auc"]
 
                 # if avg_val_auc > best_val_auc:
                 #     best_train_auc = avg_train_auc
@@ -179,7 +185,6 @@ def main(run: wandb.Run):
                 #     best_test_auc = avg_test_auc
 
             log_dict = dict[str, torch.Tensor | float]()
-
             log_dict[f"tdx{tdx:02}/server/avg_train_auc"] = avg_train_auc
             log_dict[f"tdx{tdx:02}/server/avg_val_auc"] = avg_val_auc
             log_dict[f"tdx{tdx:02}/server/avg_test_auc"] = avg_test_auc
@@ -197,13 +202,13 @@ def main(run: wandb.Run):
                          log_dict[f"{prefix}/train_loss"] = client_losses[cid]
 
                     log_dict[f"{prefix}/train_eval_loss"] = train_res[cid]["loss"]
-                    log_dict[f"{prefix}/train_auc"] = train_res[cid][operator]
+                    log_dict[f"{prefix}/train_auc"] = train_res[cid][operator]["auc"]
                     
                     log_dict[f"{prefix}/val_eval_loss"] = val_res[cid]["loss"]
-                    log_dict[f"{prefix}/val_auc"] = val_res[cid][operator]
+                    log_dict[f"{prefix}/val_auc"] = val_res[cid][operator]["auc"]
                     
                     log_dict[f"{prefix}/test_eval_loss"] = test_res[cid]["loss"]
-                    log_dict[f"{prefix}/test_auc"] = test_res[cid][operator]
+                    log_dict[f"{prefix}/test_auc"] = test_res[cid][operator]["auc"]
 
                 run.log(log_dict)
 
@@ -211,17 +216,22 @@ def main(run: wandb.Run):
             {
                 "tdx": tdx,
                 "server/loss": avg_loss,
-                "server/train_auc": best_train_auc,
-                "server/val_auc": best_val_auc,
-                "server/test_auc": best_test_auc,
+                "server/train_auc": best_train_metrics["auc"],
+                "server/val_auc": best_val_metrics["auc"],
+                "server/test_auc": best_test_metrics["auc"],
+                "server/train_ap": best_train_metrics["ap"],
+                "server/val_ap": best_val_metrics["ap"],
+                "server/test_ap": best_test_metrics["ap"],
+                "server/test_mrr": best_test_metrics["mrr"],
+                "server/test_ranking_ap": best_test_metrics["ranking_ap"],
             },
         )
 
         if log:
             LOGGER.info(
-                f"Best train AUC: {best_train_auc:.4f}, "
-                f"Best validation AUC: {best_val_auc:.4f}, "
-                f"Best test AUC: {best_test_auc:.4f}"
+                f"Best train AUC: {best_train_metrics['auc']:.4f}, ",
+                f"Best validation AUC: {best_val_metrics['auc']:.4f}, "
+                f"Best test AUC: {best_test_metrics['auc']:.4f}"
             )
 
 
