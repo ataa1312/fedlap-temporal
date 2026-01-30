@@ -18,3 +18,4 @@
 \build
 \runs
 *FedStruct.egg-info
+**/wandb/**
