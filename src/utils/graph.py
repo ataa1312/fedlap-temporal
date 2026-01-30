@@ -373,6 +373,8 @@ class Graph(Data):
         Returns the aligned from_U (i.e., from_U @ R).
         """
 
+        if from_U.device != to_U.device:
+            to_U = to_U.to(from_U.device)
         M = torch.matmul(from_U.t(), to_U)
         u, s, v = torch.svd(M)
         R = torch.matmul(u, v.t())
