@@ -362,6 +362,22 @@ class Graph(Data):
 
         return abar
 
+    def procrustes_project(
+        self,
+        from_U: torch.Tensor,
+        to_U: torch.Tensor,
+    ):
+        """
+        Solves the Orthogonal Procrustes problem: find best orthogonal matrix R
+        s.t. |to_U - from_U @ R|_F is minimized.
+        Returns the aligned from_U (i.e., from_U @ R).
+        """
+
+        M = torch.matmul(from_U.t(), to_U)
+        u, s, v = torch.svd(M)
+        R = torch.matmul(u, v.t())
+        return torch.matmul(from_U, R)
+
     def update_eigpairs(
         self,
         prev_V: torch.Tensor,

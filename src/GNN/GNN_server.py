@@ -227,8 +227,10 @@ class GNNServer(Server, GNNClient):
         for client in self.clients:
             client.clear_stored_context_pairs()
 
-    def get_previous_UD(self, spectral_update_mode: str, ss_idx: int):
-        prev_D, prev_U, prev_V = None, None, None
+    def get_previous_UD(
+        self, spectral_update_mode: str, ss_idx: int
+    ) -> SpectralFeatures:
+        prev_spectrals = SpectralFeatures(U=None, D=None, V=None)  # pyright: ignore
         # if (
         #     spectral_update_mode in ["keep", "update"]
         #     and is_attr_good(self.classifier.smodel, "Q")  # pyright: ignore
@@ -236,25 +238,17 @@ class GNNServer(Server, GNNClient):
         # ):
         # prev_D, prev_U = self.classifier.smodel.D, self.classifier.smodel.Q  # pyright: ignore
 
-        if spectral_update_mode in ["keep", "update"]:
+        if spectral_update_mode in ["keep"]:
             if len(self.stored_spectrals) > 0:
-                first_spectrals = min(self.stored_spectrals.keys())
-                stored_spectral = self.stored_spectrals[first_spectrals]
-                prev_D, prev_U, prev_V = (
-                    stored_spectral.D,
-                    stored_spectral.U,
-                    stored_spectral.V,
-                )
+                first_index = min(self.stored_spectrals.keys())
+                stored_spectral = self.stored_spectrals[first_index]
+                prev_spectrals = stored_spectral
         else:
-            if ss_idx in self.stored_spectrals:
-                stored_spectral = self.stored_spectrals[ss_idx]
-                prev_D, prev_U, prev_V = (
-                    stored_spectral.D,
-                    stored_spectral.U,
-                    stored_spectral.V,
-                )
+            if ss_idx - 1 in self.stored_spectrals and ss_idx > 0:
+                stored_spectral = self.stored_spectrals[ss_idx - 1]
+                prev_spectrals = stored_spectral
 
-        return prev_D, prev_U, prev_V
+        return prev_spectrals
 
     def get_spectral_features(
         self,
@@ -262,10 +256,10 @@ class GNNServer(Server, GNNClient):
         ss_idx,
         spectral_len,
         spectral_update_mode,
-        prev_U,
-        prev_D,
-        prev_V,
+        prev_sppectrals: SpectralFeatures,
+        first_spectral: SpectralFeatures,
     ):
+        prev_U, prev_D, prev_V = prev_sppectrals.U, prev_sppectrals.D, prev_sppectrals.V
         share = {}
         num_spectral_features = None
 
@@ -303,6 +297,10 @@ class GNNServer(Server, GNNClient):
                 else:
                     stored_spectral = self.stored_spectrals[ss_idx]
                     D, U, V = stored_spectral.D, stored_spectral.U, stored_spectral.V
+
+            if spectral_update_mode in ["recompute", "update"] and ss_idx > 0:
+                first_U = first_spectral.U
+                U = self.graph.procrustes_project(U, first_U)
 
             share["D"] = D
             share["U"] = U
@@ -350,15 +348,19 @@ class GNNServer(Server, GNNClient):
         self.update_graph(snapshot, ss_idx)
 
         if data_type in ["structure", "f+s"]:
-            prev_D, prev_U, prev_V = self.get_previous_UD(spectral_update_mode, ss_idx)
+            prev_spectrals = self.get_previous_UD(spectral_update_mode, ss_idx)
+            if 0 in self.stored_spectrals.keys():
+                first_spectrals = self.stored_spectrals[0]
+            else:
+                first_spectrals = SpectralFeatures(U=None, D=None, V=None)  # pyright:ignore
+
             share, _ = self.get_spectral_features(
                 smodel_type,
                 ss_idx,
                 spectral_len,
                 spectral_update_mode,
-                prev_U,
-                prev_D,
-                prev_V,
+                prev_spectrals,
+                first_spectrals,
             )
 
         # INFO: Check if clients and classifier need initialization
