@@ -12,7 +12,143 @@ from sklearn.metrics import (
     precision_recall_curve,
     average_precision_score,
 )
-from src.utils.utils import getLOGGER, is_attr_good
+from src.utils.config_parser import BaseTxConfig, ClassifierConfig
+
+
+class LogisticRegressionClassifier(nn.Module):
+    """Simple PyTorch logistic regression classifier for link prediction evaluation."""
+
+    def __init__(self, input_dim: int, device: torch.device):
+        super().__init__()
+        self.linear = nn.Linear(input_dim, 1, bias=True).to(device)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.linear(x).squeeze(-1)
+
+
+def train_logistic_regression(
+    train_features: torch.Tensor,
+    train_labels: torch.Tensor,
+    classifier_config: ClassifierConfig,
+    device: torch.device | None = None,
+) -> LogisticRegressionClassifier:
+    """
+    Train a PyTorch logistic regression classifier using the specified optimizer.
+
+    This matches sklearn's LogisticRegression behavior but uses PyTorch for GPU acceleration.
+
+    Args:
+        train_features: [num_samples, feature_dim] training features
+        train_labels: [num_samples] binary labels (0 or 1)
+        classifier_config: Classifier configuration containing optimizer, loss function, and training parameters
+        device: Device to train on (uses train_features.device if None)
+
+    Returns:
+        Trained logistic regression classifier
+    """
+    if device is None:
+        device = train_features.device
+
+    input_dim = train_features.shape[1]
+    classifier = LogisticRegressionClassifier(input_dim, device)
+
+    if classifier_config.implementation == "sklearn":
+        from sklearn.linear_model import LogisticRegression
+
+        # Sklearn requires CPU numpy arrays
+        X = train_features.cpu().numpy()
+        y = train_labels.cpu().numpy()
+
+        # Train with L-BFGS (default) and standard L2 regularization
+        # Create a new LR model (sklearn)
+        sklearn_model = LogisticRegression(
+            solver="lbfgs", max_iter=classifier_config.num_epoch
+        )
+        sklearn_model.fit(X, y)
+
+        # Copy weights to PyTorch model for consistent inference on GPU
+        # Sklearn: shape (1, n_features), PyTorch: shape (1, n_features)
+        with torch.no_grad():
+            classifier.linear.weight.copy_(
+                torch.from_numpy(sklearn_model.coef_).to(device)
+            )
+            classifier.linear.bias.copy_(
+                torch.from_numpy(sklearn_model.intercept_).to(device)
+            )
+
+        classifier.eval()
+        return classifier
+
+    classifier.train()
+
+    # FedLAP config parser uses string names for loss_fn sometimes, or class types.
+    # The config_parser.py defaults to "BCEWithLogitsLoss".
+    if isinstance(classifier_config.loss_fn, str):
+        criterion = getattr(nn, classifier_config.loss_fn)()
+    else:
+        # Fallback if it's already a class type (less likely in FedLAP's parser)
+        criterion = classifier_config.loss_fn()
+
+    tx_config = classifier_config.tx
+
+    if tx_config.fn is not None:
+        optimizer = get_optimizer(classifier, tx_config)
+    else:
+        optimizer = torch.optim.AdamW(
+            [
+                {
+                    "params": classifier.linear.weight,
+                    "lr": tx_config.lr,
+                    "weight_decay": tx_config.weight_decay,
+                },
+                {
+                    "params": classifier.linear.bias,
+                    "lr": tx_config.lr,
+                    "weight_decay": 0.0,
+                },
+            ],
+            lr=tx_config.lr,  # Default lr (can be overridden per parameter group)
+        )
+
+    for epoch in range(classifier_config.num_epoch):
+        optimizer.zero_grad()
+        logits = classifier(train_features)
+        loss = criterion(logits, train_labels)
+        loss.backward()
+        optimizer.step()
+
+    classifier.eval()
+    return classifier
+
+
+def get_optimizer(
+    net: torch.nn.Module, tx_config: BaseTxConfig
+) -> torch.optim.Optimizer:
+    tx = tx_config.fn
+    moment: float = getattr(tx_config, "moment", 0.0)
+    weight_decay: float = getattr(tx_config, "weight_decay", 0.0)
+    match tx:
+        case torch.optim.SGD:
+            return torch.optim.SGD(
+                net.parameters(),
+                lr=tx_config.lr,
+                momentum=moment,
+                weight_decay=weight_decay,
+            )
+        case torch.optim.Adam:
+            return torch.optim.Adam(
+                net.parameters(), lr=tx_config.lr, weight_decay=weight_decay
+            )
+        case torch.optim.AdamW:
+            return torch.optim.AdamW(
+                net.parameters(), lr=tx_config.lr, weight_decay=weight_decay
+            )
+        case torch.optim.Adagrad:
+            return torch.optim.Adagrad(
+                net.parameters(), lr=tx_config.lr, weight_decay=weight_decay
+            )
+        case _:
+            raise ValueError("Update `get_optimizer` or use available optimizers.")
 
 
 def get_link_features(
