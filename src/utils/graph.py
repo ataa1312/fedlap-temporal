@@ -382,8 +382,7 @@ class Graph(Data):
 
     def update_eigpairs(
         self,
-        prev_V: torch.Tensor,
-        prev_D: torch.Tensor,
+        prev_Q: torch.Tensor,
         self_loop=True,
     ):
         self.create_L(
@@ -391,11 +390,11 @@ class Graph(Data):
             self_loop=self_loop,
         )
         assert self.L is not None
-        next_H = prev_V.T @ self.L @ prev_V
-        next_D, next_U = torch.linalg.eigh(next_H)
-        next_U = prev_V @ next_U
+        next_H = prev_Q.T @ self.L @ prev_Q
+        next_D, next_V = torch.linalg.eigh(next_H)
+        next_U = prev_Q @ next_V
 
-        return next_D, next_U
+        return next_D, next_U, prev_Q
 
     def calc_eignvalues(self, estimate=False, self_loop=True, log=True, spectral_len=0):
         if config.spectral.matrix == "lap":

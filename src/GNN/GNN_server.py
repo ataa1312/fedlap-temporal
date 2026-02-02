@@ -230,7 +230,7 @@ class GNNServer(Server, GNNClient):
     def get_previous_UD(
         self, spectral_update_mode: str, ss_idx: int
     ) -> SpectralFeatures:
-        prev_spectrals = SpectralFeatures(U=None, D=None, V=None)  # pyright: ignore
+        prev_spectrals = SpectralFeatures(U=None, D=None, Q=None)  # pyright: ignore
         # if (
         #     spectral_update_mode in ["keep", "update"]
         #     and is_attr_good(self.classifier.smodel, "Q")  # pyright: ignore
@@ -259,7 +259,7 @@ class GNNServer(Server, GNNClient):
         prev_sppectrals: SpectralFeatures,
         first_spectral: SpectralFeatures,
     ):
-        prev_U, prev_D, prev_V = prev_sppectrals.U, prev_sppectrals.D, prev_sppectrals.V
+        prev_U, prev_D, prev_Q = prev_sppectrals.U, prev_sppectrals.D, prev_sppectrals.Q
         share = {}
         num_spectral_features = None
 
@@ -278,27 +278,31 @@ class GNNServer(Server, GNNClient):
             ):
                 if ss_idx not in self.stored_spectrals:
                     LOGGER.info("Updating spectral features...")
-                    D, U = self.graph.update_eigpairs(prev_V, prev_D)
-                    self.stored_spectrals[ss_idx] = SpectralFeatures(U=U, D=D, V=prev_V)
+                    D, U, Q = self.graph.update_eigpairs(prev_Q)  # pyright: ignore [reportArgumentType]
+                    self.stored_spectrals[ss_idx] = SpectralFeatures(U=U, D=D, Q=Q)
                 else:
                     stored_spectral = self.stored_spectrals[ss_idx]
-                    D, U, V = stored_spectral.D, stored_spectral.U, stored_spectral.V
+                    D, U, Q = stored_spectral.D, stored_spectral.U, stored_spectral.Q
 
             else:
                 if ss_idx not in self.stored_spectrals:
                     LOGGER.info("Computing spectral features...")
-                    D, U, V = self.graph.calc_eignvalues(
+                    D, U, Q = self.graph.calc_eignvalues(
                         estimate=not (smodel_type.startswith("Spectral")),
                         spectral_len=spectral_len,
                         log=False,
                     )
-                    assert V is not None
-                    self.stored_spectrals[ss_idx] = SpectralFeatures(U=U, D=D, V=V)
+                    assert Q is not None
+                    self.stored_spectrals[ss_idx] = SpectralFeatures(U=U, D=D, Q=Q)
                 else:
                     stored_spectral = self.stored_spectrals[ss_idx]
-                    D, U, V = stored_spectral.D, stored_spectral.U, stored_spectral.V
+                    D, U, Q = stored_spectral.D, stored_spectral.U, stored_spectral.Q
 
-            if spectral_update_mode in ["recompute", "update"] and ss_idx > 0:
+            if (
+                spectral_update_mode in ["recompute", "update"]
+                and ss_idx > 0
+                and config.spectral.use_procrustes
+            ):
                 first_U = first_spectral.U
                 U = self.graph.procrustes_project(U, first_U)
 
@@ -352,7 +356,7 @@ class GNNServer(Server, GNNClient):
             if 0 in self.stored_spectrals.keys():
                 first_spectrals = self.stored_spectrals[0]
             else:
-                first_spectrals = SpectralFeatures(U=None, D=None, V=None)  # pyright:ignore
+                first_spectrals = SpectralFeatures(U=None, D=None, Q=None)  # pyright:ignore
 
             share, _ = self.get_spectral_features(
                 smodel_type,
@@ -449,7 +453,7 @@ class GNNServer(Server, GNNClient):
             total_loss += client_loss
             num_clients_with_loss += 1
 
-            torch.nn.utils.clip_grad_norm_(client.classifier.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(client.classifier.parameters(), max_norm=config.dynamic.max_gradient_norm)
 
         clients_grads = self.get_grads()
 
