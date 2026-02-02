@@ -11,12 +11,12 @@ dataset:
   normalize: True
 subgraph:
   num_subgraphs: 3
-  delta: 20
-  train_ratio: 0.1
-  test_ratio: 0.8
+  delta: null
+  train_ratio: null
+  test_ratio: null
   partitioning: random
-  prune: False # This should later be fixed
-  pruning_th: 30
+  prune: null
+  pruning_th: null
 model:
   num_samples: [5, 10]
   batch: False
@@ -39,7 +39,8 @@ feature_model:
   DGCN_layers: 2
   dropout: 0.1
   residual: False
-  edge_dimension: 0
+  use_edge_features: False
+  edge_dimension: null
 structure_model:
   GNN_structure_layers_sizes: []
   DGCN_structure_layers_size: [128]
@@ -108,7 +109,6 @@ fedgcn:
   num_hops: 2
   iid_beta: 10000
 dynamic:
-  use_edge_features: False
   model:
     temporal:
       input_dimension: 128
@@ -156,7 +156,7 @@ dynamic:
     data:
       num_val: 0.2
       num_test: 0.6
-      is_directed: False
+      is_directed: null
       add_negative_train_samples: True
       neg_sampling_ratio: 1
     query:
