@@ -37,6 +37,9 @@ feature_model:
   DGCN_layer_sizes: [64]
   mlp_layer_sizes: [256]
   DGCN_layers: 2
+  dropout: 0.1
+  residual: False
+  edge_dimension: 0
 structure_model:
   GNN_structure_layers_sizes: []
   DGCN_structure_layers_size: [128]
@@ -62,6 +65,7 @@ spectral:
   matrix: "lap" # adj lap inc
   decompose: "eigh" # svd eigh
   update_mode: update
+  use_procrustes: True
 node2vec:
   epochs: 50
   walk_length: 20
@@ -106,13 +110,6 @@ fedgcn:
 dynamic:
   use_edge_features: False
   model:
-    structural:
-      input_dimension: null # Set at runtime
-      output_dimension: 128
-      layer_dimensions: [256]
-      attention_heads: [32, 16]
-      dropout: 0.1
-      residual: False
     temporal:
       input_dimension: 128
       num_attention_layers: 1
@@ -120,6 +117,8 @@ dynamic:
       dropout: 0.5
       num_snapshots: null # Set at runtime
       use_feedforward: True
+      residual: False
+      layer_norm: False
   loss_fn: BCEWithLogitsLoss
   min_snapshot: 2
   max_snapshot: 12 # UCI has 13 snapshots
@@ -146,6 +145,7 @@ dynamic:
     classifier:
       num_epoch: 100
       loss_fn: BCEWithLogitsLoss
+      implementation: sklearn
       tx:
         fn: null
         lr: 0.001

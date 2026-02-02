@@ -3,8 +3,6 @@ from dataclasses import dataclass
 
 import numpy as np
 from src import *
-from src.utils.utils import create_adj, calc_abar, split_abar
-from src.utils.eval_utils import sample_negative_edges, compute_ranking_metrics, get_metrics
 from torch import nn
 from src.client import Client
 from src.GNN.DGCN import DGCN, SDGCN, SDGCNMaster, SpectralDGCN
@@ -21,7 +19,14 @@ from src.GNN.laplace import (
     SpectralEdgeLaplace,
 )
 from src.utils.graph import Graph, AGraph
+from src.utils.utils import calc_abar, create_adj, split_abar
 from torch_geometric import transforms
+from src.utils.eval_utils import (
+    get_metrics,
+    sample_negative_edges,
+    compute_ranking_metrics,
+    train_logistic_regression,
+)
 from torch_geometric.data import Data as PyGData
 from torch_geometric.utils import negative_sampling
 from src.GNN.GNN_classifier import (
@@ -721,6 +726,7 @@ class GNNClient(Client):
         )
 
         classifier_config = eval_config.classifier
+        device = embeddings.device
         classifier = train_logistic_regression(
             train_data_feats,
             train_labels,
@@ -732,13 +738,13 @@ class GNNClient(Client):
             train_pred = torch.sigmoid(classifier(train_data_feats)).cpu().numpy()
             val_pred = torch.sigmoid(classifier(val_data_feats)).cpu().numpy()
             test_pred = torch.sigmoid(classifier(test_data_feats)).cpu().numpy()
-        
+
         criterion = getattr(torch.nn, classifier_config.loss_fn)()
         with torch.no_grad():
             train_loss = criterion(classifier(train_data_feats), train_labels).item()
             val_loss = criterion(classifier(val_data_feats), val_labels).item()
             test_loss = criterion(classifier(test_data_feats), test_labels).item()
-             
+
         # Ranking Metrics Logic from Roland (eval.py)
         if eval_config.query.num_pos_samples == -1:
             num_pos_samples = test_pos_edges.size(1)
@@ -750,7 +756,7 @@ class GNNClient(Client):
             num_pos_samples=num_pos_samples,
             num_neg_samples_per_pos=eval_config.query.num_neg_samples_per_pos,
             sampling_retries=eval_config.query.num_retries,
-            num_nodes=self.graph.num_nodes, 
+            num_nodes=self.graph.num_nodes,
         )
         ranking_metrics_dict = compute_ranking_metrics(
             ranking_samples, classifier, embeddings, operator
@@ -769,88 +775,3 @@ class GNNClient(Client):
         test_results = {operator: test_metrics, "loss": test_loss}
 
         return train_results, val_results, test_results
-
-
-def get_optimizer(
-    net: torch.nn.Module, tx_config: BaseTxConfig
-) -> torch.optim.Optimizer:
-    tx = tx_config.fn
-    moment: float = getattr(tx_config, "moment", 0.0)
-    weight_decay: float = getattr(tx_config, "weight_decay", 0.0)
-    match tx:
-        case torch.optim.SGD:
-            return torch.optim.SGD(
-                net.parameters(),
-                lr=tx_config.lr,
-                momentum=moment,
-                weight_decay=weight_decay,
-            )
-        case torch.optim.Adam:
-            return torch.optim.Adam(
-                net.parameters(), lr=tx_config.lr, weight_decay=weight_decay
-            )
-        case torch.optim.AdamW:
-            return torch.optim.AdamW(
-                net.parameters(), lr=tx_config.lr, weight_decay=weight_decay
-            )
-        case torch.optim.Adagrad:
-            return torch.optim.Adagrad(
-                net.parameters(), lr=tx_config.lr, weight_decay=weight_decay
-            )
-        case _:
-            raise ValueError("Update `get_optimizer` or use available optimizers.")
-
-
-class LogisticRegressionClassifier(nn.Module):
-    def __init__(self, input_dim: int, device: torch.device):
-        super().__init__()
-        self.linear = nn.Linear(input_dim, 1, bias=True).to(device)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.linear(x).squeeze(-1)
-
-
-def train_logistic_regression(
-    train_features: torch.Tensor,
-    train_labels: torch.Tensor,
-    classifier_config: ClassifierConfig,
-    device: torch.device | None = None,
-) -> LogisticRegressionClassifier:
-    if device is None:
-        device = train_features.device
-
-    input_dim = train_features.shape[1]
-    classifier = LogisticRegressionClassifier(input_dim, device)
-    classifier.train()
-
-    criterion = getattr(torch.nn, classifier_config.loss_fn)()
-    tx_config = classifier_config.tx
-
-    if tx_config.fn is not None:
-        optimizer = get_optimizer(classifier, tx_config)
-    else:
-        optimizer = torch.optim.AdamW(
-            [
-                {
-                    "params": classifier.linear.weight,
-                    "lr": tx_config.lr,
-                    "weight_decay": tx_config.weight_decay,
-                },
-                {
-                    "params": classifier.linear.bias,
-                    "lr": tx_config.lr,
-                    "weight_decay": 0.0,
-                },
-            ],
-            lr=tx_config.lr,  # Default lr (can be overridden per parameter group)
-        )
-
-    for epoch in range(classifier_config.num_epoch):
-        optimizer.zero_grad()
-        logits = classifier(train_features)
-        loss = criterion(logits, train_labels)
-        loss.backward()
-        optimizer.step()
-
-    classifier.eval()
-    return classifier

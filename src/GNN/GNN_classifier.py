@@ -463,7 +463,7 @@ class FedDynamicClassifier(FedClassifier):
         if len(nodes_with_pairs) == 0:
             return torch.tensor(0.0, device=z.device, requires_grad=True)
 
-        criterion = torch.nn.BCEWithLogitsLoss()
+        criterion = getattr(torch.nn, config.dynamic.loss_fn)()
 
         # Compute degree-based unigram distribution for negative sampling
         num_nodes_total = z.shape[0]
@@ -722,7 +722,7 @@ class FedDynamicFeatureClassifier(Classifier):
         if len(nodes_with_pairs) == 0:
             return torch.tensor(0.0, device=z.device, requires_grad=True)
 
-        criterion = torch.nn.BCEWithLogitsLoss()
+        criterion = getattr(torch.nn, config.dynamic.loss_fn)()
 
         # Compute degree-based unigram distribution for negative sampling
         num_nodes_total = z.shape[0]

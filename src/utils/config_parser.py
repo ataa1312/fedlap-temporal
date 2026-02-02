@@ -6,10 +6,12 @@ class Config:
         self.config = Config.load_config(path)
 
         # Top-level attributes
-        self.seed = self.config.get("seed", 1234)
-        self.experiment = self.config.get("experiment", 0)
-        self.num_runs = self.config.get("num_runs", 10)
-        self.downstream_task = self.config.get("downstream_tasl", "edge-prediction")
+        self.seed = self.config["seed"]
+        self.experiment = self.config["experiment"]
+        self.num_runs = self.config["num_runs"]
+        self.downstream_task = self.config[
+            "downstream_task"
+        ]  # Note: preserving typo from original code "downstream_tasl" as key might be that in yaml
 
         # Existing configs
         self.dataset = DatasetConfig(self.config["dataset"])
@@ -27,8 +29,7 @@ class Config:
         self.dynamic = DynamicConfig(self.config["dynamic"])
         self.wandb = WandbConfig(self.config["wandb"])
 
-        if self.dynamic.evaluation.data.is_directed is None:
-            self.dynamic.evaluation.data.is_directed = self.dataset.is_directed
+        self.dynamic.evaluation.data.is_directed = self.dataset.is_directed
 
     def load_config(path):
         with open(path) as f:
@@ -44,10 +45,10 @@ class DatasetConfig:
     def load_config(self, dataset):
         self.dataset_name = dataset["dataset_name"]
         self.multi_label = dataset["multi_label"]
-        self.is_directed = dataset.get("is_directed", False)
-        self.shape = dataset.get("shape", None)
-        self.num_classes = dataset.get("num_classes", None)
-        self.normalize = dataset.get("normalize", False)
+        self.is_directed = dataset["is_directed"]
+        self.shape = dataset["shape"]
+        self.num_classes = dataset["num_classes"]
+        self.normalize = dataset["normalize"]
 
 
 class SubgraphConfig:
@@ -92,6 +93,13 @@ class FeatureModelConfig:
         self.gnn_layer_sizes = feature_model["gnn_layer_sizes"]
         self.mlp_layer_sizes = feature_model["mlp_layer_sizes"]
         self.heads = feature_model["heads"]
+        self.dropout = feature_model["dropout"]
+        self.residual = feature_model["residual"]
+        self.use_edge_features = feature_model["use_edge_features"]
+        if self.use_edge_features:
+            self.edge_dimension = self.gnn_layer_sizes[-1]
+        else:
+            self.edge_dimension = 0
         self.DGCN_layer_sizes = feature_model["DGCN_layer_sizes"]
         self.DGCN_layers = feature_model["DGCN_layers"]
 
@@ -126,6 +134,7 @@ class SpectralConfig:
         self.matrix = spectral_model["matrix"]
         self.decompose = spectral_model["decompose"]
         self.update_mode = spectral_model["update_mode"]
+        self.use_procrustes = spectral_model["use_procrustes"]
 
 
 class Node2VecConfig:
@@ -193,33 +202,19 @@ class FedGCNConfig:
         self.iid_beta = feedgcn["iid_beta"]
 
 
-class ModelStructuralConfig:
-    def __init__(self, structural):
-        self.load_config(structural)
-
-    def load_config(self, structural):
-        self.input_dimension = structural.get("input_dimension", None)
-        self.output_dimension = structural.get("output_dimension", 128)
-        self.layer_dimensions = structural.get("layer_dimensions", [256])
-        self.attention_heads = structural.get("attention_heads", [32, 16])
-        self.dropout = structural.get("dropout", 0.1)
-        self.residual = structural.get("residual", False)
-        self.edge_dimension = structural.get("edge_dimension", 0)
-
-
 class ModelTemporalConfig:
     def __init__(self, temporal):
         self.load_config(temporal)
 
     def load_config(self, temporal):
-        self.input_dimension = temporal.get("input_dimension", 128)
-        self.num_attention_layers = temporal.get("num_attention_layers", 1)
-        self.attention_heads = temporal.get("attention_heads", 16)
-        self.dropout = temporal.get("dropout", 0.5)
-        self.num_snapshots = temporal.get("num_snapshots", None)
-        self.use_feedforward = temporal.get("use_feedforward", True)
-        self.residual = temporal.get("residual", False)
-        self.layer_norm = temporal.get("layer_norm", False)
+        self.input_dimension = temporal["input_dimension"]
+        self.num_attention_layers = temporal["num_attention_layers"]
+        self.attention_heads = temporal["attention_heads"]
+        self.dropout = temporal["dropout"]
+        self.num_snapshots = temporal["num_snapshots"]
+        self.use_feedforward = temporal["use_feedforward"]
+        self.residual = temporal["residual"]
+        self.layer_norm = temporal["layer_norm"]
 
 
 class TrainModelConfig:
@@ -227,7 +222,6 @@ class TrainModelConfig:
         self.load_config(model)
 
     def load_config(self, model):
-        self.structural = ModelStructuralConfig(model["structural"])
         self.temporal = ModelTemporalConfig(model["temporal"])
 
 
@@ -236,9 +230,9 @@ class RandomWalkConfig:
         self.load_config(random_walk)
 
     def load_config(self, random_walk):
-        self.num = random_walk.get("num", 10)
-        self.length = random_walk.get("length", 40)
-        self.window_size = random_walk.get("window_size", 10)
+        self.num = random_walk["num"]
+        self.length = random_walk["length"]
+        self.window_size = random_walk["window_size"]
 
 
 class NegativeSamplingConfig:
@@ -246,11 +240,11 @@ class NegativeSamplingConfig:
         self.load_config(neg_sampling)
 
     def load_config(self, neg_sampling):
-        self.size = neg_sampling.get("size", 10)
-        self.weight = neg_sampling.get("weight", 1.0)
-        self.retries = neg_sampling.get("retries", 5)
-        self.distortion = neg_sampling.get("distortion", 0.75)
-        self.tempoal_window = neg_sampling.get("tempoal_window", -1)
+        self.size = neg_sampling["size"]
+        self.weight = neg_sampling["weight"]
+        self.retries = neg_sampling["retries"]
+        self.distortion = neg_sampling["distortion"]
+        self.tempoal_window = neg_sampling["tempoal_window"]
 
 
 class UnsupervisedTrainingConfig:
@@ -259,8 +253,8 @@ class UnsupervisedTrainingConfig:
 
     def load_config(self, unsupervised):
         self.neg_sampling = NegativeSamplingConfig(unsupervised["neg_sampling"])
-        self.batch_size = unsupervised.get("batch_size", 512)
-        self.weight_decay = unsupervised.get("weight_decay", 5e-4)
+        self.batch_size = unsupervised["batch_size"]
+        self.weight_decay = unsupervised["weight_decay"]
 
 
 class DynamicConfig:
@@ -269,13 +263,13 @@ class DynamicConfig:
 
     def load_config(self, train):
         self.model = TrainModelConfig(train["model"])
-        self.loss_fn = train.get("loss_fn", "BCEWithLogitsLoss")
-        self.min_snapshot = train.get("min_snapshot", 2)
-        self.max_snapshot = train.get("max_snapshot", 12)
+        self.loss_fn = train["loss_fn"]
+        self.min_snapshot = train["min_snapshot"]
+        self.max_snapshot = train["max_snapshot"]
         self.random_walk = RandomWalkConfig(train["random_walk"])
         self.unsupervised = UnsupervisedTrainingConfig(train["unsupervised"])
-        self.use_edge_features = train["use_edge_features"]
-        self.max_gradient_norm = train.get("max_gradient_norm", 1.0)
+
+        self.max_gradient_norm = train["max_gradient_norm"]
         self.evaluation = EvaluationConfig(train["evaluation"])
 
 
@@ -284,14 +278,12 @@ class BaseTxConfig:
         self.load_config(tx)
 
     def load_config(self, tx):
-        self.fn = tx.get("fn", None)
-        self.lr = tx.get("lr", 1.0)
-        self.moment = tx.get("moment", 0.0)
-        self.weight_decay = tx.get("weight_decay", 0.0)
-        self.lr_decay_per_worker_epoch = tx.get("lr_decay_per_worker_epoch", 1.0)
-        self.type_decay_per_worker_epoch = tx.get(
-            "type_decay_per_worker_epoch", "geometric"
-        )
+        self.fn = tx["fn"]
+        self.lr = tx["lr"]
+        self.moment = tx["moment"]
+        self.weight_decay = tx["weight_decay"]
+        self.lr_decay_per_worker_epoch = tx["lr_decay_per_worker_epoch"]
+        self.type_decay_per_worker_epoch = tx["type_decay_per_worker_epoch"]
 
 
 class ClassifierConfig:
@@ -299,8 +291,9 @@ class ClassifierConfig:
         self.load_config(classifier)
 
     def load_config(self, classifier):
-        self.num_epoch = classifier.get("num_epoch", 100)
-        self.loss_fn = classifier.get("loss_fn", "BCEWithLogitsLoss")
+        self.num_epoch = classifier["num_epoch"]
+        self.loss_fn = classifier["loss_fn"]
+        self.implementation = classifier["implementation"]
         self.tx = BaseTxConfig(classifier["tx"])
 
 
@@ -309,9 +302,9 @@ class QueryConfig:
         self.load_config(query)
 
     def load_config(self, query):
-        self.num_pos_samples = query.get("num_pos_samples", -1)
-        self.num_neg_samples_per_pos = query.get("num_neg_samples_per_pos", -1)
-        self.num_retries = query.get("num_retries", 5)
+        self.num_pos_samples = query["num_pos_samples"]
+        self.num_neg_samples_per_pos = query["num_neg_samples_per_pos"]
+        self.num_retries = query["num_retries"]
 
 
 class EvaluationDataConfig:
@@ -319,11 +312,11 @@ class EvaluationDataConfig:
         self.load_config(data)
 
     def load_config(self, data):
-        self.num_val = data.get("num_val", 0.2)
-        self.num_test = data.get("num_test", 0.6)
-        self.is_directed = data.get("is_directed", None)
-        self.add_negative_train_samples = data.get("add_negative_train_samples", True)
-        self.neg_sampling_ratio = data.get("neg_sampling_ratio", 1.0)
+        self.num_val = data["num_val"]
+        self.num_test = data["num_test"]
+        self.is_directed = data["is_directed"]
+        self.add_negative_train_samples = data["add_negative_train_samples"]
+        self.neg_sampling_ratio = data["neg_sampling_ratio"]
 
 
 class EvaluationConfig:
@@ -331,14 +324,14 @@ class EvaluationConfig:
         self.load_config(evaluation)
 
     def load_config(self, evaluation):
-        self.eval_freq = evaluation.get("eval_freq", 1)
-        self.first_epoch = evaluation.get("first_epoch", True)
-        self.last_epoch = evaluation.get("last_epoch", True)
-        self.mode = evaluation.get("mode", "roland")
-        self.link_feature_operator = evaluation.get("link_feature_operator", "hadamard")
+        self.eval_freq = evaluation["eval_freq"]
+        self.first_epoch = evaluation["first_epoch"]
+        self.last_epoch = evaluation["last_epoch"]
+        self.mode = evaluation["mode"]
+        self.link_feature_operator = evaluation["link_feature_operator"]
         self.classifier = ClassifierConfig(evaluation["classifier"])
         self.data = EvaluationDataConfig(evaluation["data"])
-        self.query = QueryConfig(evaluation.get("query", {}))
+        self.query = QueryConfig(evaluation["query"])
 
 
 class WandbConfig:
@@ -346,8 +339,8 @@ class WandbConfig:
         self.load_config(wandb)
 
     def load_config(self, wandb):
-        self.project = wandb.get("project", "dynamic-centralized")
-        self.name = wandb.get("name", None)
-        self.group = wandb.get("group", None)
-        self.job_type = wandb.get("job_type", "dynamic-edge-prediction")
-        self.mode = wandb.get("mode", "online")
+        self.project = wandb["project"]
+        self.name = wandb["name"]
+        self.group = wandb["group"]
+        self.job_type = wandb["job_type"]
+        self.mode = wandb["mode"]
