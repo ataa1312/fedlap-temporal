@@ -21,6 +21,8 @@ class GNN(nn.Module):
         normalization=None,
         multiple_features=False,
         feature_dims=0,
+        residual=False,
+        edge_dim=0,
     ):
         super().__init__()
         self.type_ = "GNN"
@@ -34,6 +36,8 @@ class GNN(nn.Module):
         self.multiple_features = multiple_features
         self.feature_dims = feature_dims
         self.heads = heads
+        self.residual = residual
+        self.edge_dim = edge_dim
 
         self.layers = self.create_models(layer_sizes, heads)
         # self.net = nn.Sequential(*self.layers)
@@ -100,7 +104,8 @@ class GNN(nn.Module):
                     per_head_out_dim=per_head_dout,
                     attention_dropout=self.dropout,
                     feedforward_dropout=self.dropout,
-                    residual=False,
+                    residual=self.residual,
+                    edge_dim=self.edge_dim,
                 )
 
             layers.append(layer)
@@ -158,10 +163,12 @@ class GNN(nn.Module):
         for grad, parameter in zip(grads, model_parameters):
             parameter.grad = grad
 
-    def forward(self, x, edge_index, edge_weight=None):
+    def forward(self, x, edge_index, edge_weight=None, edge_attr=None):
         h = x
         for idx, layer in enumerate(self.layers):
-            if isinstance(layer, (MessagePassing, CustomGAT, MultiHeadCustomGAT)):
+            if isinstance(layer, (MultiHeadCustomGAT, CustomGAT)):
+                h = layer(h, edge_index, edge_weight, edge_attr)
+            elif isinstance(layer, (MessagePassing)):
                 h = layer(h, edge_index, edge_weight)
             else:
                 h = layer(h)

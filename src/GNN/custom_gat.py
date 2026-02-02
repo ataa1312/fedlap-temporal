@@ -23,17 +23,26 @@ class CustomGAT(nn.Module):
         feedforward_dropout: float = 0.0,
         residual: bool = False,
         leaky_relu_alpha: float = 0.2,
+        edge_dim: int = 0,
     ):
         super().__init__()
         self.din = din
         self.dout = dout
+        self.edge_dim = edge_dim
         self.attention_dropout = attention_dropout
         self.feedforward_dropout = feedforward_dropout
         self.residual = residual
         self.leaky_relu_alpha = leaky_relu_alpha
 
         self.weight_transform = nn.Linear(din, dout, bias=False)
-        self.attn_vector = nn.Linear(2 * dout, 1, bias=False)  # Attention vector a^T
+
+        attn_input_dim = 2 * dout
+        if self.edge_dim > 0:
+            self.edge_transform = nn.Linear(self.edge_dim, dout, bias=False)
+            attn_input_dim += dout
+            init.xavier_uniform_(self.edge_transform.weight)
+
+        self.attn_vector = nn.Linear(attn_input_dim, 1, bias=False)  # Attention vector a^T
         self.leaky_relu = nn.LeakyReLU(negative_slope=leaky_relu_alpha)
 
         self.attn_dropout = nn.Dropout(attention_dropout)
@@ -59,6 +68,7 @@ class CustomGAT(nn.Module):
         x: torch.Tensor,
         edge_index: Adj,
         edge_weight: OptTensor = None,
+        edge_attr: OptTensor = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -83,7 +93,11 @@ class CustomGAT(nn.Module):
         src_feats = seq_feats[row]
         tgt_feats = seq_feats[col]
         # concat_feats.shape = [num_edges, 2 * dout] (concatenated along feature dimension)
-        concat_fts = torch.cat([src_feats, tgt_feats], dim=-1)
+        if self.edge_dim > 0 and edge_attr is not None:
+             edge_emb = self.edge_transform(edge_attr)
+             concat_fts = torch.cat([src_feats, tgt_feats, edge_emb], dim=-1)
+        else:
+             concat_fts = torch.cat([src_feats, tgt_feats], dim=-1)
 
         # logits.shape = [num_edges, 1]
         logits = self.attn_vector(concat_fts)
@@ -132,6 +146,7 @@ class MultiHeadCustomGAT(nn.Module):
         attention_dropout: float = 0.0,
         feedforward_dropout: float = 0.0,
         residual: bool = False,
+        edge_dim: int = 0,
     ):
         super().__init__()
         self.din = din
@@ -148,6 +163,7 @@ class MultiHeadCustomGAT(nn.Module):
                     attention_dropout=attention_dropout,
                     feedforward_dropout=feedforward_dropout,
                     residual=residual,
+                    edge_dim=edge_dim,
                 )
                 for _ in range(num_heads)
             ]
@@ -162,6 +178,7 @@ class MultiHeadCustomGAT(nn.Module):
         x: torch.Tensor,
         edge_index: Adj,
         edge_weight: OptTensor = None,
+        edge_attr: OptTensor = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -174,7 +191,7 @@ class MultiHeadCustomGAT(nn.Module):
         """
         head_outputs = []
         for head in self.heads:
-            head_out = head(x, edge_index, edge_weight)
+            head_out = head(x, edge_index, edge_weight, edge_attr)
             head_outputs.append(head_out)
 
         # Concatenate all head outputs

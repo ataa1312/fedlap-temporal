@@ -56,7 +56,9 @@ class NewFGNN(FGNN):
             self.graph.num_features  # pyright:ignore
         ] + config.feature_model.gnn_layer_sizes
         heads = config.feature_model.heads
-        dropout = config.model.dropout
+        dropout = config.feature_model.dropout
+        residual = config.feature_model.residual
+        edge_dimension = config.feature_model.edge_dimension
 
         model_specs = [
             ModelSpecs(
@@ -67,6 +69,8 @@ class NewFGNN(FGNN):
                 dropout=dropout,
                 normalization=None,
                 gnn_layer_type=config.model.gnn_layer_type,
+                residual=residual,
+                edge_dim=edge_dimension,
             )
         ]
 
@@ -74,7 +78,7 @@ class NewFGNN(FGNN):
         self.model.to(device)
 
     def get_embeddings(self):
-        H = self.model(self.graph.x, self.graph.edge_index, self.graph.edge_attr)  # pyright: ignore
+        H = self.model(self.graph.x, self.graph.edge_index, edge_attr=self.graph.edge_attr)  # pyright: ignore
         # H = self.model(self.graph.x, self.graph.edge_index)  # pyright: ignore
         return H
 

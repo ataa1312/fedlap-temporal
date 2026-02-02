@@ -15,6 +15,8 @@ class ModelSpecs:
         normalization=None,
         gnn_layer_type=config.model.gnn_layer_type,
         num_layers=None,
+        residual=False,
+        edge_dim=0,
     ):
         self.type = type
         self.layer_sizes = layer_sizes
@@ -23,6 +25,8 @@ class ModelSpecs:
         self.dropout = dropout
         self.normalization = normalization
         self.gnn_layer_type = gnn_layer_type
+        self.residual = residual
+        self.edge_dim = edge_dim
         if num_layers is None:
             self.num_layers = len(self.layer_sizes) - 1
         else:
@@ -96,14 +100,16 @@ class ModelBinder(nn.Module):
         for grad, parameter in zip(grads, model_parameters):
             parameter.grad = grad
 
-    def step(self, model, h, edge_index=None, edge_weight=None) -> None:
+    def step(self, model, h, edge_index=None, edge_weight=None, edge_attr=None) -> None:
         if model.type_ == "MLP":
             return model(h)
         else:
+            if isinstance(model, GNN) and model.layer_type == "custom-gat":
+                return model(h, edge_index, edge_weight, edge_attr)
             return model(h, edge_index, edge_weight)
 
-    def forward(self, x, edge_index=None, edge_weight=None):
+    def forward(self, x, edge_index=None, edge_weight=None, edge_attr=None):
         h = x
         for model in self.models:
-            h = self.step(model, h, edge_index, edge_weight)
+            h = self.step(model, h, edge_index, edge_weight, edge_attr)
         return h
