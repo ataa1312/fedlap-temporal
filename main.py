@@ -20,6 +20,7 @@ from src.utils.define_graph import (
     load_dataset,
     build_cleaned_graphs,
     build_training_graphs,
+    filter_edges_to_old_nodes,
 )
 from src.FedGCN.FedGCN_server import FedGCNServer
 from src.FedPub.fedpub_server import FedPubServer
@@ -155,6 +156,16 @@ def main(run: wandb.Run):
             test_res = {}
 
             if should_eval:
+                num_old_nodes = cleaned_graphs[tdx - 1].num_nodes
+                filtered_edge_index, filtered_edge_weight = filter_edges_to_old_nodes(
+                    test_graph.edge_index,  # pyright:ignore
+                    test_graph.edge_attr,  # pyright:ignore
+                    num_old_nodes,  # pyright:ignore
+                )
+
+                test_graph.edge_index = filtered_edge_index
+                test_graph.edge_attr = filtered_edge_weight
+
                 gnn_server.load_test_snapshot(
                     test_graph,
                     subgraph_node_ids,
