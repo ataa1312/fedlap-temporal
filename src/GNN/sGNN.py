@@ -52,7 +52,7 @@ class SClassifier(SFVMixin, Classifier):
     def __init__(
         self,
         graph: Graph,
-        hidden_layer_size=config.structure_model.DGCN_structure_layers_sizes,
+        hidden_layer_size=config["structure_model"]["DGCN_structure_layers_sizes"],
     ):
         super().__init__(graph)
         self.create_smodel(hidden_layer_size)
@@ -80,7 +80,7 @@ class SEdgeClassifier(SFVMixin, EdgeClassifier):
         self,
         graph: Graph,
         link_feature_operator: LinkFeatureOperator = "hadamard",
-        hidden_layer_size=config.structure_model.DGCN_structure_layers_sizes,
+        hidden_layer_size=config["structure_model"]["DGCN_structure_layers_sizes"],
     ):
         super().__init__(graph, link_feature_operator)
         self.link_feature_operator = link_feature_operator
@@ -145,7 +145,7 @@ class SGNNSlave(Classifier):
 
     def get_prediction(self):
         s = self.get_embeddings(self.graph.node_ids)
-        if config.dataset.multi_label:
+        if config["dataset"]["multi_label"]:
             y_pred = torch.nn.functional.sigmoid(s)
         else:
             y_pred = torch.nn.functional.softmax(s, dim=1)
@@ -173,8 +173,8 @@ class SGNNMaster(SClassifier):
     def create_smodel(self):
         gnn_layer_sizes = [
             self.graph.num_features
-        ] + config.structure_model.GNN_structure_layers_sizes
-        mlp_layer_sizes = [config.structure_model.GNN_structure_layers_sizes[-1]] + [
+        ] + config["structure_model"]["GNN_structure_layers_sizes"]
+        mlp_layer_sizes = [config["structure_model"]["GNN_structure_layers_sizes"][-1]] + [
             self.graph.num_classes
         ]
 
@@ -214,7 +214,7 @@ class SGNNMaster(SClassifier):
 
     def get_prediction(self):
         s = self.get_embeddings(self.graph.node_ids)
-        if config.dataset.multi_label:
+        if config["dataset"]["multi_label"]:
             y_pred = torch.nn.functional.sigmoid(s)
         else:
             y_pred = torch.nn.functional.softmax(s, dim=1)

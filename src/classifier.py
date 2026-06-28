@@ -19,7 +19,7 @@ class Classifier:
         if len(parameters) == 0:
             return
         self.optimizer = torch.optim.AdamW(
-            parameters, lr=config.model.lr, weight_decay=0.0
+            parameters, lr=config["model"]["lr"], weight_decay=0.0
         )
 
     def state_dict(self):
@@ -99,7 +99,7 @@ class Classifier:
 
     def get_prediction(self):
         H = self.get_embeddings()
-        if config.dataset.multi_label:
+        if config["dataset"]["multi_label"]:
             y_pred = torch.nn.functional.sigmoid(H)
         else:
             y_pred = torch.nn.functional.softmax(H, dim=1)
@@ -126,7 +126,7 @@ class Classifier:
         intrinsic_loss = self.intrinsic_regularizer()
         # ambient_loss = self.ambient_regularizer()
         train_loss = (
-            1 * label_loss + config.spectral.regularizer_coef * intrinsic_loss
+            1 * label_loss + config["spectral"]["regularizer_coef"] * intrinsic_loss
             # + 0 * ambient_loss
         )
 
@@ -368,7 +368,7 @@ class EdgeClassifier(Classifier):
             self, mask="train", loss_function="BCELoss"
         )
         intrinsic_loss = self.intrinsic_regularizer()
-        train_loss = 1 * train_loss + config.spectral.regularizer_coef * intrinsic_loss
+        train_loss = 1 * train_loss + config["spectral"]["regularizer_coef"] * intrinsic_loss
 
         train_loss.backward(retain_graph=True)
 

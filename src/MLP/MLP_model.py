@@ -134,8 +134,8 @@ class MLP(nn.Module):
         criterion = nn.CrossEntropyLoss()
         optimizer = torch.optim.Adam(
             self.parameters(),
-            lr=config.model.lr,
-            weight_decay=config.model.weight_decay,
+            lr=config["model"]["lr"],
+            weight_decay=config["model"]["weight_decay"],
         )
 
         self.train()

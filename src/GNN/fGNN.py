@@ -19,7 +19,7 @@ class FGNN(Classifier):
     def create_smodel(self):
         gnn_layer_sizes = [
             self.graph.num_features
-        ] + config.feature_model.gnn_layer_sizes
+        ] + config["feature_model"]["gnn_layer_sizes"]
         mlp_layer_sizes = [gnn_layer_sizes[-1]] + [self.graph.num_classes]
 
         model_specs = [
@@ -54,11 +54,11 @@ class NewFGNN(FGNN):
     def create_smodel(self):
         gnn_layer_sizes = [
             self.graph.num_features  # pyright:ignore
-        ] + config.feature_model.gnn_layer_sizes
-        heads = config.feature_model.heads
-        dropout = config.feature_model.dropout
-        residual = config.feature_model.residual
-        edge_dimension = config.feature_model.edge_dimension
+        ] + config["feature_model"]["gnn_layer_sizes"]
+        heads = config["feature_model"]["heads"]
+        dropout = config["feature_model"]["dropout"]
+        residual = config["feature_model"]["residual"]
+        edge_dimension = config["feature_model"]["edge_dimension"]
 
         model_specs = [
             ModelSpecs(
@@ -68,7 +68,7 @@ class NewFGNN(FGNN):
                 final_activation_function="none",
                 dropout=dropout,
                 normalization=None,
-                gnn_layer_type=config.model.gnn_layer_type,
+                gnn_layer_type=config["model"]["gnn_layer_type"],
                 residual=residual,
                 edge_dim=edge_dimension,
             )
@@ -93,7 +93,7 @@ class FEdgeGNN(EdgeClassifier):
     def create_smodel(self):
         gnn_layer_sizes = [
             self.graph.num_features
-        ] + config.feature_model.gnn_layer_sizes
+        ] + config["feature_model"]["gnn_layer_sizes"]
 
         model_specs = [
             ModelSpecs(

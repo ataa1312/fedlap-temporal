@@ -48,7 +48,7 @@ class Client:
     def eval(self):
         self.classifier.eval()
 
-    def test_classifier(self, metric=config.model.metric):
+    def test_classifier(self, metric=config["model"]["metric"]):
         return self.classifier.calc_mask_metric(mask="test", metric=metric)
 
     def get_train_results(self, eval_=True):
@@ -90,7 +90,7 @@ class Client:
 
     def train_local_model(
         self,
-        epochs=config.model.iterations,
+        epochs=config["model"]["iterations"],
         log=True,
         plot=True,
         model_type="GNN",

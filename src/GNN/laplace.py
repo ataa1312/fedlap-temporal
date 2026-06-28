@@ -14,7 +14,7 @@ from src.models.model_binders import (
 #     def __init__(
 #         self,
 #         graph: Graph,
-#         hidden_layer_size=config.structure_model.DGCN_structure_layers_sizes,
+#         hidden_layer_size=config["structure_model"]["DGCN_structure_layers_sizes"],
 #     ):
 #         super().__init__(graph, hidden_layer_size)
 #         self.create_L()
@@ -127,7 +127,7 @@ class SpectralLaplaceMixin:
             # r1 = torch.diag(1 / self.D) @ W
             r1 = torch.einsum("i,ij->ij", self.D, W)
             # r1 = torch.einsum(
-            #     "i,ij->ij", (self.D) ** (config.structure_model.DGCN_layers), Q
+            #     "i,ij->ij", (self.D) ** (config["structure_model"]["DGCN_layers"]), Q
             # )
         else:
             r1 = torch.einsum("ij,jk->ik", self.D, W)
@@ -161,7 +161,7 @@ class SLaplace(LaplaceMixin, SClassifier):
     def __init__(
         self,
         graph: Graph,
-        hidden_layer_size=config.structure_model.DGCN_structure_layers_sizes,
+        hidden_layer_size=config["structure_model"]["DGCN_structure_layers_sizes"],
     ):
         super().__init__(graph, hidden_layer_size)
         self.graph.create_L()
@@ -171,7 +171,7 @@ class SpectralLaplace(SpectralLaplaceMixin, SClassifier):
     def __init__(
         self,
         graph: Graph,
-        hidden_layer_size=config.structure_model.DGCN_structure_layers_sizes,
+        hidden_layer_size=config["structure_model"]["DGCN_structure_layers_sizes"],
     ):
         super().__init__(graph, hidden_layer_size)
 
@@ -180,7 +180,7 @@ class LanczosLaplace(SpectralLaplace):
     def __init__(
         self,
         graph: Graph,
-        hidden_layer_size=config.structure_model.DGCN_structure_layers_sizes,
+        hidden_layer_size=config["structure_model"]["DGCN_structure_layers_sizes"],
     ):
         super().__init__(graph, hidden_layer_size)
 
@@ -189,7 +189,7 @@ class LanczosLaplaceNew(LanczosLaplace):
     def __init__(
         self,
         graph: Graph,
-        hidden_layer_size=config.structure_model.DGCN_structure_layers_sizes,
+        hidden_layer_size=config["structure_model"]["DGCN_structure_layers_sizes"],
     ):
         super().__init__(graph, hidden_layer_size)
 
@@ -223,7 +223,7 @@ class SEdgeLaplace(LaplaceMixin, SEdgeClassifier):
         self,
         graph: Graph,
         link_feature_operator: LinkFeatureOperator = "hadamard",
-        hidden_layer_size=config.structure_model.DGCN_structure_layers_sizes,
+        hidden_layer_size=config["structure_model"]["DGCN_structure_layers_sizes"],
     ):
         super().__init__(graph, link_feature_operator, hidden_layer_size)
         self.graph.create_L()
@@ -234,7 +234,7 @@ class SpectralEdgeLaplace(SpectralLaplaceMixin, SEdgeClassifier):
         self,
         graph: Graph,
         link_feature_operator: LinkFeatureOperator = "hadamard",
-        hidden_layer_size=config.structure_model.DGCN_structure_layers_sizes,
+        hidden_layer_size=config["structure_model"]["DGCN_structure_layers_sizes"],
     ):
         super().__init__(graph, link_feature_operator, hidden_layer_size)
 
@@ -244,7 +244,7 @@ class LanczosEdgeLaplace(SpectralEdgeLaplace):
         self,
         graph: Graph,
         link_feature_operator: LinkFeatureOperator = "hadamard",
-        hidden_layer_size=config.structure_model.DGCN_structure_layers_sizes,
+        hidden_layer_size=config["structure_model"]["DGCN_structure_layers_sizes"],
     ):
         super().__init__(graph, link_feature_operator, hidden_layer_size)
 
@@ -253,7 +253,7 @@ class LanczosEdgeLaplace(SpectralEdgeLaplace):
 #     def __init__(
 #         self,
 #         graph: Graph,
-#         hidden_layer_size=config.structure_model.DGCN_structure_layers_sizes,
+#         hidden_layer_size=config["structure_model"]["DGCN_structure_layers_sizes"],
 #     ):
 #         super().__init__(graph, hidden_layer_size)
 #         A, E = estimate(self.graph, self.graph.x.shape[0])

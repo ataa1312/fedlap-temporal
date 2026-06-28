@@ -13,11 +13,11 @@ from src.models.model_binders import (
 
 class DGCN(Classifier):
     def __init__(
-        self, graph: AGraph, hidden_layer_size=config.feature_model.DGCN_layer_sizes
+        self, graph: AGraph, hidden_layer_size=config["feature_model"]["DGCN_layer_sizes"]
     ):
         Classifier.__init__(self, graph)
         self.create_smodel(hidden_layer_size)
-        # self.create_model(config.feature_model.DGCN_layer_sizes)
+        # self.create_model(config["feature_model"]["DGCN_layer_sizes"])
 
     def create_smodel(self, hidden_layer_size=[]):
         layer_sizes = (
@@ -58,7 +58,7 @@ class SpectralDGCN(DGCN):
     def __init__(
         self,
         graph: AGraph,
-        hidden_layer_size=config.structure_model.DGCN_structure_layers_sizes,
+        hidden_layer_size=config["structure_model"]["DGCN_structure_layers_sizes"],
     ):
         super().__init__(graph, hidden_layer_size)
 
@@ -81,7 +81,7 @@ class SDGCN(DGCN, SClassifier):
     def __init__(
         self,
         graph: AGraph,
-        hidden_layer_size=config.structure_model.DGCN_structure_layers_sizes,
+        hidden_layer_size=config["structure_model"]["DGCN_structure_layers_sizes"],
     ):
         DGCN.__init__(self, graph, hidden_layer_size)
 
@@ -99,7 +99,7 @@ class SDGCNMaster(SGNNMaster):
     def __init__(
         self,
         graph: AGraph,
-        hidden_layer_size=config.structure_model.DGCN_structure_layers_sizes,
+        hidden_layer_size=config["structure_model"]["DGCN_structure_layers_sizes"],
     ):
         super().__init__(graph)
         self.GNN_structure_embedding = None

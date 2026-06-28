@@ -19,7 +19,7 @@ from sklearn.manifold import TSNE
 from src.utils.logger import getLOGGER
 from src.utils.plot_graph import plot_graph
 from torch_geometric.utils import degree, scatter, add_self_loops, remove_self_loops
-from src.utils.config_parser import Config
+from configs.config import get_default_config
 
 DatasetName = Literal[
     "custom-enron",
@@ -32,8 +32,11 @@ LinkFeatureOperator = Literal["hadamard", "dot-product", "concat"]
 DownstreamTask = Literal["node-classification", "edge-prediction"]
 
 load_dotenv()
-config_path = os.environ.get("CONFIGPATH", "")
-config = Config(config_path)
+# `config` is the default Registry tree (see configs/config.py). main.py parses
+# the CLI + YAML and overlays the loaded values onto this object in place, so
+# modules that did `from src import config` see the real run config. Access is
+# dict-style, e.g. config["spectral"]["spectral_len"].
+config = get_default_config()
 
 plt.rcParams["figure.figsize"] = [16, 9]
 plt.rcParams["figure.dpi"] = 100  # 200 e.g. is really fine, but slower
@@ -62,19 +65,22 @@ torch.manual_seed(seed)
 
 now = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-result_path = os.environ.get("RESULTPATH")
+result_path = os.environ.get("RESULTPATH") or "results/"
+# Import-time placeholder dir (dataset_name is None until main.py overlays the
+# YAML). Real per-run outdir/logging is set up in main.py's lifecycle.
+ds_name = config["dataset"]["name"] or "default"
 save_path = (
     f"{result_path}"
-    f"{config.dataset.dataset_name}/"
-    f"{config.structure_model.structure_type}/"
-    f"{config.subgraph.partitioning}/"
-    f"{config.model.smodel_type}/"
-    f"{config.subgraph.num_subgraphs}/all/"
+    f"{ds_name}/"
+    f"{config['structure_model']['structure_type']}/"
+    f"{config['subgraph']['partitioning']}/"
+    f"{config['model']['smodel_type']}/"
+    f"{config['subgraph']['num_subgraphs']}/all/"
 )
 
 os.makedirs(save_path, exist_ok=True)
 LOGGER = getLOGGER(
-    name=f"{now}_{config.dataset.dataset_name}",
+    name=f"{now}_{ds_name}",
     log_on_file=True,
     save_path=save_path,
 )
@@ -494,7 +500,7 @@ def calc_abar(adj, num_layers, pruning=False):
     abar = sparse_eye(num_nodes, dev_=local_dev)
     adj = adj.to(local_dev)
 
-    th = config.subgraph.pruning_th
+    th = config["subgraph"]["pruning_th"]
     for i in range(num_layers):
         abar = torch.matmul(adj, abar)  # Sparse-dense matrix multiplication
         if pruning:
@@ -675,7 +681,7 @@ def calc_metrics(
     loss = criterion(y_pred_masked, y_masked)
 
     try:
-        if config.dataset.multi_label:
+        if config["dataset"]["multi_label"]:
             acc = calculate_average_precision(y_pred_masked, y_masked)
         else:
             acc = calc_accuracy(y_pred_masked.argmax(dim=1), y_masked)

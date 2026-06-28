@@ -30,7 +30,7 @@ from src.utils.graph import Graph
 from src.utils.create_graph import create_homophilic_graph2, create_heterophilic_graph2
 
 
-def define_graph(dataset_name=config.dataset.dataset_name, **kwargs):
+def define_graph(dataset_name=config["dataset"]["name"], **kwargs):
     root = f"./datasets/{dataset_name}"
     os.makedirs(root, exist_ok=True)
     # try:
@@ -59,7 +59,7 @@ def define_graph(dataset_name=config.dataset.dataset_name, **kwargs):
         elif dataset_name in ["PPI"]:
             split = kwargs.get("split", "train")
             dataset = PPI(root=root, split=split)
-        elif config.dataset.dataset_name in ["Computers", "Photo"]:
+        elif config["dataset"]["name"] in ["Computers", "Photo"]:
             dataset = Amazon(root=root, name=dataset_name)
         elif dataset_name == "Heterophilic_example":
             num_patterns = 500

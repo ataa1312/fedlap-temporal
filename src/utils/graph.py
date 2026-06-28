@@ -21,7 +21,7 @@ from sklearn.preprocessing import StandardScaler
 from torch_geometric.utils import degree, to_networkx
 from torch_geometric.transforms import RandomLinkSplit
 
-dataset_name = config.dataset.dataset_name
+dataset_name = config["dataset"]["name"]
 
 
 class AGraph(Data):
@@ -212,7 +212,7 @@ class Graph(Data):
                 edge_index,
                 num_nodes,
                 num_structural_features,
-                iteration=config.structure_model.num_mp_vectors,
+                iteration=config["structure_model"]["num_mp_vectors"],
             )
         elif structure_type == "hop2vec":
             if num_spectral_features is None:
@@ -267,9 +267,9 @@ class Graph(Data):
         return mp
 
     def calc_fedStar(edge_index, num_nodes, size=100):
-        SE_rw = create_rw(edge_index, num_nodes, config.structure_model.rw_len)
+        SE_rw = create_rw(edge_index, num_nodes, config["structure_model"]["rw_len"])
         SE_dg = Graph.calc_degree_features(
-            edge_index, num_nodes, size - config.structure_model.rw_len
+            edge_index, num_nodes, size - config["structure_model"]["rw_len"]
         )
         SE_rw_dg = torch.cat([SE_rw, SE_dg], dim=1)
 
@@ -281,7 +281,7 @@ class Graph(Data):
         # return torch.full(fill_value=0.05, size=size, requires_grad=True, device=dev)
 
     def reset_parameters(self) -> None:
-        if config.structure_model.structure_type == "hop2vec":
+        if config["structure_model"]["structure_type"] == "hop2vec":
             self.structural_features = Graph.initialize_random_features(
                 size=self.structural_features.shape
             )
@@ -328,7 +328,7 @@ class Graph(Data):
 
     def calc_abar(
         self,
-        num_layers=config.structure_model.DGCN_layers,
+        num_layers=config["structure_model"]["DGCN_layers"],
         method="DGCN",
         pruning=False,
         spectral_len=0,
@@ -386,7 +386,7 @@ class Graph(Data):
         self_loop=True,
     ):
         self.create_L(
-            normalization=config.spectral.L_type,
+            normalization=config["spectral"]["L_type"],
             self_loop=self_loop,
         )
         assert self.L is not None
@@ -397,20 +397,20 @@ class Graph(Data):
         return next_D, next_U, prev_Q
 
     def calc_eignvalues(self, estimate=False, self_loop=True, log=True, spectral_len=0):
-        if config.spectral.matrix == "lap":
+        if config["spectral"]["matrix"] == "lap":
             self.create_L(
-                normalization=config.spectral.L_type,
+                normalization=config["spectral"]["L_type"],
                 self_loop=self_loop,
             )
             if estimate:
                 D, U, V = estimate_eigh(
                     self.L,
-                    config.spectral.lanczos_iter,
-                    method=config.spectral.method,
+                    config["spectral"]["lanczos_iter"],
+                    method=config["spectral"]["method"],
                     log=log,
                 )
             else:
-                if config.spectral.decompose == "svd":
+                if config["spectral"]["decompose"] == "svd":
                     L = sparse.csr_matrix(self.L.to_dense().cpu().numpy())
                     if spectral_len <= 0:
                         k = min(L.shape) - 1
@@ -423,10 +423,10 @@ class Graph(Data):
                     # U, D, V = torch.svd_lowrank(self.L, q=spectral_len)
                 else:
                     D, U = torch.linalg.eigh(self.L.to_dense())
-        elif config.spectral.matrix == "adj":
+        elif config["spectral"]["matrix"] == "adj":
             A = create_adj(
                 self.edge_index,
-                normalization=config.spectral.L_type,
+                normalization=config["spectral"]["L_type"],
                 self_loop=self_loop,
                 num_nodes=self.num_nodes,
                 nodes=self.node_ids,
@@ -435,12 +435,12 @@ class Graph(Data):
                 D, U, _ = estimate_eigh(
                     A,
                     # A @ A.T,
-                    config.spectral.lanczos_iter,
-                    method=config.spectral.method,
+                    config["spectral"]["lanczos_iter"],
+                    method=config["spectral"]["method"],
                     log=log,
                 )
             else:
-                if config.spectral.decompose == "svd":
+                if config["spectral"]["decompose"] == "svd":
                     L = sparse.csr_matrix(A.to_dense().cpu().numpy())
                     if spectral_len <= 0:
                         k = min(A.shape) - 1
@@ -468,18 +468,18 @@ class Graph(Data):
             # plt.axis("off")
             # plt.tight_layout()
 
-        elif config.spectral.matrix == "inc":
+        elif config["spectral"]["matrix"] == "inc":
             E = create_inc(
                 self.edge_index,
-                normalization=config.spectral.L_type,
+                normalization=config["spectral"]["L_type"],
                 num_nodes=self.num_nodes,
                 nodes=self.node_ids,
             )
             if estimate:
                 D, U, _ = estimate_eigh(
                     E @ E.T,
-                    config.spectral.lanczos_iter,
-                    method=config.spectral.method,
+                    config["spectral"]["lanczos_iter"],
+                    method=config["spectral"]["method"],
                     log=log,
                 )
             else:

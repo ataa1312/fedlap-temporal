@@ -103,7 +103,7 @@ def assign_nodes_to_subgraphs(community_groups, num_nodes, num_subgraphs):
     for community in community_groups.keys():
         while (
             len(subgraph_node_ids[current_ind]) + len(community_groups[community])
-            > max_subgraph_nodes + config.subgraph.delta
+            > max_subgraph_nodes + config["subgraph"]["delta"]
             or len(subgraph_node_ids[current_ind]) >= max_subgraph_nodes
         ):
             # current_subgraph = next(subgraphs)
@@ -247,7 +247,7 @@ def create_subgraphs(
 def louvain_cut(edge_index, num_nodes, num_subgraphs):
     community_groups = find_community(edge_index, num_nodes)
 
-    group_len_max = num_nodes // num_subgraphs + config.subgraph.delta
+    group_len_max = num_nodes // num_subgraphs + config["subgraph"]["delta"]
 
     community_groups = make_groups_smaller_than_max(community_groups, group_len_max)
 
@@ -282,7 +282,7 @@ def kmeans_cut(X, num_subgraphs):
     _, subgraph_id, _ = k_means(X.cpu(), num_subgraphs, n_init="auto")
     community_groups = create_community_groups(subgraph_id)
 
-    group_len_max = num_nodes // num_subgraphs + config.subgraph.delta
+    group_len_max = num_nodes // num_subgraphs + config["subgraph"]["delta"]
 
     community_groups = make_groups_smaller_than_max(community_groups, group_len_max)
 
@@ -319,7 +319,7 @@ def drichlet_cut(labels, num_nodes, num_subgraphs, num_classes):
         num_nodes,
         num_classes,
         num_subgraphs,
-        beta=config.fedgcn.iid_beta,
+        beta=10000,  # was config.fedgcn.iid_beta (fedgcn section removed)
     )
     subgraph_node_ids = [torch.tensor(node_ids) for node_ids in subgraph_node_ids]
     return subgraph_node_ids
@@ -486,7 +486,7 @@ def partition_graph(graph: Graph, num_subgraphs, method="random", **kwargs):
 
 
 def fedGCN_partitioning(
-    graph: Graph, num_subgraphs, method="drichlet", num_hops=config.fedgcn.num_hops
+    graph: Graph, num_subgraphs, method="drichlet", num_hops=2  # was config.fedgcn.num_hops
 ):
     if method == "louvain":
         subgraph_node_ids = louvain_cut(

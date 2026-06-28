@@ -11,9 +11,9 @@ class ModelSpecs:
         layer_sizes=[],
         heads=[],
         final_activation_function="linear",  # can be None, "layer", "batch", "instance"
-        dropout=config.model.dropout,
+        dropout=config["model"]["dropout"],
         normalization=None,
-        gnn_layer_type=config.model.gnn_layer_type,
+        gnn_layer_type=config["model"]["gnn_layer_type"],
         num_layers=None,
         residual=False,
         edge_dim=0,
