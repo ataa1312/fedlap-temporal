@@ -397,6 +397,7 @@ class Graph(Data):
         return next_D, next_U, prev_Q
 
     def calc_eignvalues(self, estimate=False, self_loop=True, log=True, spectral_len=0):
+        V = None  # not every decomposition path binds V (the eigh path doesn't)
         if config["spectral"]["matrix"] == "lap":
             self.create_L(
                 normalization=config["spectral"]["L_type"],
