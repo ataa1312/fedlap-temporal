@@ -12,8 +12,8 @@
 *.emb
 *results
 *.pkl
-\data
-\datasets
+/data/
+/datasets/
 \logs
 \build
 \runs

@@ -19,7 +19,7 @@ def _dataset() -> Registry:
     d = Registry("dataset")
     # ROLAND core
     d["name"] = None
-    d["path"] = "datasets"
+    d["path"] = "data"
     d["format"] = "custom"
     d["task"] = "link_pred"
     d["task_type"] = "classification"

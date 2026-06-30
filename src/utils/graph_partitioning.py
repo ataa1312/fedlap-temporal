@@ -277,6 +277,42 @@ def random_assign(num_nodes, num_subgraphs):
     return subgraph_node_ids
 
 
+def partition_snapshots(snapshots, num_subgraphs):
+    """Partition global ROLAND snapshots into per-client subgraphs.
+
+    Assigns the global node set to ``num_subgraphs`` clients once
+    (``random_assign``), then induces each client's subgraph per snapshot
+    (``create_subgraphs``). Returns a client-major list where ``out[c][t]`` is
+    client ``c``'s subgraph for snapshot ``t`` (a ``Graph``, i.e. a ``Data``).
+    """
+    per_client = [[] for _ in range(num_subgraphs)]
+    if not snapshots:
+        return per_client
+
+    # Snapshots share the full graph's global node space (build_full_graph fixes
+    # the count; make_snapshots only slices edges), so num_nodes is constant.
+    num_nodes = snapshots[0].num_nodes
+    assert all(s.num_nodes == num_nodes for s in snapshots), (
+        "snapshots disagree on num_nodes; partition needs a global node space"
+    )
+    snap_dev = snapshots[0].edge_index.device
+    subgraph_node_ids = random_assign(num_nodes, num_subgraphs)
+    subgraph_node_ids = {k: v.to(snap_dev) for k, v in subgraph_node_ids.items()}
+
+    for snap in snapshots:
+        global_graph = Graph(
+            x=snap.x,
+            edge_index=snap.edge_index,
+            edge_attr=snap.edge_attr,
+            node_ids=torch.arange(num_nodes, device=snap_dev),
+        )
+        subgraphs = create_subgraphs(global_graph, subgraph_node_ids)
+        for client, subgraph in enumerate(subgraphs):
+            per_client[client].append(subgraph)
+
+    return per_client
+
+
 def kmeans_cut(X, num_subgraphs):
     num_nodes = X.shape[0]
     _, subgraph_id, _ = k_means(X.cpu(), num_subgraphs, n_init="auto")
