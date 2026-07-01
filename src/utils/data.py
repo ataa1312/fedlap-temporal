@@ -25,6 +25,26 @@ class Data:
         self.val_mask = kwargs.get("val_mask", None)
         self.num_classes = kwargs.get("num_classes", None)
 
+    def clone(self):
+        # Shallow-copy the instance, deep-copying only tensor attributes so
+        # callers can rebind extra attrs (edge_label_index, ...) without
+        # touching the original. Non-tensors (node_map, ints) are shared by
+        # reference — the orchestrator helpers never mutate them in place.
+        new = self.__class__.__new__(self.__class__)
+        new.__dict__ = {
+            k: (v.clone() if torch.is_tensor(v) else v)
+            for k, v in self.__dict__.items()
+        }
+        return new
+
+    def to(self, device):
+        # Move dense tensor attributes to `device` in place; return self
+        # (matches torch_geometric's Data.to semantics the helpers expect).
+        for k, v in self.__dict__.items():
+            if torch.is_tensor(v):
+                self.__dict__[k] = v.to(device)
+        return self
+
     def get_masks(self):
         return (self.train_mask, self.val_mask, self.test_mask)
 

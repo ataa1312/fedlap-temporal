@@ -7,6 +7,10 @@ from src.models.model_binders import ModelSpecs, ModelBinder
 from src.models.weight_init import init_weights
 from registries import heads
 
+# D1 sentinel: distinguishes an omitted arg (use the stateful self.graph/self.hs)
+# from an explicit None (e.g. hs=None = no prior state on the first snapshot).
+_UNSET = object()
+
 
 class DynamicClassifier(Classifier):
     """Per-client ROLAND recurrent link-prediction model in the FedLap idiom.
@@ -110,13 +114,14 @@ class DynamicClassifier(Classifier):
 
     # ---- encode / decode ---- #
 
-    def encode(self):
-        g = self.graph
+    def encode(self, data=_UNSET, hs=_UNSET):
+        g = self.graph if data is _UNSET else data
+        h = self.hs if hs is _UNSET else hs
         active = getattr(g, "node_degree_new", None)
         if active is not None:
             active = active > 0
         z, new_hs = self.model.encode(
-            g.x, g.edge_index, self.hs,
+            g.x, g.edge_index, h,
             edge_attr=getattr(g, "edge_attr", None),
             keep_ratio=getattr(g, "keep_ratio", None),
             active_mask=active,
@@ -124,7 +129,7 @@ class DynamicClassifier(Classifier):
         if self.l2norm:
             z = F.normalize(z, p=2, dim=-1)
         if self.use_spectral:
-            sfv = self._spectral_sfv()
+            sfv = self._spectral_sfv(g)
             z = torch.cat([z, sfv], dim=-1) if self.fusion == "concat" else z + sfv
         self.last_hs = new_hs
         return z, new_hs
@@ -133,22 +138,31 @@ class DynamicClassifier(Classifier):
         z, _ = self.encode()
         return z
 
-    def decode(self, z=None):
+    def decode(self, z=None, data=_UNSET):
+        g = self.graph if data is _UNSET else data
         if z is None:
             z = self.get_embeddings()
-        return self.head(z, self.graph)
+        return self.head(z, g)
 
-    def forward(self):
-        z, new_hs = self.encode()
-        pred, label = self.head(z, self.graph)
+    def forward(self, data=_UNSET, hs=_UNSET):
+        z, new_hs = self.encode(data, hs)
+        g = self.graph if data is _UNSET else data
+        pred, label = self.head(z, g)
         return pred, label, new_hs
+
+    def __call__(self, data=_UNSET, hs=_UNSET):
+        # Route calls to forward. The base Classifier.__call__ returns embeddings
+        # and takes no args; the ported ROLAND helpers call model(snap, hs), which
+        # for a recurrent model must hit forward -> (pred, label, new_hs).
+        return self.forward(data, hs)
 
     def refresh_hs(self):
         # advance the carried state at the snapshot boundary (TBPTT-1, detached)
         self.hs = None if self.last_hs is None else [h.detach() for h in self.last_hs]
 
-    def _spectral_sfv(self):
-        sfv = getattr(self.graph, "structural_features", None)
+    def _spectral_sfv(self, graph=None):
+        g = self.graph if graph is None else graph
+        sfv = getattr(g, "structural_features", None)
         if sfv is None:
             raise RuntimeError(
                 "data_type needs a spectral SFV but graph.structural_features is None"

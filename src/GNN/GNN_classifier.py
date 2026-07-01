@@ -14,7 +14,6 @@ from src.GNN.laplace import (
     SpectralEdgeLaplace,
 )
 from src.utils.graph import Graph, AGraph
-from src.utils.config_parser import TrainModelConfig
 
 
 class FedMixin:
