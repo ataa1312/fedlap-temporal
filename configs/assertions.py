@@ -90,6 +90,5 @@ def assert_cfg(config: Registry) -> None:
         )
         model["loss_fun"] = "bce_with_logits"
 
-    if gnn["layers_post_mp"] < 1:
-        logger.warning("gnn.layers_post_mp must be >=1; clamping to 1")
-        gnn["layers_post_mp"] = 1
+    if not gnn["dims"]:
+        raise ValueError("gnn.dims must list at least one MP layer width")

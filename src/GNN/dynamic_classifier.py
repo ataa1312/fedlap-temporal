@@ -31,7 +31,6 @@ class DynamicClassifier(Classifier):
     def create_model(self):
         gnn, mcfg, ds = config["gnn"], config["model"], config["dataset"]
         task = ds["task"]
-        inner = gnn["dim_inner"]
         specs = []
 
         # edge encoder transforms edge_attr; place first so the recurrent layers
@@ -56,14 +55,15 @@ class DynamicClassifier(Classifier):
             ))
             d = ds["node_encoder_dim"]
 
-        if gnn["layers_pre_mp"] > 0:
+        dims_pre_mp = gnn["dims_pre_mp"]
+        if dims_pre_mp:
             specs.append(ModelSpecs(
                 type="roland_mlp",
-                layer_sizes=[d] + [inner] * gnn["layers_pre_mp"],
+                layer_sizes=[d] + dims_pre_mp,
                 block_kwargs={"batchnorm": gnn["batchnorm"], "dropout": gnn["dropout"],
                               "act": gnn["act"], "final_act": True},
             ))
-            d = inner
+            d = dims_pre_mp[-1]
 
         layer_type = gnn["layer_type"]
         layer_kwargs = {}
@@ -77,13 +77,13 @@ class DynamicClassifier(Classifier):
                "batchnorm": gnn["batchnorm"], "dropout": gnn["dropout"], "act": gnn["act"],
                "skip_connection": gnn["skip_connection"], "layer_kwargs": layer_kwargs,
                "updater_kwargs": updater_kwargs}
-        for i in range(gnn["layers_mp"]):
+        for w in gnn["dims"]:
             specs.append(ModelSpecs(
                 type="recurrent_layer",
-                layer_sizes=[d if i == 0 else inner, inner],
+                layer_sizes=[d, w],
                 block_kwargs=dict(rec),
             ))
-        d = inner
+            d = w
 
         self.model = ModelBinder(specs).to(device)
         self.l2norm = gnn["l2norm"]
@@ -97,11 +97,9 @@ class DynamicClassifier(Classifier):
         d_head = d + self.spectral_len if (self.use_spectral and self.fusion == "concat") else d
 
         head_cls = heads[task]
-        layers_post_mp = gnn["layers_post_mp"]
         decoding = mcfg["edge_decoding"]
         is_edge = task in ("edge", "link_pred")
-        head_inner = d_head * 2 if is_edge and decoding == "concat" else d_head
-        head_kwargs = {"dims_inner": [head_inner] * (layers_post_mp - 1),
+        head_kwargs = {"dims_inner": gnn["dims_post_mp"],
                        "batchnorm": gnn["batchnorm"], "act": gnn["act"]}
         if is_edge:
             head_kwargs["decoding"] = decoding

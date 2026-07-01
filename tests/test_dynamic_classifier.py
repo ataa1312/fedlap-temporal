@@ -21,10 +21,9 @@ def test_dynamic_classifier_construction(config):
     config["dataset"]["edge_encoder"] = False
     config["model"]["data_type"] = "feature"
     config["model"]["edge_decoding"] = "concat"
-    config["gnn"]["dim_inner"] = 16
-    config["gnn"]["layers_mp"] = 2
-    config["gnn"]["layers_pre_mp"] = 0
-    config["gnn"]["layers_post_mp"] = 1
+    config["gnn"]["dims"] = [16, 16]
+    config["gnn"]["dims_pre_mp"] = []
+    config["gnn"]["dims_post_mp"] = []
     config["gnn"]["embed_update_method"] = "gru"
     
     graph = make_graph(N=12, W=1, E=20)
@@ -46,10 +45,9 @@ def test_parity_with_oracle(config):
     config["dataset"]["edge_encoder"] = False
     config["model"]["data_type"] = "feature"
     config["model"]["edge_decoding"] = "concat"
-    config["gnn"]["dim_inner"] = 16
-    config["gnn"]["layers_mp"] = 2
-    config["gnn"]["layers_pre_mp"] = 0
-    config["gnn"]["layers_post_mp"] = 1
+    config["gnn"]["dims"] = [16, 16]
+    config["gnn"]["dims_pre_mp"] = []
+    config["gnn"]["dims_post_mp"] = []
     config["gnn"]["embed_update_method"] = "gru"
     
     graph = make_graph(N=12, W=1, E=20)
@@ -80,10 +78,9 @@ def test_hs_threading(config):
     config["dataset"]["edge_encoder"] = False
     config["model"]["data_type"] = "feature"
     config["model"]["edge_decoding"] = "concat"
-    config["gnn"]["dim_inner"] = 16
-    config["gnn"]["layers_mp"] = 2
-    config["gnn"]["layers_pre_mp"] = 0
-    config["gnn"]["layers_post_mp"] = 1
+    config["gnn"]["dims"] = [16, 16]
+    config["gnn"]["dims_pre_mp"] = []
+    config["gnn"]["dims_post_mp"] = []
     config["gnn"]["embed_update_method"] = "gru"
     
     graph = make_graph(N=12, W=1, E=20)
@@ -111,10 +108,9 @@ def test_l2norm(config):
     config["dataset"]["edge_encoder"] = False
     config["model"]["data_type"] = "feature"
     config["model"]["edge_decoding"] = "concat"
-    config["gnn"]["dim_inner"] = 16
-    config["gnn"]["layers_mp"] = 2
-    config["gnn"]["layers_pre_mp"] = 0
-    config["gnn"]["layers_post_mp"] = 1
+    config["gnn"]["dims"] = [16, 16]
+    config["gnn"]["dims_pre_mp"] = []
+    config["gnn"]["dims_post_mp"] = []
     config["gnn"]["embed_update_method"] = "gru"
     config["gnn"]["l2norm"] = True
     
@@ -137,10 +133,9 @@ def test_spectral_hook(config):
     config["dataset"]["edge_encoder"] = False
     config["model"]["data_type"] = "f+s"
     config["model"]["edge_decoding"] = "concat"
-    config["gnn"]["dim_inner"] = 16
-    config["gnn"]["layers_mp"] = 2
-    config["gnn"]["layers_pre_mp"] = 0
-    config["gnn"]["layers_post_mp"] = 1
+    config["gnn"]["dims"] = [16, 16]
+    config["gnn"]["dims_pre_mp"] = []
+    config["gnn"]["dims_post_mp"] = []
     config["gnn"]["embed_update_method"] = "gru"
     config["spectral"]["spectral_len"] = 8
     
@@ -164,10 +159,9 @@ def test_federated_protocol(config):
     config["dataset"]["edge_encoder"] = False
     config["model"]["data_type"] = "feature"
     config["model"]["edge_decoding"] = "concat"
-    config["gnn"]["dim_inner"] = 16
-    config["gnn"]["layers_mp"] = 2
-    config["gnn"]["layers_pre_mp"] = 0
-    config["gnn"]["layers_post_mp"] = 1
+    config["gnn"]["dims"] = [16, 16]
+    config["gnn"]["dims_pre_mp"] = []
+    config["gnn"]["dims_post_mp"] = []
     config["gnn"]["embed_update_method"] = "gru"
     
     graph = make_graph(N=12, W=1, E=20)

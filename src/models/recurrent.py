@@ -112,23 +112,23 @@ class RecurrentGNN(nn.Module):
             self.node_encoder = None
 
         # ----- pre-MP (same as static GNN) ----- #
-        if gnn_cfg["layers_pre_mp"] > 0:
-            inner = gnn_cfg["dim_inner"]
+        dims_pre_mp = gnn_cfg["dims_pre_mp"]
+        if dims_pre_mp:
             self.pre_mp = MLP(
                 d,
-                inner,
-                dims_inner=[inner] * (gnn_cfg["layers_pre_mp"] - 1),
+                dims_pre_mp[-1],
+                dims_inner=dims_pre_mp[:-1],
                 batchnorm=gnn_cfg["batchnorm"],
                 dropout=gnn_cfg["dropout"],
                 act=gnn_cfg["act"],
                 final_act=True,         # #10: ROLAND GNNPreMP applies BN+act on the last pre-MP layer
             )
-            d = inner
+            d = dims_pre_mp[-1]
         else:
             self.pre_mp = None
 
         # ----- recurrent MP layers ----- #
-        inner = gnn_cfg["dim_inner"]
+        dims = gnn_cfg["dims"]
         updater_kwargs: dict[str, Any] = {}
         if gnn_cfg["embed_update_method"] == "moving_average":
             # alpha lives in meta.alpha per ROLAND; fall back to 0.9.
@@ -164,12 +164,13 @@ class RecurrentGNN(nn.Module):
         skip_connection = gnn_cfg["skip_connection"]
 
         layers = []
-        for i in range(gnn_cfg["layers_mp"]):
+        prev = d
+        for w in dims:
             layers.append(
                 GeneralRecurrentLayer(
                     layer_type=layer_type,
-                    dim_in=d if i == 0 else inner,
-                    dim_out=inner,
+                    dim_in=prev,
+                    dim_out=w,
                     updater_name=gnn_cfg["embed_update_method"],
                     batchnorm=gnn_cfg["batchnorm"],
                     dropout=gnn_cfg["dropout"],
@@ -179,19 +180,15 @@ class RecurrentGNN(nn.Module):
                     updater_kwargs=updater_kwargs,
                 )
             )
+            prev = w
         self.mp_layers = nn.ModuleList(layers)
         self.l2norm = gnn_cfg["l2norm"]
-        d = inner
+        d = dims[-1]
 
         # ----- head ----- #
         head_cls = heads[task]
-        layers_post_mp = gnn_cfg["layers_post_mp"]
-        head_inner = (
-            d * 2 if task in ("edge", "link_pred") and model_cfg["edge_decoding"] == "concat"
-            else d
-        )
         head_kwargs: dict[str, Any] = {
-            "dims_inner": [head_inner] * (layers_post_mp - 1),
+            "dims_inner": gnn_cfg["dims_post_mp"],
             # #16: ROLAND's head MLP intermediates are GeneralLayer-wrapped (BN+act).
             "batchnorm": gnn_cfg["batchnorm"],
             "act": gnn_cfg["act"],

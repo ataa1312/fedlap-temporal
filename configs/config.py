@@ -111,10 +111,9 @@ def _model() -> Registry:
 def _gnn() -> Registry:
     g = Registry("gnn")
     g["layer_type"] = "residual_edge_conv"
-    g["layers_pre_mp"] = 0
-    g["layers_mp"] = 2
-    g["layers_post_mp"] = 1
-    g["dim_inner"] = 64
+    g["dims_pre_mp"] = []                    # pre-MP MLP layer widths ([] = no pre-MP)
+    g["dims"] = [64, 64]                     # MP layer widths (one entry per layer)
+    g["dims_post_mp"] = []                   # post-MP head intermediate widths ([] = single head layer)
     g["stage_type"] = "stack"
     g["skip_every"] = 1
     g["batchnorm"] = True

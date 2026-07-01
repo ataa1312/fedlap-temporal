@@ -21,34 +21,29 @@ class GNN(nn.Module):
 
         # ----- pre-MP linear stack ----- #
         d = dim_in
-        if gnn_cfg["layers_pre_mp"] > 0:
-            inner = gnn_cfg["dim_inner"]
+        dims_pre_mp = gnn_cfg["dims_pre_mp"]
+        if dims_pre_mp:
             self.pre_mp = MLP(
                 d,
-                inner,
-                dims_inner=[inner] * (gnn_cfg["layers_pre_mp"] - 1),
+                dims_pre_mp[-1],
+                dims_inner=dims_pre_mp[:-1],
                 batchnorm=gnn_cfg["batchnorm"],
                 dropout=gnn_cfg["dropout"],
                 act=gnn_cfg["act"],
                 final_act=True,         # #10: ROLAND GNNPreMP applies BN+act on the last pre-MP layer
             )
-            d = inner
+            d = dims_pre_mp[-1]
         else:
             self.pre_mp = None
 
         # ----- MP stage (stack / skipsum / skipconcat) ----- #
-        # Materialize a uniform-width list from (layers_mp, dim_inner). For
-        # non-uniform per-layer widths, replace this with an explicit list.
-        inner = gnn_cfg["dim_inner"]
-        layers_mp = gnn_cfg["layers_mp"]
-        stage_dims_inner = [inner] * (layers_mp - 1)
-
+        dims = gnn_cfg["dims"]
         stage_cls = stages[gnn_cfg["stage_type"]]
         self.stage = stage_cls(
             layer_type=gnn_cfg["layer_type"],
             dim_in=d,
-            dim_out=inner,
-            dims_inner=stage_dims_inner,
+            dim_out=dims[-1],
+            dims_inner=dims[:-1],
             mode=gnn_cfg["stage_type"],   # consumed by skip stages, ignored by stack
             skip_every=gnn_cfg["skip_every"],
             batchnorm=gnn_cfg["batchnorm"],
@@ -60,15 +55,8 @@ class GNN(nn.Module):
 
         # ----- task head ----- #
         head_cls = heads[task]
-        # Materialize the head's post-MP MLP widths. The inner width is the
-        # head's input dim (or 2*d when concat-decoding edges).
-        layers_post_mp = gnn_cfg["layers_post_mp"]
-        head_inner = (
-            d * 2 if task in ("edge", "link_pred") and model_cfg["edge_decoding"] == "concat"
-            else d
-        )
         head_kwargs: dict[str, Any] = {
-            "dims_inner": [head_inner] * (layers_post_mp - 1),
+            "dims_inner": gnn_cfg["dims_post_mp"],
             # #16: ROLAND's head MLP intermediates are GeneralLayer-wrapped (BN+act).
             "batchnorm": gnn_cfg["batchnorm"],
             "act": gnn_cfg["act"],

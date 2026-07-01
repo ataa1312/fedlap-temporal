@@ -33,8 +33,7 @@ model:
 gnn:
   layer_type: residual_edge_conv
   embed_update_method: gru
-  dim_inner: 64
-  layers_mp: 2
+  dims: [64, 64]
   act: prelu
   skip_connection: affine
 

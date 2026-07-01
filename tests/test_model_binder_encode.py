@@ -146,10 +146,9 @@ def test_parity_with_recurrent_gnn(config, embed_update_method):
     config["dataset"]["node_encoder"] = False
     config["dataset"]["edge_encoder"] = False
     config["model"]["data_type"] = "feature"
-    config["gnn"]["dim_inner"] = 16
-    config["gnn"]["layers_mp"] = 2
-    config["gnn"]["layers_pre_mp"] = 0
-    config["gnn"]["layers_post_mp"] = 1
+    config["gnn"]["dims"] = [16, 16]
+    config["gnn"]["dims_pre_mp"] = []
+    config["gnn"]["dims_post_mp"] = []
     config["gnn"]["layer_type"] = "residual_edge_conv"
     config["gnn"]["msg_direction"] = "single"
     config["gnn"]["normalize_adj"] = False
@@ -195,12 +194,14 @@ def test_parity_with_recurrent_gnn(config, embed_update_method):
     }
     
     specs = []
-    for i in range(config["gnn"]["layers_mp"]):
+    prev = 1
+    for w in config["gnn"]["dims"]:
         specs.append(ModelSpecs(
             type="recurrent_layer",
-            layer_sizes=[1 if i == 0 else 16, 16],
+            layer_sizes=[prev, w],
             block_kwargs=dict(rec),
         ))
+        prev = w
         
     binder = ModelBinder(specs).eval()
     for i in range(len(binder.models)):
