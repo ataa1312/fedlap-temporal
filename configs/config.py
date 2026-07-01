@@ -90,6 +90,7 @@ def _model() -> Registry:
     m["smodel_type"] = "LanczosLaplace"     # structure model; '' or None to disable spectral
     m["fmodel_type"] = "GNN"
     m["data_type"] = "f+s"                  # 'feature', 'structure', 'f+s'
+    m["fusion"] = "concat"                  # combine node(z)+spectral(S) at output: 'concat' | 'add'
     m["weight_decay"] = 5e-4
     # FedLap-kept (static, non-temporal path): the original ModelConfig knobs the
     # static federated training reads. Distinct from the ROLAND optim/gnn/train
