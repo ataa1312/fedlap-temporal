@@ -25,6 +25,12 @@ def seed_all(s):
     np.random.seed(s)
     torch.manual_seed(s)
 
+def make_server(global_snaps, client_snaps):
+    server = DynamicServer(global_snaps)
+    for snaps in client_snaps:
+        server.add_client(snaps)
+    return server
+
 def make_toy_snapshots(N=8, W=1, num_snaps=4, seed=42):
     g = torch.Generator().manual_seed(seed)
     snaps = []
@@ -75,8 +81,8 @@ def test_dynamic_server_live_update(global_config_restore):
     client_snaps = partition_snapshots(global_snaps, 1)
     
     seed_all(100)
-    server1 = DynamicServer(global_snaps, client_snaps)
-    res1 = server1.federated_live_update()
+    server1 = make_server(global_snaps, client_snaps)
+    res1 = server1.joint_train_w()
     
     assert "mean_mrr" in res1
     assert "std_mrr" in res1
@@ -90,8 +96,8 @@ def test_dynamic_server_live_update(global_config_restore):
     client_snaps2 = partition_snapshots(global_snaps2, 1)
     
     seed_all(100)
-    server2 = DynamicServer(global_snaps2, client_snaps2)
-    res2 = server2.federated_live_update()
+    server2 = make_server(global_snaps2, client_snaps2)
+    res2 = server2.joint_train_w()
     assert res1["mrr_history"] == res2["mrr_history"]
     
     # 2. C=2: runs, sensible mrr
@@ -100,8 +106,8 @@ def test_dynamic_server_live_update(global_config_restore):
     client_snaps_c2 = partition_snapshots(global_snaps_c2, 2)
     
     seed_all(100)
-    server_c2 = DynamicServer(global_snaps_c2, client_snaps_c2)
-    res_c2 = server_c2.federated_live_update()
+    server_c2 = make_server(global_snaps_c2, client_snaps_c2)
+    res_c2 = server_c2.joint_train_w()
     assert len(res_c2["mrr_history"]) > 0
     
     # 3. C=4 over N=40 sparse snapshots (abstention check)
@@ -110,8 +116,8 @@ def test_dynamic_server_live_update(global_config_restore):
     client_snaps_c4 = partition_snapshots(global_snaps_c4, 4)
     
     seed_all(100)
-    server_c4 = DynamicServer(global_snaps_c4, client_snaps_c4)
-    res_c4 = server_c4.federated_live_update()
+    server_c4 = make_server(global_snaps_c4, client_snaps_c4)
+    res_c4 = server_c4.joint_train_w()
     assert "mean_mrr" in res_c4
     
     # 4. single-snapshot raises ValueError
@@ -119,15 +125,15 @@ def test_dynamic_server_live_update(global_config_restore):
     single_client_snaps = partition_snapshots(single_snaps, 1)
     
     with pytest.raises(ValueError) as exc:
-        server_err = DynamicServer(single_snaps, single_client_snaps)
-        server_err.federated_live_update()
+        server_err = make_server(single_snaps, single_client_snaps)
+        server_err.joint_train_w()
     assert "needs >= 2 snapshots" in str(exc.value)
 
 def test_dynamic_server_coef(global_config_restore):
     global_snaps = make_toy_snapshots(N=10, W=1, num_snaps=4, seed=42)
     client_snaps = partition_snapshots(global_snaps, 2)
     
-    server = DynamicServer(global_snaps, client_snaps)
+    server = make_server(global_snaps, client_snaps)
     coef = server._coef(server.clients)
     
     assert len(coef) == 2
@@ -165,7 +171,8 @@ def test_dynamic_client_encode(global_config_restore):
     snaps = make_toy_snapshots(N=8, W=1, num_snaps=2, seed=42)
     client_snaps = partition_snapshots(snaps, 2)
     cl = DynamicClient(client_snaps[0], id=0)
-    
+    cl.initialize()
+
     z, nid = cl.encode(0)
     assert z.shape == (cl.num_nodes(), 16)
     assert torch.equal(nid, cl.snaps[0].node_ids)
@@ -181,7 +188,8 @@ def test_dynamic_client_refresh(global_config_restore):
     snaps = make_toy_snapshots(N=8, W=1, num_snaps=2, seed=42)
     client_snaps = partition_snapshots(snaps, 2)
     cl = DynamicClient(client_snaps[0], id=0)
-    
+    cl.initialize()
+
     assert cl.hs is None
     cl.refresh(0)
     assert isinstance(cl.hs, list)
@@ -201,7 +209,9 @@ def test_dynamic_client_state_dict_roundtrip(global_config_restore):
     client_snaps = partition_snapshots(snaps, 2)
     
     cl1 = DynamicClient(client_snaps[0], id=0)
+    cl1.initialize()
     cl2 = DynamicClient(client_snaps[0], id=1)
+    cl2.initialize()
     
     z1, _ = cl1.classifier.encode(cl1.snaps[0], None)
     z2, _ = cl2.classifier.encode(cl2.snaps[0], None)

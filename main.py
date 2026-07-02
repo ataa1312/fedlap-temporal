@@ -46,8 +46,10 @@ def run_once() -> dict:
     LOGGER.info(f"loaded {len(global_snaps)} global snapshots")
     client_snaps = partition_snapshots(global_snaps, n_clients)
 
-    server = DynamicServer(global_snaps, client_snaps)
-    results = server.federated_live_update()
+    server = DynamicServer(global_snaps)
+    for snaps in client_snaps:
+        server.add_client(snaps)
+    results = server.joint_train_w()
     LOGGER.info(
         f"RESULT dataset={name} clients={n_clients} seed={config['seed']} "
         f"mean_mrr={results['mean_mrr']} std={results['std_mrr']} "

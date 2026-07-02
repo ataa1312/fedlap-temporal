@@ -126,32 +126,6 @@ def test_l2norm(config):
         h_norms = torch.norm(h, p=2, dim=-1)
         assert not torch.allclose(h_norms, torch.ones_like(h_norms), atol=1e-3)
 
-def test_spectral_hook(config):
-    config["dataset"]["task"] = "link_pred"
-    config["dataset"]["edge_dim"] = 1
-    config["dataset"]["node_encoder"] = False
-    config["dataset"]["edge_encoder"] = False
-    config["model"]["data_type"] = "f+s"
-    config["model"]["edge_decoding"] = "concat"
-    config["gnn"]["dims"] = [16, 16]
-    config["gnn"]["dims_pre_mp"] = []
-    config["gnn"]["dims_post_mp"] = []
-    config["gnn"]["embed_update_method"] = "gru"
-    config["spectral"]["spectral_len"] = 8
-    
-    graph = make_graph(N=12, W=1, E=20)
-    graph.structural_features = torch.randn(12, 8)
-    
-    dyn = DynamicClassifier(graph)
-    assert dyn.use_spectral
-    assert dyn.spectral_len == 8
-    
-    z, new_hs = dyn.encode()
-    assert z.shape == (12, 16 + 8)
-    
-    pred, label, new_hs = dyn.forward()
-    assert pred.shape == (20,)
-
 def test_federated_protocol(config):
     config["dataset"]["task"] = "link_pred"
     config["dataset"]["edge_dim"] = 1

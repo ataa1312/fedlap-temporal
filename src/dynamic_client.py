@@ -19,8 +19,22 @@ class DynamicClient(Client):
     def __init__(self, snaps, id: int = 0):
         super().__init__(graph=snaps[0], id=id)
         self.snaps = snaps
-        self.classifier = DynamicClassifier(snaps[0])
         self.hs = None
+
+    def initialize(
+        self,
+        smodel_type=None,
+        fmodel_type=None,
+        data_type=None,
+        **kwargs,
+    ) -> None:
+        data_type = config["model"]["data_type"] if data_type is None else data_type
+        if data_type == "feature":
+            self.classifier = DynamicClassifier(self.snaps[0])
+        else:
+            raise NotImplementedError(
+                f"data_type={data_type!r} needs the spectral smodel subclasses (W7)"
+            )
 
     def _hs_in(self):
         return [h.detach() for h in self.hs] if self.hs is not None else None

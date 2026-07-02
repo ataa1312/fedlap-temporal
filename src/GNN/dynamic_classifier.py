@@ -16,9 +16,10 @@ class DynamicClassifier(Classifier):
     """Per-client ROLAND recurrent link-prediction model in the FedLap idiom.
 
     Encoder = a ModelBinder assembled from ModelSpecs (the assembly that was
-    RecurrentGNN.__init__); decoder = a task-keyed head (heads[task]). The
-    spectral SFV is concatenated to the encoder OUTPUT (not the input). The
-    federated protocol covers encoder + head.
+    RecurrentGNN.__init__); decoder = a task-keyed head (heads[task]). Pure
+    feature model: spectral quantities live in subclasses that add an smodel
+    (FedLap's fmodel/smodel composition). The federated protocol covers
+    encoder + head.
     """
 
     def __init__(self, graph=None):
@@ -27,9 +28,6 @@ class DynamicClassifier(Classifier):
         self.hs = None        # prior per-layer hidden state (threaded by the orchestrator)
         self.last_hs = None   # most recent new_hs (for the orchestrator to carry forward)
         self.l2norm = False
-        self.use_spectral = False
-        self.spectral_len = 0
-        self.fusion = "add"
         self.create_model()
 
     def create_model(self):
@@ -92,14 +90,6 @@ class DynamicClassifier(Classifier):
         self.model = ModelBinder(specs).to(device)
         self.l2norm = gnn["l2norm"]
 
-        # spectral SFV fused at the OUTPUT (decision 5). model.fusion picks the op and
-        # thus the head input dim: 'concat' widens by spectral_len; 'add' keeps width d
-        # (the spectral stream must then match d).
-        self.fusion = mcfg["fusion"]
-        self.use_spectral = mcfg["data_type"] in ("structure", "f+s")
-        self.spectral_len = config["spectral"]["spectral_len"] if self.use_spectral else 0
-        d_head = d + self.spectral_len if (self.use_spectral and self.fusion == "concat") else d
-
         head_cls = heads[task]
         decoding = mcfg["edge_decoding"]
         is_edge = task in ("edge", "link_pred")
@@ -108,7 +98,7 @@ class DynamicClassifier(Classifier):
         if is_edge:
             head_kwargs["decoding"] = decoding
         dim_out = ds["num_classes"] if task == "node" and ds["num_classes"] else 1
-        self.head = head_cls(d_head, dim_out, **head_kwargs).to(device)
+        self.head = head_cls(self.head_dim_in(d), dim_out, **head_kwargs).to(device)
         self.model.apply(init_weights)
         self.head.apply(init_weights)
 
@@ -128,9 +118,6 @@ class DynamicClassifier(Classifier):
         )
         if self.l2norm:
             z = F.normalize(z, p=2, dim=-1)
-        if self.use_spectral:
-            sfv = self._spectral_sfv(g)
-            z = torch.cat([z, sfv], dim=-1) if self.fusion == "concat" else z + sfv
         self.last_hs = new_hs
         return z, new_hs
 
@@ -156,18 +143,20 @@ class DynamicClassifier(Classifier):
         # for a recurrent model must hit forward -> (pred, label, new_hs).
         return self.forward(data, hs)
 
+    def head_dim_in(self, d):
+        # encoder-output width the head consumes; spectral subclasses widen it
+        return d
+
     def refresh_hs(self):
         # advance the carried state at the snapshot boundary (TBPTT-1, detached)
         self.hs = None if self.last_hs is None else [h.detach() for h in self.last_hs]
 
-    def _spectral_sfv(self, graph=None):
-        g = self.graph if graph is None else graph
-        sfv = getattr(g, "structural_features", None)
-        if sfv is None:
-            raise RuntimeError(
-                "data_type needs a spectral SFV but graph.structural_features is None"
-            )
-        return sfv
+    def train_step(self, eval_=True):
+        # the parent's mask-based node step does not apply to the live-update task
+        raise NotImplementedError(
+            "DynamicClassifier trains through the live-update loop "
+            "(DynamicServer.joint_train_w), not train_step"
+        )
 
     # ---- federated protocol: base covers self.model; extend for the head ---- #
 
