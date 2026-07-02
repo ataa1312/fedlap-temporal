@@ -337,7 +337,7 @@ def _pos_for_split(snap: Data, split: str) -> torch.Tensor:
 # --------------------------------------------------------------------- #
 # Shared federated helpers: optimizer/scheduler builders (fedlap has no
 # factories) + nested-state_dict clone + client-embedding stitch. The federated
-# loop itself lives in src/GNN/dynamic_server.py::DynamicServer, which reuses the
+# loop itself lives in src/dynamic_server.py::DynamicServer, which reuses the
 # base Server FedAvg primitives (share_weights / sum_lod) for weight averaging.
 # --------------------------------------------------------------------- #
 

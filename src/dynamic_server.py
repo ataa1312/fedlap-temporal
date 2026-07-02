@@ -4,7 +4,7 @@ import statistics
 from src import *
 from src.server import Server
 from src.utils.graph import Graph
-from src.GNN.dynamic_client import DynamicClient
+from src.dynamic_client import DynamicClient
 from src.GNN.dynamic_classifier import DynamicClassifier
 from src.metrics.mrr import compute_mrr_from_z
 from src.train.federated_orchestrator import (
