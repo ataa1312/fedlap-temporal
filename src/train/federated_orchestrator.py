@@ -8,6 +8,8 @@ from torch.optim import Optimizer
 from torch_geometric.data import Data
 from torch_geometric.utils import negative_sampling
 
+from src import config
+from registries import optimizers, schedulers
 from src.metrics.mrr import compute_mrr_from_z
 from src.metrics.classification import binary_classification_metrics
 
@@ -330,3 +332,53 @@ def _pos_for_split(snap: Data, split: str) -> torch.Tensor:
             f"before _step_*_pair (live_update does this automatically)"
         )
     return getattr(snap, attr)
+
+
+# --------------------------------------------------------------------- #
+# Shared federated helpers: optimizer/scheduler builders (fedlap has no
+# factories) + nested-state_dict clone + client-embedding stitch. The federated
+# loop itself lives in src/GNN/dynamic_server.py::DynamicServer, which reuses the
+# base Server FedAvg primitives (share_weights / sum_lod) for weight averaging.
+# --------------------------------------------------------------------- #
+
+
+def _make_optimizer(model: nn.Module) -> Optimizer:
+    optim_cfg = config["optim"]
+    cls = optimizers[optim_cfg["optimizer"]]
+    params = filter(lambda p: p.requires_grad, model.parameters())
+    kwargs: dict = {"lr": optim_cfg["base_lr"], "weight_decay": optim_cfg["weight_decay"]}
+    if optim_cfg["optimizer"] == "sgd":
+        kwargs["momentum"] = optim_cfg["momentum"]
+    return cls(params, **kwargs)
+
+
+def _make_scheduler(optimizer: Optimizer):
+    optim_cfg = config["optim"]
+    name = optim_cfg["scheduler"]
+    if name == "none":
+        return None
+    cls = schedulers[name]
+    if name == "steps":
+        return cls(optimizer, milestones=optim_cfg["steps"], gamma=optim_cfg["lr_decay"])
+    if name == "cos":
+        return cls(optimizer, T_max=config["train"]["num_epochs"])
+    raise ValueError(f"Unhandled scheduler: {name!r}")
+
+
+def _clone_state(sd):
+    """Deep-clone a nested state_dict. fedlap's federated protocol nests
+    (model/head -> ModelBinder blocks -> tensors), so a flat clone won't do."""
+    if isinstance(sd, dict):
+        return {k: _clone_state(v) for k, v in sd.items()}
+    return sd.detach().clone()
+
+
+def _stitch_global_z(client_zs, client_node_ids, num_nodes, dim, device):
+    """Scatter each client's local embeddings into a global [num_nodes, dim] tensor
+    by global node id. Clients partition the node set (each node written once); a
+    single client with node_ids=arange(N) makes this the identity."""
+    global_z = torch.zeros(num_nodes, dim, device=device)
+    for z_c, ids in zip(client_zs, client_node_ids):
+        if z_c.numel() > 0:
+            global_z[ids] = z_c
+    return global_z
