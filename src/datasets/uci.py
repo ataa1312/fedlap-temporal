@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pandas as pd
 from registries import datasets
-from configs.registry import Registry
+from config.registry import Registry
 from src.datasets._temporal import make_snapshots, build_full_graph
 from torch_geometric.data import Data
 

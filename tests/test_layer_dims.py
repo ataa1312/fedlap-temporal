@@ -1,6 +1,6 @@
 import torch
 import pytest
-from configs.assertions import assert_cfg
+from config.assertions import assert_cfg
 from src.models.recurrent import RecurrentGNN
 from src.utils.graph import Graph
 

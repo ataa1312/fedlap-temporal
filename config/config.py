@@ -1,4 +1,4 @@
-from configs.registry import Registry
+from config.registry import Registry
 
 # Default configuration for the federated ROLAND pipeline. Built as a nested
 # Registry (dict-style access; attribute access also works via the shim for the

@@ -19,7 +19,7 @@ from sklearn.manifold import TSNE
 from src.utils.logger import getLOGGER
 from src.utils.plot_graph import plot_graph
 from torch_geometric.utils import degree, scatter, add_self_loops, remove_self_loops
-from configs.config import get_default_config
+from config.config import get_default_config
 
 DatasetName = Literal[
     "custom-enron",
@@ -32,7 +32,7 @@ LinkFeatureOperator = Literal["hadamard", "dot-product", "concat"]
 DownstreamTask = Literal["node-classification", "edge-prediction"]
 
 load_dotenv()
-# `config` is the default Registry tree (see configs/config.py). main.py parses
+# `config` is the default Registry tree (see config/config.py). main.py parses
 # the CLI + YAML and overlays the loaded values onto this object in place, so
 # modules that did `from src import config` see the real run config. Access is
 # dict-style, e.g. config["spectral"]["spectral_len"].

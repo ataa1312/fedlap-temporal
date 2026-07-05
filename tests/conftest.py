@@ -5,7 +5,7 @@ sys.path.insert(0, str(_ROOT))
 os.chdir(_ROOT)
 
 import pytest
-from configs.config import get_default_config
+from config.config import get_default_config
 
 @pytest.fixture
 def config():

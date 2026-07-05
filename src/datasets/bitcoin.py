@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from registries import datasets
-from configs.registry import Registry
+from config.registry import Registry
 from src.datasets._temporal import build_full_graph, encode_node_ids, make_snapshots
 from torch_geometric.data import Data
 

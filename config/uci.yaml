@@ -1,5 +1,5 @@
 # Federated ROLAND config for uci. Partial: only keys that differ from
-# configs/config.py defaults (overlaid on them at load time). Aligned to the
+# config/config.py defaults (overlaid on them at load time). Aligned to the
 # centralized configs/uci_gru.yaml (Phase 5): 8 MP layers, pre/post-MP, cos
 # scheduler, meta-learning.
 seed: 1234

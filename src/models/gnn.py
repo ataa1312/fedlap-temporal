@@ -3,7 +3,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from configs.registry import Registry
+from config.registry import Registry
 from src.models.mlp import MLP
 from src.models.weight_init import init_weights
 from registries import heads, models, stages

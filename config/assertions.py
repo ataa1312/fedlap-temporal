@@ -1,6 +1,6 @@
 import logging
 
-from configs.registry import Registry
+from config.registry import Registry
 
 __all__ = ["assert_cfg"]
 

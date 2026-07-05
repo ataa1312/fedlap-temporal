@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import torch.optim.lr_scheduler as sched
 from torch_geometric.nn import GATConv, GCNConv, SAGEConv
 
-from configs.registry import Registry
+from config.registry import Registry
 
 __all__ = [
     "models",

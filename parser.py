@@ -2,8 +2,8 @@ import sys
 from argparse import Namespace, ArgumentParser
 
 import yaml
-from configs.registry import Registry
-from configs.config import get_default_config, overlay_config
+from config.registry import Registry
+from config.config import get_default_config, overlay_config
 
 
 class Parser:

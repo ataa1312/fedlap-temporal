@@ -1,4 +1,4 @@
-from configs.config import get_default_config
+from config.config import get_default_config
 
 def test_top_level_keys():
     config = get_default_config()

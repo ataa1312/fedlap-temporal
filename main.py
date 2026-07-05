@@ -10,8 +10,8 @@ os.chdir(Path(__file__).parent.resolve())
 
 from src import *  # config (global singleton), device, LOGGER
 from parser import Parser
-from configs.config import overlay_config
-from configs.assertions import assert_cfg
+from config.config import overlay_config
+from config.assertions import assert_cfg
 from registries import datasets
 import src.datasets  # noqa: F401  triggers uci/bitcoin loader registration
 from src.utils.graph_partitioning import partition_snapshots

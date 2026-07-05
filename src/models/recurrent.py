@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from configs.registry import Registry
+from config.registry import Registry
 from src.models.edge_conv import GeneralEdgeLayer
 from src.models.encoder import EdgeEncoder, NodeEncoder
 from src.models.layer import GeneralLayer
