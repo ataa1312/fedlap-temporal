@@ -24,7 +24,6 @@ def _dataset() -> Registry:
     d["task"] = "link_pred"
     d["task_type"] = "classification"
     d["transductive"] = True
-    d["directed"] = False
     d["shuffle"] = True
     d["split"] = [0.8, 0.1, 0.1]            # edge-level per snapshot (live_update)
     d["split_seed"] = None                  # None -> follow global seed
