@@ -5,7 +5,6 @@ from src.GNN.custom_gat import CustomGAT, MultiHeadCustomGAT
 from torch_geometric.nn import GATConv, GCNConv, SAGEConv, MessagePassing
 from torch_geometric.utils import add_self_loops
 from torch_geometric.typing import Adj, OptTensor
-from src.utils.config_parser import TrainModelConfig
 
 
 class GNN(nn.Module):
