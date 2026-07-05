@@ -7,6 +7,8 @@ from src.train.federated_orchestrator import (
     _step_eval_loss_pair,
     _refresh_hs,
     _pos_for_split,
+    _attach_future_link_pred_labels,
+    _clone_state,
 )
 
 
@@ -20,6 +22,8 @@ class DynamicClient(Client):
         super().__init__(graph=snaps[0], id=id)
         self.snaps = snaps
         self.hs = None
+        self._val_cache = None
+        self._val_cache_t = None
 
     def initialize(
         self,
@@ -38,6 +42,19 @@ class DynamicClient(Client):
 
     def _hs_in(self):
         return [h.detach() for h in self.hs] if self.hs is not None else None
+
+    def _val_batch(self, t: int):
+        # Frozen val batch for snapshot t: built once (fixed positives + negatives)
+        # and reused across all local epochs AND FedAvg rounds, so both the local
+        # (local_finetune) and round-level (val_loss) early stops compare val loss
+        # under a fixed batch — patience reacts to weights, not resampled negatives.
+        if self._val_cache_t != t:
+            today, tomorrow = self.snaps[t].to(device), self.snaps[t + 1].to(device)
+            self._val_cache = _attach_future_link_pred_labels(
+                today, tomorrow, _pos_for_split(tomorrow, "val").to(device)
+            )
+            self._val_cache_t = t
+        return self._val_cache
 
     def can_train(self, t: int) -> bool:
         # Can fine-tune at t only if snap_{t+1} has both train and val positives
@@ -58,20 +75,42 @@ class DynamicClient(Client):
         return z, snap.node_ids.to(device)
 
     def local_finetune(self, t: int, local_epochs: int, loss_fn):
-        # local_epochs local ROLAND train steps on (snap_t, snap_{t+1}) from the
-        # currently-loaded (global) weights; fresh optimizer per call.
+        # up to local_epochs local ROLAND train steps on (snap_t, snap_{t+1}) from the
+        # currently-loaded (global) weights, with ROLAND internal-validation early
+        # stopping: patience (internal_validation_tolerance) on a FROZEN val batch,
+        # restore best. Train negatives resample each step (ROLAND train_step); the
+        # val batch is fixed so patience reacts to weights, not sampling noise. This
+        # makes local_epochs a MAX (not a fixed count) so large values no longer
+        # overfit. fresh optimizer per call.
         today, tomorrow = self.snaps[t].to(device), self.snaps[t + 1].to(device)
         hs_in = self._hs_in()
         optimizer = _make_optimizer(self.classifier)
+        tol = config["train"]["internal_validation_tolerance"]
+        val_snap = self._val_batch(t)
+        best = {"val": float("inf"), "state": None}
+        stale = 0
         for _ in range(local_epochs):
             _step_train_pair(
                 self.classifier, today, tomorrow, hs_in, loss_fn, optimizer, device, True
             )
+            vloss = _step_eval_loss_pair(
+                self.classifier, today, tomorrow, hs_in, loss_fn, device, True,
+                prepared_snap=val_snap,
+            )
+            if vloss < best["val"]:
+                best = {"val": vloss, "state": _clone_state(self.classifier.state_dict())}
+                stale = 0
+            else:
+                stale += 1
+            if stale >= tol:
+                break
+        if best["state"] is not None:
+            self.classifier.load_state_dict(best["state"])
 
     def val_loss(self, t: int, loss_fn) -> float:
         return _step_eval_loss_pair(
             self.classifier, self.snaps[t], self.snaps[t + 1], self._hs_in(),
-            loss_fn, device, True, pos_split="val",
+            loss_fn, device, True, prepared_snap=self._val_batch(t),
         )
 
     def refresh(self, t: int):
