@@ -1,0 +1,121 @@
+# ROLAND Table 3, Reddit-Title row "ROLAND Moving-Average".
+# Ported from roland/run/replication_configs/table3_bottom/reddit-title.tsv_moving_average_0.7.yaml.
+device: auto
+outdir: results
+seed: 1234
+num_workers: 0
+num_threads: 6
+print: both
+metric_best: auto
+remark: reddit_title_ma
+
+dataset:
+  name: reddit_title
+  path: data
+  format: raw
+  task: link_pred
+  task_type: classification
+  transductive: true
+  shuffle: true
+  split: [0.8, 0.1, 0.1]
+  split_seed: null
+
+  edge_negative_sampling_ratio: 1.0
+  edge_dim: 88                    # [scaled_ts, sentiment, *86 properties]
+  edge_encoder: true             # ROLAND LinearEdgeEncoder (88 -> 32 + BN)
+  edge_encoder_dim: 32           # feature_amount_dim + feature_time_dim
+  edge_encoder_bn: true
+  node_encoder: false            # ROLAND reddit: off, raw 300-D embedding fed in
+  node_encoder_dim: 128
+  node_encoder_bn: true
+
+  negative_sample_weight: uniform
+  is_hetero: false
+  split_method: default          # min_edges=10
+  load_cache: false
+  premade_datasets: fresh
+  include_node_features: false
+
+  snapshot: true
+  snapshot_freq: W
+
+train:
+  num_epochs: 100
+  batch_size: 32
+  mode: live_update
+  early_stopping: false
+  eval_period: 20
+  ckpt_period: 50
+  auto_resume: false
+  ckpt_clean: true
+
+  internal_validation_tolerance: 5
+  stop_live_update_after: 99999999
+
+model:
+  type: recurrent_gnn
+  loss_fun: bce_with_logits
+  match_upper: true
+  thresh: 0.5
+  edge_decoding: concat
+  edge_pred_shape: label_index
+
+gnn:
+  layer_type: residual_edge_conv
+  dims_pre_mp: [64]
+  dims: [64, 64, 64, 64]  # ROLAND reddit-title MA depth
+  dims_post_mp: [128]
+  stage_type: stack
+  skip_every: 1
+  batchnorm: true
+  act: prelu
+  dropout: 0.0
+  agg: add
+  normalize_adj: false
+  msg_direction: single
+  l2norm: true
+  keep_edge: 0.5
+
+  att_heads: 1
+  att_final_linear: false
+  att_final_linear_bn: false
+
+  only_update_top_state: false
+  embed_update_method: moving_average
+  keep_ratio_mode: linear         # per-node degree blend for the MA embedding update
+  gru_kernel: linear
+  mlp_update_layers: 2
+  skip_connection: affine
+
+optim:
+  optimizer: adam
+  base_lr: 0.003                  # ROLAND reddit base_lr
+  weight_decay: 0.0005
+  momentum: 0.9
+  scheduler: cos
+  steps: [30, 60, 90]
+  lr_decay: 0.1
+
+meta:
+  is_meta: true
+  method: moving_average
+  alpha: 0.7                      # moving_average_0.7 (meta weight-blend rate)
+
+experimental:
+  rank_eval_multiplier: 1000
+  eval_seed: null
+  restrict_training_set: -1
+
+metric:
+  mrr_method: max
+
+link_pred_spec:
+  forecast_frequency: 1
+  forecast_horizon: 7
+
+wandb:
+  run_name: ''
+  project: centralized
+  job_type: edge-prediction
+  group: ''
+  mode: online

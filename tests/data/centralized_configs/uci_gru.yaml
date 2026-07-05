@@ -1,0 +1,121 @@
+# ROLAND Table 3, UCI-Message row "ROLAND GRU-Update" (the headline number).
+# Target: MRR = 0.112 ± 0.008. Paper meta.alpha = 0.9.
+device: auto
+outdir: results
+seed: 1234
+num_workers: 0
+num_threads: 6
+print: both
+metric_best: auto
+remark: uci_table3_gru
+
+dataset:
+  name: uci
+  path: data
+  format: raw
+  task: link_pred
+  task_type: classification
+  transductive: true
+  shuffle: true
+  split: [0.8, 0.1, 0.1]          # C1: official Table-3 ratio
+  split_seed: null
+
+  edge_negative_sampling_ratio: 1.0
+  edge_dim: 1                     # raw edge-feature dim (MinMax-scaled timestamp)
+  edge_encoder: true              # #9: ROLAND LinearEdgeEncoder (1 -> 32 + BN)
+  edge_encoder_dim: 32            # feature_amount_dim + feature_time_dim
+  edge_encoder_bn: true
+  node_encoder: false             # official UCI: off (all-ones node features)
+  node_encoder_dim: 128
+  node_encoder_bn: true
+
+  negative_sample_weight: uniform
+  is_hetero: false
+  split_method: default           # C2: official; -> min_edges=10 (drops sparse snapshots)
+  load_cache: false
+  premade_datasets: fresh
+  include_node_features: false
+
+  snapshot: true
+  snapshot_freq: W                # paper: weekly, 29 snapshots
+
+train:
+  num_epochs: 100                 # max inner-loop iters per snapshot
+  batch_size: 32
+  mode: live_update
+  early_stopping: false
+  eval_period: 20
+  ckpt_period: 100
+  auto_resume: false
+  ckpt_clean: true
+
+  internal_validation_tolerance: 5
+  stop_live_update_after: 99999999
+
+model:
+  type: recurrent_gnn
+  loss_fun: bce_with_logits
+  match_upper: true
+  thresh: 0.5
+  edge_decoding: concat           # C3: official (MLP over [z_u||z_v])
+  edge_pred_shape: label_index
+
+gnn:
+  layer_type: residual_edge_conv  # ROLAND's edge-feature-aware conv (paper §4.1)
+  dims_pre_mp: [64]
+  dims: [64, 64, 64, 64, 64, 64, 64, 64]  # #12: official depth
+  dims_post_mp: [128]
+  stage_type: stack               # official (recurrent path ignores stage_type)
+  skip_every: 1
+  batchnorm: true                 # paper §4.4 ablation: BN matters
+  act: prelu                      # paper §4.1
+  dropout: 0.0
+  agg: add                        # paper §4.4 ablation: sum aggregation
+  normalize_adj: false
+  msg_direction: single
+  l2norm: true
+  keep_edge: 0.5
+
+  att_heads: 1
+  att_final_linear: false
+  att_final_linear_bn: false
+
+  only_update_top_state: false
+  embed_update_method: gru        # ROLAND GRU-Update row
+  keep_ratio_mode: linear         # unused by gru; kept for config completeness
+  gru_kernel: linear
+  mlp_update_layers: 2
+  skip_connection: affine         # paper §4.4 ablation: skip-connection on UCI
+
+optim:
+  optimizer: adam                 # C4: official
+  base_lr: 0.01                   # paper searches 0.001-0.01
+  weight_decay: 0.0005
+  momentum: 0.9
+  scheduler: cos                  # cosine T_max = train.num_epochs (#11)
+  steps: [30, 60, 90]
+  lr_decay: 0.1
+
+meta:
+  is_meta: true                   # Table 3 row uses meta-learning
+  method: moving_average
+  alpha: 0.9                      # Table 4: best α for GRU on UCI
+
+experimental:
+  rank_eval_multiplier: 1000      # paper: K=1000 negatives per source
+  eval_seed: null
+  restrict_training_set: -1
+
+metric:
+  mrr_method: max
+
+link_pred_spec:
+  forecast_frequency: 1
+  forecast_horizon: 7
+
+wandb:
+  run_name: ''
+  project: centralized
+  job_type: edge-prediction
+  group: ''
+  mode: online

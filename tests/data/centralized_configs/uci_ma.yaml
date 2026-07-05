@@ -1,0 +1,126 @@
+# ROLAND Table 3, UCI-Message row "ROLAND Moving Average".
+# Target: MRR = 0.075. Paper meta.alpha = 0.7.
+# Aligned to roland/.../table3_bottom/CollegeMsg.txt_moving_average_0.7.yaml
+# (config fixes C1-C8 + #12).
+# NOTE: meta.alpha is the meta-learning W_init blend rate only; the
+# moving-average embedding update uses a per-node degree-based keep_ratio
+# (done #1/#23), not alpha.
+device: auto
+outdir: results
+seed: 2
+num_workers: 0
+num_threads: 6
+print: both
+metric_best: auto
+remark: uci_table3_ma
+
+dataset:
+  name: uci
+  path: data
+  format: raw
+  task: link_pred
+  task_type: classification
+  transductive: true
+  shuffle: true
+  split: [0.8, 0.1, 0.1]          # C1: official Table-3 ratio
+  split_seed: null
+
+  edge_negative_sampling_ratio: 1.0
+  edge_dim: 1                     # raw edge-feature dim (scaled timestamp)
+  edge_encoder: true              # #9: ROLAND LinearEdgeEncoder (1 -> 32 + BN)
+  edge_encoder_dim: 32            # feature_amount_dim + feature_time_dim
+  edge_encoder_bn: true
+  node_encoder: false             # official UCI: off (all-ones node features)
+  node_encoder_dim: 128
+  node_encoder_bn: true
+
+  negative_sample_weight: uniform
+  is_hetero: false
+  split_method: default           # C2: official; -> min_edges=10 (drops sparse snapshots)
+  load_cache: false
+  premade_datasets: fresh
+  include_node_features: false
+
+  snapshot: true
+  snapshot_freq: W                # paper: weekly, 29 snapshots
+
+train:
+  num_epochs: 100
+  batch_size: 32
+  mode: live_update
+  early_stopping: false
+  eval_period: 20
+  ckpt_period: 100
+  auto_resume: false
+  ckpt_clean: true
+
+  internal_validation_tolerance: 5
+  stop_live_update_after: 99999999
+
+model:
+  type: recurrent_gnn
+  loss_fun: bce_with_logits
+  match_upper: true
+  thresh: 0.5
+  edge_decoding: concat           # C3: official (MLP over [z_u||z_v])
+  edge_pred_shape: label_index
+
+gnn:
+  layer_type: residual_edge_conv  # C5: official edge-aware conv
+  dims_pre_mp: [64]
+  dims: [64, 64, 64, 64, 64, 64, 64, 64]  # #12: official depth
+  dims_post_mp: [128]
+  stage_type: stack               # official (recurrent path ignores stage_type)
+  skip_every: 1
+  batchnorm: true
+  act: prelu                      # C6: official
+  dropout: 0.0
+  agg: add
+  normalize_adj: false
+  msg_direction: single
+  l2norm: true
+  keep_edge: 0.5
+
+  att_heads: 1
+  att_final_linear: false
+  att_final_linear_bn: false
+
+  only_update_top_state: false
+  embed_update_method: moving_average    # ROLAND Moving Average row
+  keep_ratio_mode: linear                # per-node degree-based blend (roland transaction.keep_ratio)
+  gru_kernel: linear
+  mlp_update_layers: 2
+  skip_connection: affine         # C7: official §4.4
+
+optim:
+  optimizer: adam                 # C4: official
+  base_lr: 0.01
+  weight_decay: 0.0005
+  momentum: 0.9
+  scheduler: cos                  # cosine T_max = train.num_epochs (#11)
+  steps: [30, 60, 90]
+  lr_decay: 0.1
+
+meta:
+  is_meta: true
+  method: moving_average
+  alpha: 0.7                      # Table 4: best α for Moving Average on UCI
+
+experimental:
+  rank_eval_multiplier: 1000
+  eval_seed: null
+  restrict_training_set: -1
+
+metric:
+  mrr_method: max
+
+link_pred_spec:
+  forecast_frequency: 1
+  forecast_horizon: 7
+
+wandb:
+  run_name: ''
+  project: centralized
+  job_type: edge-prediction
+  group: ''
+  mode: online

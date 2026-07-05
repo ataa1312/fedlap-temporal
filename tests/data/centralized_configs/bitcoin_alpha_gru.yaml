@@ -1,0 +1,123 @@
+# ROLAND Table 3, Bitcoin-Alpha row "ROLAND GRU-Update".
+# Hyperparams from roland/.../table3_bottom/bitcoinalpha.csv_gru_0.8.yaml.
+# Target: ROLAND paper Table 3 (live_update) — per-snapshot results in
+# roland/roland_raw_records/.../BtcAlpha_FullGRU_alpha=0.8 (TB logs).
+device: auto
+outdir: results
+seed: 1234
+num_workers: 0
+num_threads: 6
+print: both
+metric_best: auto
+remark: bitcoin_alpha_gru
+
+dataset:
+  name: bitcoin_alpha
+  path: data
+  format: raw
+  task: link_pred
+  task_type: classification
+  transductive: true
+  shuffle: true
+  split: [0.8, 0.1, 0.1]
+  split_seed: null
+
+  edge_negative_sampling_ratio: 1.0
+  edge_dim: 2                     # [rating, scaled_timestamp]
+  edge_encoder: true
+  edge_encoder_dim: 32
+  edge_encoder_bn: true
+  node_encoder: false
+  node_encoder_dim: 128
+  node_encoder_bn: true
+
+  negative_sample_weight: uniform
+  is_hetero: false
+  split_method: default           # -> min_edges=10 (226 snapshots)
+  load_cache: false
+  premade_datasets: fresh
+  include_node_features: false
+
+  snapshot: true
+  snapshot_freq: W                # weekly, 226 snapshots after >=10 filter
+
+train:
+  num_epochs: 100
+  batch_size: 32
+  mode: live_update
+  early_stopping: false
+  eval_period: 20
+  ckpt_period: 100
+  auto_resume: false
+  ckpt_clean: true
+
+  internal_validation_tolerance: 5
+  stop_live_update_after: 99999999
+
+model:
+  type: recurrent_gnn
+  loss_fun: bce_with_logits
+  match_upper: true
+  thresh: 0.5
+  edge_decoding: concat
+  edge_pred_shape: label_index
+
+gnn:
+  layer_type: residual_edge_conv
+  dims_pre_mp: [64]
+  dims: [64, 64]  # Alpha GRU: official depth
+  dims_post_mp: [128]
+  stage_type: stack
+  skip_every: 1
+  batchnorm: false                # Alpha GRU: BN off in official config
+  act: prelu
+  dropout: 0.0
+  agg: add
+  normalize_adj: false
+  msg_direction: single
+  l2norm: true
+  keep_edge: 0.5
+
+  att_heads: 1
+  att_final_linear: false
+  att_final_linear_bn: false
+
+  only_update_top_state: false
+  embed_update_method: gru        # ROLAND GRU-Update row
+  keep_ratio_mode: linear         # unused by gru
+  gru_kernel: linear
+  mlp_update_layers: 2
+  skip_connection: affine
+
+optim:
+  optimizer: adam
+  base_lr: 0.003
+  weight_decay: 0.0005
+  momentum: 0.9
+  scheduler: cos
+  steps: [30, 60, 90]
+  lr_decay: 0.1
+
+meta:
+  is_meta: true
+  method: moving_average
+  alpha: 0.8                      # Table 4: best alpha for Alpha GRU
+
+experimental:
+  rank_eval_multiplier: 1000
+  eval_seed: null
+  restrict_training_set: -1
+
+metric:
+  mrr_method: max
+
+link_pred_spec:
+  forecast_frequency: 1
+  forecast_horizon: 7
+
+wandb:
+  run_name: ''
+  project: centralized
+  job_type: edge-prediction
+  group: ''
+  mode: online
