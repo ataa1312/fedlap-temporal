@@ -1,0 +1,82 @@
+# reddit_title — GRU temporal update, spectral "recompute" tracking.
+# Self-contained variant in the <name>_<temporal>_<update> matrix. Only keys that
+# differ from config/config.py defaults; aligned to centralized configs/reddit_title_gru.yaml
+# with the spectral smodel params surfaced explicitly.
+seed: 1234
+device: auto
+
+dataset:
+  name: reddit_title
+  snapshot_freq: W
+  split: [0.8, 0.1, 0.1]
+  edge_dim: 88
+  edge_encoder: true
+
+subgraph:
+  num_subgraphs: 3
+  partitioning: random
+
+train:
+  mode: live_update
+  num_epochs: 100
+  num_runs: 3
+  internal_validation_tolerance: 5
+
+model:
+  type: recurrent_gnn
+  loss_fun: bce_with_logits
+  edge_decoding: concat
+  data_type: f+s
+  smodel_type: LanczosLaplace
+  fmodel_type: GNN
+  fusion: add
+  iterations: 1          # FedAvg rounds per snapshot (C=1 faithful; raise for federated)
+  local_epochs: 100      # inner ROLAND steps per round (a MAX; internal-validation early-stops)
+
+gnn:
+  layer_type: residual_edge_conv
+  embed_update_method: gru
+  keep_ratio_mode: linear
+  dims_pre_mp: [128]
+  dims: [128, 128, 128, 128, 128, 128]
+  dims_post_mp: [256]
+  batchnorm: true
+  act: prelu
+  skip_connection: affine
+
+optim:
+  optimizer: adam
+  base_lr: 0.01
+  weight_decay: 0.0005
+  scheduler: cos
+
+meta:
+  is_meta: true
+  alpha: 0.1
+
+spectral:
+  spectral_len: 300
+  matrix: lap
+  L_type: rw
+  method: arnoldi
+  decompose: eigh
+  lanczos_iter: 400
+  update_mode: recompute
+  use_procrustes: true
+  recompute_prob: 0.0
+  output_bn: true
+  regularizer_coef: 0
+
+structure_model:
+  num_structural_features: 512
+  structure_type: hop2vec
+  DGCN_structure_layers_sizes: [128]
+
+federated:
+  aggregation: fedavg
+  weighting: node_count
+  sfv_share: local
+
+wandb:
+  project: dynamic-fedlap
+  mode: offline
