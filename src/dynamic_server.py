@@ -186,6 +186,9 @@ class DynamicServer(Server):
         loss_fn = losses[config["model"]["loss_fun"]]
         mrr_k = config["experimental"]["rank_eval_multiplier"]
         mrr_method = config["metric"]["mrr_method"]
+        is_meta = config["meta"]["is_meta"]
+        meta_alpha = config["meta"]["alpha"]
+        meta_method = config["meta"]["method"]
         if log:
             tag = model_type or ("FL WA" if FL else "Local WA")
             LOGGER.info(f"{tag} live-update starts!")
@@ -209,6 +212,7 @@ class DynamicServer(Server):
 
         mrr_history: list[float] = []
         metrics_history: list[dict] = []
+        w_init = None  # running meta W_init (moving-avg across snapshots; FL path)
         for t in range(n_tasks):
             # 0. Spectral provider: U_t on the cumulative global graph, sliced to
             #    every owner via set_QD (before eval — encoding snap_t needs Q_t).
@@ -239,6 +243,10 @@ class DynamicServer(Server):
             #    stopping on the aggregated (node-count-weighted) client val loss.
             #    Local-only: the same step budget without broadcast/aggregation.
             if FL:
+                # meta warm-start: reload the running W_init before the rounds;
+                # the round loop's share_weights broadcasts it to the clients.
+                if is_meta and w_init is not None:
+                    self.load_state_dict(_clone_state(w_init))
                 best = {"val": float("inf"), "state": None}
                 stale = 0
                 for _ in range(rounds):
@@ -262,6 +270,13 @@ class DynamicServer(Server):
                 if best["state"] is not None:
                     self.load_state_dict(best["state"])
                 self.share_weights()  # sync clients to the best global weights
+                # meta blend: fold the (restored, best) aggregate into W_init.
+                if is_meta:
+                    if w_init is None:
+                        w_init = _clone_state(self.state_dict())
+                    else:
+                        w = meta_alpha if meta_method == "moving_average" else 1.0 / (t + 1)
+                        w_init = sum_lod([w_init, self.state_dict()], [1.0 - w, w])
             else:
                 for _ in range(rounds):
                     for cl in self.clients:

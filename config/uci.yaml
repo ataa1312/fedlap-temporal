@@ -1,12 +1,12 @@
-# Federated ROLAND config for custom-uci. Partial: only keys that differ from
-# configs/config.py defaults (overlaid on them at load time). Hyperparameters
-# are provisional until Phase 5 aligns them to the centralized uci_table3_*.
+# Federated ROLAND config for uci. Partial: only keys that differ from
+# configs/config.py defaults (overlaid on them at load time). Aligned to the
+# centralized configs/uci_gru.yaml (Phase 5): 8 MP layers, pre/post-MP, cos
+# scheduler, meta-learning.
 seed: 1234
 device: auto
 
 dataset:
   name: uci
-  directed: false
   snapshot_freq: W
   split: [0.8, 0.1, 0.1]
   edge_dim: 1
@@ -29,11 +29,15 @@ model:
   data_type: f+s
   smodel_type: LanczosLaplace
   fmodel_type: GNN
+  iterations: 1          # FedAvg rounds per snapshot (C=1 faithful; raise for federated)
+  local_epochs: 100      # inner ROLAND steps per round (a MAX; internal-validation early-stops)
 
 gnn:
   layer_type: residual_edge_conv
   embed_update_method: gru
-  dims: [64, 64]
+  dims_pre_mp: [64]
+  dims: [64, 64, 64, 64, 64, 64, 64, 64]
+  dims_post_mp: [128]
   act: prelu
   skip_connection: affine
 
@@ -41,10 +45,10 @@ optim:
   optimizer: adam
   base_lr: 0.01
   weight_decay: 0.0005
-  scheduler: none
+  scheduler: cos
 
 meta:
-  is_meta: false
+  is_meta: true
 
 spectral:
   spectral_len: 300

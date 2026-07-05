@@ -374,8 +374,13 @@ class Graph(Data):
         if from_U.device != to_U.device:
             to_U = to_U.to(from_U.device)
         M = torch.matmul(from_U.t(), to_U)
-        u, s, v = torch.svd(M)
-        R = torch.matmul(u, v.t())
+        try:
+            u, s, vh = torch.linalg.svd(M, full_matrices=False)
+        except torch.linalg.LinAlgError:
+            # ill-conditioned alignment matrix (near-degenerate spectrum): skip
+            # the rotation rather than crash — leaves from_U unaligned this step.
+            return from_U
+        R = torch.matmul(u, vh)
         return torch.matmul(from_U, R)
 
     def update_eigpairs(
