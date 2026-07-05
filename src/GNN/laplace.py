@@ -1,6 +1,6 @@
 import torch
 from src import *
-from src.GNN.sGNN import SClassifier, SEdgeClassifier
+from src.GNN.sGNN import SClassifier
 from src.utils.graph import Graph
 from src.models.model_binders import (
     ModelSpecs,
@@ -215,69 +215,3 @@ class LanczosLaplaceNew(LanczosLaplace):
         if self.graph.x is not None and self.graph.x.requires_grad:
             parameters = [p for p in parameters if p is not self.graph.x]
         return parameters
-
-
-# Edge prediction analogues
-class SEdgeLaplace(LaplaceMixin, SEdgeClassifier):
-    def __init__(
-        self,
-        graph: Graph,
-        link_feature_operator: LinkFeatureOperator = "hadamard",
-        hidden_layer_size=config["structure_model"]["DGCN_structure_layers_sizes"],
-    ):
-        super().__init__(graph, link_feature_operator, hidden_layer_size)
-        self.graph.create_L()
-
-
-class SpectralEdgeLaplace(SpectralLaplaceMixin, SEdgeClassifier):
-    def __init__(
-        self,
-        graph: Graph,
-        link_feature_operator: LinkFeatureOperator = "hadamard",
-        hidden_layer_size=config["structure_model"]["DGCN_structure_layers_sizes"],
-    ):
-        super().__init__(graph, link_feature_operator, hidden_layer_size)
-
-
-class LanczosEdgeLaplace(SpectralEdgeLaplace):
-    def __init__(
-        self,
-        graph: Graph,
-        link_feature_operator: LinkFeatureOperator = "hadamard",
-        hidden_layer_size=config["structure_model"]["DGCN_structure_layers_sizes"],
-    ):
-        super().__init__(graph, link_feature_operator, hidden_layer_size)
-
-
-# class SLaplace(SClassifier):
-#     def __init__(
-#         self,
-#         graph: Graph,
-#         hidden_layer_size=config["structure_model"]["DGCN_structure_layers_sizes"],
-#     ):
-#         super().__init__(graph, hidden_layer_size)
-#         A, E = estimate(self.graph, self.graph.x.shape[0])
-#         self.A = A + E
-#         D = torch.sum(self.A, dim=1)
-#         self.L = torch.diag(D) - self.A
-#         # self.create_L()
-
-#     def regularizer(self):
-#         x = self.graph.x
-#         r1 = torch.matmul(self.L, x)
-#         r = torch.matmul(x.T, r1)
-#         # s = torch.trace(r) / torch.trace(torch.matmul(x.T, x))
-#         s = torch.trace(r) / x.shape[1]
-
-#         return s
-
-#     def get_grads(self, just_SFV=False):
-#         grads = {}
-#         if self.model is not None:
-#             grads["model"] = self.model.get_grads()
-
-#         return grads
-
-#     def set_grads(self, grads):
-#         if "model" in grads.keys():
-#             self.model.set_grads(grads["model"])
