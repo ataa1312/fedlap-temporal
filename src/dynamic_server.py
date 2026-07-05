@@ -10,6 +10,7 @@ from src.dynamic_client import DynamicClient
 from src.GNN.dynamic_classifier import DynamicClassifier
 from src.GNN.fed_dynamic_classifier import make_fed_dynamic_classifier
 from src.metrics.mrr import compute_mrr_from_z
+from src.metrics.classification import binary_classification_metrics
 from src.train.federated_orchestrator import (
     _partition_edges_per_snapshot,
     _precompute_keep_ratio,
@@ -27,6 +28,25 @@ class SpectralFeatures:
     U: torch.Tensor
     D: torch.Tensor
     Q: torch.Tensor | None = None
+
+
+def _weighted_mean_metrics(
+    metrics_list: list[dict], weights: list[float]
+) -> dict[str, float]:
+    """Per-key weighted mean over a list of metric dicts, skipping nan
+    contributions per key (a key with all-nan or zero weight -> nan)."""
+    if not metrics_list:
+        return {}
+    out = {}
+    for k in metrics_list[0]:
+        num, den = 0.0, 0.0
+        for md, w in zip(metrics_list, weights):
+            v = md[k]
+            if v == v:  # skip nan
+                num += v * w
+                den += w
+        out[k] = num / den if den > 0 else float("nan")
+    return out
 
 
 class DynamicServer(Server):
@@ -188,6 +208,7 @@ class DynamicServer(Server):
             )
 
         mrr_history: list[float] = []
+        metrics_history: list[dict] = []
         for t in range(n_tasks):
             # 0. Spectral provider: U_t on the cumulative global graph, sliced to
             #    every owner via set_QD (before eval — encoding snap_t needs Q_t).
@@ -198,13 +219,20 @@ class DynamicServer(Server):
             #    at initialize_FL / end of the previous snapshot) -> global stitch.
             #    Local-only: weighted mean of per-client local MRRs.
             if FL:
-                mrr = self._eval_mrr(t, mrr_k, mrr_method)
+                mrr, metrics = self._eval_mrr(t, mrr_k, mrr_method)
             else:
-                mrr = self._eval_mrr_local(t, loss_fn, mrr_k, mrr_method)
+                mrr, metrics = self._eval_mrr_local(t, loss_fn, mrr_k, mrr_method)
             if mrr is not None and not math.isnan(mrr):
                 mrr_history.append(mrr)
+                if metrics is not None:
+                    metrics_history.append(metrics)
                 if log:
-                    LOGGER.info(f"t={t} mrr={mrr:.4f}")
+                    m = metrics or {}
+                    LOGGER.info(
+                        f"t={t} mrr={mrr:.4f} auc={m.get('roc_auc', float('nan')):.4f} "
+                        f"ap={m.get('ap', float('nan')):.4f} f1={m.get('f1', float('nan')):.4f} "
+                        f"mcc={m.get('mcc', float('nan')):.4f}"
+                    )
 
             # 2. Training. FL: `rounds` communication rounds of `local_epochs`
             #    local steps, weight-averaged via sum_lod, with round-level early
@@ -247,12 +275,21 @@ class DynamicServer(Server):
 
         mean = statistics.fmean(mrr_history) if mrr_history else None
         std = statistics.pstdev(mrr_history) if len(mrr_history) > 1 else 0.0
+        mean_metrics = _weighted_mean_metrics(
+            metrics_history, [1.0] * len(metrics_history)
+        )
         if log:
             LOGGER.info(
                 f"live-update done: mean_mrr={mean} std={std:.4f} "
                 f"over {len(mrr_history)} snapshots"
             )
-        return {"mean_mrr": mean, "std_mrr": std, "mrr_history": mrr_history}
+        return {
+            "mean_mrr": mean,
+            "std_mrr": std,
+            "mrr_history": mrr_history,
+            "mean_metrics": mean_metrics,
+            "metrics_history": metrics_history,
+        }
 
     # ---- spectral provider (ported from GNNServer; graph passed explicitly) ---- #
 
@@ -376,24 +413,38 @@ class DynamicServer(Server):
         gz = _stitch_global_z(zs, ids, self.global_snaps[0].num_nodes, dim, device)
         pos_test = _pos_for_split(self.global_snaps[t + 1], "test").to(device)
         if pos_test.size(1) == 0:
-            return None
+            return None, None
         eval_snap = _attach_future_link_pred_labels(
             self.global_snaps[t].to(device), self.global_snaps[t + 1].to(device), pos_test
         )
-        return compute_mrr_from_z(gz, eval_snap, mrr_k, mrr_method, device, self.classifier)
+        # MRR first, in the server classifier's current mode (unchanged from
+        # before metrics were added — keeps the headline reproducible).
+        mrr = compute_mrr_from_z(gz, eval_snap, mrr_k, mrr_method, device, self.classifier)
+        # Metrics in eval mode (clean BN/dropout, like the local path); restore
+        # after so training mode/RNG is untouched. Eval-mode decode is
+        # deterministic, so the run stays bit-identical to the MRR-only baseline.
+        was_training = self.classifier.model.training
+        self.classifier.eval()
+        with torch.no_grad():
+            pred, label = self.classifier.decode(gz, eval_snap)
+        metrics = binary_classification_metrics(pred, label)
+        self.classifier.train(was_training)
+        return mrr, metrics
 
     def _eval_mrr_local(self, t, loss_fn, mrr_k, mrr_method):
-        vals, weights = [], []
+        vals, metrics_list, weights = [], [], []
         for cl in self.clients:
             if _pos_for_split(cl.snaps[t + 1], "test").size(1) == 0:
                 continue
-            _, mrr, _ = _step_eval_with_mrr_pair(
+            _, mrr, metrics = _step_eval_with_mrr_pair(
                 cl.classifier, cl.snaps[t], cl.snaps[t + 1], cl._hs_in(),
                 loss_fn, device, True, mrr_k, mrr_method,
             )
             if not math.isnan(mrr):
                 vals.append(mrr)
+                metrics_list.append(metrics)
                 weights.append(cl.num_nodes())
         if not vals:
-            return None
-        return sum(v * w for v, w in zip(vals, weights)) / sum(weights)
+            return None, None
+        mrr = sum(v * w for v, w in zip(vals, weights)) / sum(weights)
+        return mrr, _weighted_mean_metrics(metrics_list, weights)

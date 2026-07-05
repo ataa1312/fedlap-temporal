@@ -53,14 +53,36 @@ def _average_precision(scores: torch.Tensor, labels: torch.Tensor) -> float:
     return ((recall - recall_prev) * precision).sum().item()
 
 
+def _best_f1_threshold(scores: torch.Tensor, labels: torch.Tensor) -> float:
+    """Logit-scale threshold maximizing F1 (predicting ``scores >= t``), swept
+    over distinct scores. Informational diagnostic — it does NOT re-threshold
+    the reported metrics. Returns 0.0 when only one class is present."""
+    n_pos = labels.sum()
+    if n_pos == 0 or n_pos == labels.numel():
+        return 0.0
+    order = torch.argsort(scores, descending=True)
+    s, lab = scores[order], labels[order]
+    tp_cum = torch.cumsum(lab, 0)
+    fp_cum = torch.cumsum(1.0 - lab, 0)
+    distinct = torch.ones_like(s, dtype=torch.bool)
+    distinct[:-1] = s[1:] != s[:-1]
+    tp_t, fp_t = tp_cum[distinct], fp_cum[distinct]
+    precision = tp_t / (tp_t + fp_t + _EPS)
+    recall = tp_t / n_pos
+    f1 = 2.0 * precision * recall / (precision + recall + _EPS)
+    return s[distinct][torch.argmax(f1)].item()
+
+
 def binary_classification_metrics(
     logits: torch.Tensor, labels: torch.Tensor, threshold: float = 0.0
 ) -> dict[str, float]:
     """Binary link-prediction metrics from raw logits + {0,1} labels.
 
     Runs on the tensors' device (no host transfer). ``threshold`` is on the
-    logit scale (0.0 == probability 0.5). ``roc_auc`` and ``ap`` return nan
-    when only one class is present.
+    logit scale (0.0 == probability 0.5); ``accuracy``/``precision``/``recall``/
+    ``f1``/``mcc`` are computed at it. ``roc_auc`` and ``ap`` return nan when
+    only one class is present. ``best_threshold`` is the F1-maximizing logit
+    threshold (a diagnostic — it does not re-threshold the other metrics).
     """
     labels = labels.float()
     preds = (logits > threshold).float()
@@ -72,11 +94,15 @@ def binary_classification_metrics(
 
     precision = tp / (tp + fp + _EPS)
     recall = tp / (tp + fn + _EPS)
+    mcc_den = torch.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
+    mcc = ((tp * tn - fp * fn) / mcc_den).item() if mcc_den.item() > 0 else 0.0
     return {
         "accuracy": ((tp + tn) / (tp + fp + fn + tn + _EPS)).item(),
         "precision": precision.item(),
         "recall": recall.item(),
         "f1": (2.0 * precision * recall / (precision + recall + _EPS)).item(),
+        "mcc": mcc,
         "roc_auc": _roc_auc(logits, labels),
         "ap": _average_precision(logits, labels),
+        "best_threshold": _best_f1_threshold(logits, labels),
     }

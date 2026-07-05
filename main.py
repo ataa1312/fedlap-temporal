@@ -50,9 +50,11 @@ def run_once() -> dict:
     for snaps in client_snaps:
         server.add_client(snaps)
     results = server.joint_train_w()
+    mm = results.get("mean_metrics") or {}
     LOGGER.info(
         f"RESULT dataset={name} clients={n_clients} seed={config['seed']} "
         f"mean_mrr={results['mean_mrr']} std={results['std_mrr']} "
+        f"auc={mm.get('roc_auc')} ap={mm.get('ap')} f1={mm.get('f1')} mcc={mm.get('mcc')} "
         f"snapshots={len(results['mrr_history'])}"
     )
 
@@ -60,6 +62,8 @@ def run_once() -> dict:
     if wb is not None:
         wb.summary["mean_mrr"] = results["mean_mrr"]
         wb.summary["std_mrr"] = results["std_mrr"]
+        for k, v in mm.items():
+            wb.summary[f"mean_{k}"] = v
         wb.finish()
     return results
 
