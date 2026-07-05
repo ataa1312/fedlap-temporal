@@ -77,14 +77,14 @@ def test_client_initialize_dispatch(global_config_restore):
     assert cl.classifier.graph is cl.snaps[0]
 
     cl2 = DynamicClient(snaps, id=1)
-    with pytest.raises(NotImplementedError) as exc:
+    with pytest.raises(ValueError) as exc:
         cl2.initialize(data_type="f+s")
-    assert "spectral smodel subclasses" in str(exc.value)
+    assert "server-shared SFV" in str(exc.value)
 
     cl3 = DynamicClient(snaps, id=2)
     with pytest.raises(NotImplementedError) as exc:
         cl3.initialize(data_type="structure")
-    assert "spectral smodel subclasses" in str(exc.value)
+    assert "smodel-only subclass" in str(exc.value)
 
 def test_server_initialize_and_share(global_config_restore):
     global_config_restore["dataset"]["task"] = "link_pred"
@@ -143,8 +143,8 @@ def test_server_initialize_and_share(global_config_restore):
         assert_dict_equal(sd_cl, sd_srv)
 
     with pytest.raises(NotImplementedError) as exc:
-        server.initialize(data_type="f+s")
-    assert "spectral smodel subclasses" in str(exc.value)
+        server.initialize(data_type="structure")
+    assert "smodel-only subclass" in str(exc.value)
 
 def test_joint_train_g_stub_and_train_step_guard(global_config_restore):
     global_config_restore["dataset"]["task"] = "link_pred"

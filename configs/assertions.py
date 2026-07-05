@@ -21,6 +21,9 @@ _WANDB_MODES = {"online", "offline", "disabled"}
 _AGGREGATIONS = {"fedavg"}
 _WEIGHTINGS = {"node_count", "uniform"}
 _SPECTRAL_SMODELS = {"SpectralLaplace", "LanczosLaplace", "SpectralDGCN", "LanczosDGCN"}
+_FUSIONS = {"add", "concat"}
+_UPDATE_MODES = {"keep", "update", "recompute"}
+_SFV_SHARES = {"local", "avg"}
 
 
 def _require_in(value, allowed: set, path: str) -> None:
@@ -81,6 +84,14 @@ def assert_cfg(config: Registry) -> None:
                 f"spectral.spectral_len must be >0 for smodel_type={model['smodel_type']!r}, "
                 f"got {spectral['spectral_len']!r}"
             )
+
+    _require_in(model["fusion"], _FUSIONS, "model.fusion")
+    _require_in(spectral["update_mode"], _UPDATE_MODES, "spectral.update_mode")
+    _require_in(federated["sfv_share"], _SFV_SHARES, "federated.sfv_share")
+    if not 0.0 <= spectral["recompute_prob"] <= 1.0:
+        raise ValueError(
+            f"spectral.recompute_prob must be in [0, 1], got {spectral['recompute_prob']!r}"
+        )
 
     # ----- soft fixes ----- #
     if dataset["task_type"] == "classification" and model["loss_fun"] == "mse":

@@ -90,7 +90,8 @@ def _model() -> Registry:
     m["smodel_type"] = "LanczosLaplace"     # structure model; '' or None to disable spectral
     m["fmodel_type"] = "GNN"
     m["data_type"] = "f+s"                  # 'feature', 'structure', 'f+s'
-    m["fusion"] = "concat"                  # combine node(z)+spectral(S) at output: 'concat' | 'add'
+    m["fusion"] = "add"                     # combine node(z)+spectral(S) at output: 'add' (FedLap-native,
+                                            # smodel MLP matches z width) | 'concat' (head widened to 2d)
     m["weight_decay"] = 5e-4
     # FedLap-kept (static, non-temporal path): the original ModelConfig knobs the
     # static federated training reads. Distinct from the ROLAND optim/gnn/train
@@ -209,7 +210,9 @@ def _spectral() -> Registry:
     s["matrix"] = "lap"                     # 'adj', 'lap', 'inc'
     s["decompose"] = "eigh"                 # 'svd', 'eigh'
     s["update_mode"] = "update"             # 'keep', 'update', 'recompute'
+    s["recompute_prob"] = 0.0               # update mode: per-snapshot Bernoulli full re-Lanczos (basis refresh)
     s["use_procrustes"] = True
+    s["output_bn"] = True                   # BatchNorm on smodel output S (bounds spectral amplification; gamma zero-init)
     return s
 
 
@@ -217,6 +220,8 @@ def _federated() -> Registry:
     f = Registry("federated")
     f["aggregation"] = "fedavg"             # cross-client weight aggregation
     f["weighting"] = "node_count"           # 'node_count', 'uniform'
+    f["sfv_share"] = "local"                # learnable spectral W: 'local' per-client (FedLap joint_train_w
+                                            # state_dict semantics) | 'avg' joins the weight averaging
     return f
 
 

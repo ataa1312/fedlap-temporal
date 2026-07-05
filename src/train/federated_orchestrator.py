@@ -87,6 +87,10 @@ def _step_train_pair(
         )
     pred, label, new_hs = _model_forward(model, prepared_snap, hs, is_recurrent)
     loss = loss_fn(pred, label.float())
+    # spectral smoothness penalty, FedLap Classifier.train_step convention
+    reg = config["spectral"]["regularizer_coef"]
+    if reg:
+        loss = loss + reg * model.intrinsic_regularizer()
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()

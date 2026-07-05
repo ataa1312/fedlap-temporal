@@ -1,6 +1,7 @@
 from src import *
 from src.client import Client
 from src.GNN.dynamic_classifier import DynamicClassifier
+from src.GNN.fed_dynamic_classifier import make_fed_dynamic_classifier
 from src.train.federated_orchestrator import (
     _make_optimizer,
     _step_train_pair,
@@ -33,11 +34,17 @@ class DynamicClient(Client):
         **kwargs,
     ) -> None:
         data_type = config["model"]["data_type"] if data_type is None else data_type
+        smodel_type = config["model"]["smodel_type"] if smodel_type is None else smodel_type
         if data_type == "feature":
             self.classifier = DynamicClassifier(self.snaps[0])
+        elif data_type == "f+s":
+            SFV = kwargs.get("SFV")
+            if SFV is None:
+                raise ValueError("f+s initialization needs the server-shared SFV")
+            self.classifier = make_fed_dynamic_classifier(smodel_type, self.snaps[0], SFV)
         else:
             raise NotImplementedError(
-                f"data_type={data_type!r} needs the spectral smodel subclasses (W7)"
+                f"data_type={data_type!r}: structure-only needs an smodel-only subclass (deferred)"
             )
 
     def _hs_in(self):

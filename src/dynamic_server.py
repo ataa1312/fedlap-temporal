@@ -1,11 +1,14 @@
 import math
+import random
 import statistics
+from dataclasses import dataclass
 
 from src import *
 from src.server import Server
 from src.utils.graph import Graph
 from src.dynamic_client import DynamicClient
 from src.GNN.dynamic_classifier import DynamicClassifier
+from src.GNN.fed_dynamic_classifier import make_fed_dynamic_classifier
 from src.metrics.mrr import compute_mrr_from_z
 from src.train.federated_orchestrator import (
     _partition_edges_per_snapshot,
@@ -17,6 +20,13 @@ from src.train.federated_orchestrator import (
     _clone_state,
 )
 from registries import losses
+
+
+@dataclass
+class SpectralFeatures:
+    U: torch.Tensor
+    D: torch.Tensor
+    Q: torch.Tensor | None = None
 
 
 class DynamicServer(Server):
@@ -44,6 +54,8 @@ class DynamicServer(Server):
         super().__init__(graph=global_graph)
         self.global_snaps = global_snaps
         self.clients = list[DynamicClient]()
+        self.stored_spectrals = dict[int, SpectralFeatures]()
+        self._cum_edges = None  # undirected union of global edges up to the current t
 
     def add_client(self, snaps):
         client = DynamicClient(snaps, id=self.num_clients)
@@ -58,14 +70,29 @@ class DynamicServer(Server):
         **kwargs,
     ):
         data_type = config["model"]["data_type"] if data_type is None else data_type
+        smodel_type = config["model"]["smodel_type"] if smodel_type is None else smodel_type
+        share = {}
         if data_type == "feature":
             self.classifier = DynamicClassifier(self.graph)  # global model (decode in eval)
+        elif data_type == "f+s":
+            # learnable W created ONCE on the server and shared so every owner
+            # starts from the same init (GNNServer.initialize -> share["SFV"];
+            # hop2vec -> random (spectral_len, num_structural_features) leaf)
+            SFV = kwargs.get("SFV")
+            if SFV is None:
+                self.graph.add_structural_features(
+                    structure_type=config["structure_model"]["structure_type"],
+                    num_structural_features=config["structure_model"]["num_structural_features"],
+                    num_spectral_features=config["spectral"]["spectral_len"],
+                )
+                SFV = self.graph.structural_features
+            share["SFV"] = SFV
+            self.classifier = make_fed_dynamic_classifier(smodel_type, self.graph, SFV)
         else:
             raise NotImplementedError(
-                f"data_type={data_type!r} needs the spectral smodel subclasses (W7)"
+                f"data_type={data_type!r}: structure-only needs an smodel-only subclass (deferred)"
             )
         self.classifier.eval()
-        share = {}
         return share
 
     def initialize_FL(
@@ -120,6 +147,11 @@ class DynamicServer(Server):
             data_type=data_type,
             **kwargs,
         )
+        dt = config["model"]["data_type"] if data_type is None else data_type
+        smt = config["model"]["smodel_type"] if smodel_type is None else smodel_type
+        use_spectral = dt in ("structure", "f+s")
+        self.stored_spectrals.clear()  # runs are independent (fresh W, fresh Bernoulli draws)
+        self._cum_edges = None
         rounds = config["model"]["iterations"] if epochs is None else epochs
         local_epochs = config["model"]["local_epochs"]
         tol = config["train"]["internal_validation_tolerance"]
@@ -157,6 +189,11 @@ class DynamicServer(Server):
 
         mrr_history: list[float] = []
         for t in range(n_tasks):
+            # 0. Spectral provider: U_t on the cumulative global graph, sliced to
+            #    every owner via set_QD (before eval — encoding snap_t needs Q_t).
+            if use_spectral:
+                self._spectral_step(t, smt)
+
             # 1. Reported eval. FL: clients hold the global weights (share_weights
             #    at initialize_FL / end of the previous snapshot) -> global stitch.
             #    Local-only: weighted mean of per-client local MRRs.
@@ -216,6 +253,118 @@ class DynamicServer(Server):
                 f"over {len(mrr_history)} snapshots"
             )
         return {"mean_mrr": mean, "std_mrr": std, "mrr_history": mrr_history}
+
+    # ---- spectral provider (ported from GNNServer; graph passed explicitly) ---- #
+
+    def get_previous_UD(
+        self, spectral_update_mode: str, ss_idx: int
+    ) -> SpectralFeatures:
+        prev_spectrals = SpectralFeatures(U=None, D=None, Q=None)
+
+        if spectral_update_mode in ["keep"]:
+            if len(self.stored_spectrals) > 0:
+                first_index = min(self.stored_spectrals.keys())
+                prev_spectrals = self.stored_spectrals[first_index]
+        else:
+            if ss_idx - 1 in self.stored_spectrals and ss_idx > 0:
+                prev_spectrals = self.stored_spectrals[ss_idx - 1]
+
+        return prev_spectrals
+
+    def get_spectral_features(
+        self,
+        graph: Graph,
+        smodel_type,
+        ss_idx,
+        spectral_len,
+        spectral_update_mode,
+        prev_spectrals: SpectralFeatures,
+        first_spectral: SpectralFeatures,
+    ):
+        prev_U, prev_D, prev_Q = prev_spectrals.U, prev_spectrals.D, prev_spectrals.Q
+        share = {}
+        num_spectral_features = None
+
+        if smodel_type in ["SpectralLaplace", "LanczosLaplace"]:
+            if (
+                spectral_update_mode == "keep"
+                and prev_U is not None
+                and prev_D is not None
+            ):
+                LOGGER.info("Keeping previous eigenvectors U and eigenvalues D...")
+                D, U = prev_D, prev_U
+            elif (
+                spectral_update_mode == "update"
+                and prev_U is not None
+                and prev_D is not None
+            ):
+                if ss_idx not in self.stored_spectrals:
+                    LOGGER.info("Updating spectral features...")
+                    D, U, Q = graph.update_eigpairs(prev_Q)
+                    self.stored_spectrals[ss_idx] = SpectralFeatures(U=U, D=D, Q=Q)
+                else:
+                    stored = self.stored_spectrals[ss_idx]
+                    D, U, Q = stored.D, stored.U, stored.Q
+            else:
+                if ss_idx not in self.stored_spectrals:
+                    LOGGER.info("Computing spectral features...")
+                    D, U, Q = graph.calc_eignvalues(
+                        estimate=not (smodel_type.startswith("Spectral")),
+                        spectral_len=spectral_len,
+                        log=False,
+                    )
+                    assert Q is not None
+                    self.stored_spectrals[ss_idx] = SpectralFeatures(U=U, D=D, Q=Q)
+                else:
+                    stored = self.stored_spectrals[ss_idx]
+                    D, U, Q = stored.D, stored.U, stored.Q
+
+            if (
+                spectral_update_mode in ["recompute", "update"]
+                and ss_idx > 0
+                and config["spectral"]["use_procrustes"]
+            ):
+                U = graph.procrustes_project(U, first_spectral.U)
+
+            share["D"] = D
+            share["U"] = U
+            num_spectral_features = D.shape[0]
+
+        return share, num_spectral_features
+
+    def _spectral_step(self, t, smodel_type):
+        # Laplacian over the CUMULATIVE undirected edge union up to t: per-window
+        # slices are spectrally degenerate (0-eigenvalue multiplicity from isolated
+        # nodes exceeds spectral_len), and history <= t is leakage-free for t+1.
+        # The union lives on CPU (the decomposition paths are CPU-bound); the
+        # per-owner slices land on `device` via set_QD.
+        e = self.global_snaps[t].edge_index.cpu()
+        e = torch.cat([e, e.flip(0)], dim=1)
+        if self._cum_edges is not None:
+            e = torch.cat([self._cum_edges, e], dim=1)
+        self._cum_edges = torch.unique(e, dim=1)
+        num_nodes = self.global_snaps[0].num_nodes
+        graph_t = Graph(
+            x=torch.ones(num_nodes, 1),
+            edge_index=self._cum_edges,
+            node_ids=torch.arange(num_nodes),
+        )
+
+        mode = config["spectral"]["update_mode"]
+        if mode == "update" and random.random() < config["spectral"]["recompute_prob"]:
+            mode = "recompute"  # Bernoulli basis refresh: fresh Lanczos, new Q
+        prev = self.get_previous_UD(mode, t)
+        first = self.stored_spectrals.get(0, SpectralFeatures(U=None, D=None, Q=None))
+        share, _ = self.get_spectral_features(
+            graph_t, smodel_type, t, config["spectral"]["spectral_len"], mode, prev, first
+        )
+        if not share:
+            return
+        U, D = share["U"], share["D"]
+        self.classifier.set_QD(U.to(device), D.to(device))
+        for cl in self.clients:
+            nid = cl.snaps[t].node_ids.cpu()
+            cl.classifier.set_QD(U[nid].to(device), D.to(device))
 
     def _eval_mrr(self, t, mrr_k, mrr_method):
         zs, ids = [], []
