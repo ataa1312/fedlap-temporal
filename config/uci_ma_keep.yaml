@@ -1,7 +1,7 @@
-# Federated ROLAND config for uci. Partial: only keys that differ from
-# config/config.py defaults (overlaid on them at load time). Aligned to the
-# centralized configs/uci_gru.yaml (Phase 5): 8 MP layers, pre/post-MP, cos
-# scheduler, meta-learning.
+# uci — moving-average temporal update, spectral "keep" tracking.
+# Self-contained variant in the <name>_<temporal>_<update> matrix. Only keys that
+# differ from config/config.py defaults; aligned to centralized configs/uci_ma.yaml
+# with the spectral smodel params surfaced explicitly.
 seed: 1234
 device: auto
 
@@ -29,12 +29,14 @@ model:
   data_type: f+s
   smodel_type: LanczosLaplace
   fmodel_type: GNN
+  fusion: add
   iterations: 1          # FedAvg rounds per snapshot (C=1 faithful; raise for federated)
   local_epochs: 100      # inner ROLAND steps per round (a MAX; internal-validation early-stops)
 
 gnn:
   layer_type: residual_edge_conv
-  embed_update_method: gru
+  embed_update_method: moving_average
+  keep_ratio_mode: linear
   dims_pre_mp: [64]
   dims: [64, 64, 64, 64, 64, 64, 64, 64]
   dims_post_mp: [128]
@@ -49,18 +51,30 @@ optim:
 
 meta:
   is_meta: true
+  alpha: 0.7
 
 spectral:
   spectral_len: 300
-  L_type: rw
   matrix: lap
+  L_type: rw
   method: arnoldi
-  update_mode: update
+  decompose: eigh
+  lanczos_iter: 400
+  update_mode: keep
   use_procrustes: true
+  recompute_prob: 0.0
+  output_bn: true
+  regularizer_coef: 0
+
+structure_model:
+  num_structural_features: 512
+  structure_type: hop2vec
+  DGCN_structure_layers_sizes: [128]
 
 federated:
   aggregation: fedavg
   weighting: node_count
+  sfv_share: local
 
 wandb:
   project: dynamic-fedlap
