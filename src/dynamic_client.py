@@ -52,10 +52,10 @@ class DynamicClient(Client):
         return [h.detach() for h in self.hs] if self.hs is not None else None
 
     def _val_batch(self, t: int):
-        # Frozen val batch for snapshot t: built once (fixed positives + negatives)
-        # and reused across all local epochs AND FedAvg rounds, so both the local
-        # (local_finetune) and round-level (val_loss) early stops compare val loss
-        # under a fixed batch — patience reacts to weights, not resampled negatives.
+        # Frozen val batch for snapshot t: built once (fixed positives + negatives),
+        # used only by the ROUND-level early stop (val_loss) so the FedAvg round
+        # patience reacts to weights, not resampled negatives. local_finetune's inner
+        # early stop resamples its val each epoch instead (ROLAND parity — see there).
         if self._val_cache_t != t:
             today, tomorrow = self.snaps[t].to(device), self.snaps[t + 1].to(device)
             self._val_cache = _attach_future_link_pred_labels(
@@ -85,17 +85,16 @@ class DynamicClient(Client):
     def local_finetune(self, t: int, local_epochs: int, loss_fn):
         # up to local_epochs local ROLAND train steps on (snap_t, snap_{t+1}) from the
         # currently-loaded (global) weights, with ROLAND internal-validation early
-        # stopping: patience (internal_validation_tolerance) on a FROZEN val batch,
-        # restore best. Train negatives resample each step (ROLAND train_step); the
-        # val batch is fixed so patience reacts to weights, not sampling noise. This
-        # makes local_epochs a MAX (not a fixed count) so large values no longer
-        # overfit. fresh optimizer + scheduler per call (ROLAND drops both per snapshot).
+        # stopping: patience (internal_validation_tolerance) on the val split, restore
+        # best. Both train AND val negatives resample each epoch (ROLAND parity — a
+        # frozen val was trivially satisfied on tiny snapshots, firing early-stop at
+        # epoch 0 and depressing Bitcoin MRR). local_epochs is a MAX (not a fixed
+        # count). Fresh optimizer + scheduler per call (ROLAND drops both per snapshot).
         today, tomorrow = self.snaps[t].to(device), self.snaps[t + 1].to(device)
         hs_in = self._hs_in()
         optimizer = _make_optimizer(self.classifier)
         scheduler = _make_scheduler(optimizer)
         tol = config["train"]["internal_validation_tolerance"]
-        val_snap = self._val_batch(t)
         best = {"val": float("inf"), "state": None}
         stale = 0
         for _ in range(local_epochs):
@@ -106,7 +105,6 @@ class DynamicClient(Client):
                 scheduler.step()
             vloss = _step_eval_loss_pair(
                 self.classifier, today, tomorrow, hs_in, loss_fn, device, True,
-                prepared_snap=val_snap,
             )
             if vloss < best["val"]:
                 best = {"val": vloss, "state": _clone_state(self.classifier.state_dict())}
