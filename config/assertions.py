@@ -22,6 +22,7 @@ _AGGREGATIONS = {"fedavg"}
 _WEIGHTINGS = {"node_count", "uniform"}
 _SPECTRAL_SMODELS = {"SpectralLaplace", "LanczosLaplace", "SpectralDGCN", "LanczosDGCN"}
 _FUSIONS = {"add", "concat"}
+_DATA_TYPES = {"feature", "f+s", "structure"}
 _UPDATE_MODES = {"keep", "update", "recompute"}
 _SFV_SHARES = {"local", "avg"}
 
@@ -78,20 +79,34 @@ def assert_cfg(config: Registry) -> None:
             f"subgraph.num_subgraphs must be >=1, got {subgraph['num_subgraphs']!r}"
         )
 
-    if model["data_type"] in {"structure", "f+s"} and model["smodel_type"] in _SPECTRAL_SMODELS:
-        if spectral["spectral_len"] <= 0:
+    # data_type + spectral.update_mode are left null in the dataset configs so a run
+    # must choose the experiment mode explicitly (--set): feature needs only
+    # data_type; f+s / structure also need spectral.update_mode.
+    if model["data_type"] is None:
+        raise ValueError(
+            "model.data_type is None — choose the experiment mode explicitly, "
+            "e.g. --set model.data_type=feature (or f+s / structure)"
+        )
+    _require_in(model["data_type"], _DATA_TYPES, "model.data_type")
+    _require_in(model["fusion"], _FUSIONS, "model.fusion")
+    _require_in(federated["sfv_share"], _SFV_SHARES, "federated.sfv_share")
+
+    if model["data_type"] in {"structure", "f+s"}:
+        if spectral["update_mode"] is None:
+            raise ValueError(
+                "spectral.update_mode is None — for data_type=f+s/structure choose it "
+                "explicitly, e.g. --set spectral.update_mode=update (or keep / recompute)"
+            )
+        _require_in(spectral["update_mode"], _UPDATE_MODES, "spectral.update_mode")
+        if model["smodel_type"] in _SPECTRAL_SMODELS and spectral["spectral_len"] <= 0:
             raise ValueError(
                 f"spectral.spectral_len must be >0 for smodel_type={model['smodel_type']!r}, "
                 f"got {spectral['spectral_len']!r}"
             )
-
-    _require_in(model["fusion"], _FUSIONS, "model.fusion")
-    _require_in(spectral["update_mode"], _UPDATE_MODES, "spectral.update_mode")
-    _require_in(federated["sfv_share"], _SFV_SHARES, "federated.sfv_share")
-    if not 0.0 <= spectral["recompute_prob"] <= 1.0:
-        raise ValueError(
-            f"spectral.recompute_prob must be in [0, 1], got {spectral['recompute_prob']!r}"
-        )
+        if not 0.0 <= spectral["recompute_prob"] <= 1.0:
+            raise ValueError(
+                f"spectral.recompute_prob must be in [0, 1], got {spectral['recompute_prob']!r}"
+            )
 
     # ----- soft fixes ----- #
     if dataset["task_type"] == "classification" and model["loss_fun"] == "mse":

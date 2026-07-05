@@ -1,15 +1,15 @@
-# uci — moving-average temporal update, spectral "update" tracking.
-# Self-contained variant in the <name>_<temporal>_<update> matrix. Only keys that
-# differ from config/config.py defaults; aligned to centralized configs/uci_ma.yaml
-# with the spectral smodel params surfaced explicitly.
+# bitcoin_alpha — moving-average temporal update. BASE config: choose the experiment mode at
+# runtime, e.g.  --set model.data_type=feature   OR
+# --set model.data_type=f+s spectral.update_mode=update  (keep | update | recompute).
+# Aligned to centralized configs/bitcoin_alpha_ma.yaml with spectral smodel params surfaced.
 seed: 1234
 device: auto
 
 dataset:
-  name: uci
+  name: bitcoin_alpha
   snapshot_freq: W
   split: [0.8, 0.1, 0.1]
-  edge_dim: 1
+  edge_dim: 2
   edge_encoder: true
 
 subgraph:
@@ -26,7 +26,7 @@ model:
   type: recurrent_gnn
   loss_fun: bce_with_logits
   edge_decoding: concat
-  data_type: f+s
+  data_type: null        # REQUIRED at runtime: --set model.data_type=feature | f+s | structure
   smodel_type: LanczosLaplace
   fmodel_type: GNN
   fusion: add
@@ -38,8 +38,9 @@ gnn:
   embed_update_method: moving_average
   keep_ratio_mode: linear
   dims_pre_mp: [64]
-  dims: [64, 64, 64, 64, 64, 64, 64, 64]
+  dims: [64, 64, 64, 64, 64, 64]
   dims_post_mp: [128]
+  batchnorm: true
   act: prelu
   skip_connection: affine
 
@@ -51,7 +52,7 @@ optim:
 
 meta:
   is_meta: true
-  alpha: 0.7
+  alpha: 0.6
 
 spectral:
   spectral_len: 300
@@ -60,7 +61,7 @@ spectral:
   method: arnoldi
   decompose: eigh
   lanczos_iter: 400
-  update_mode: update
+  update_mode: null      # REQUIRED for f+s/structure: --set spectral.update_mode=keep | update | recompute
   use_procrustes: true
   recompute_prob: 0.0
   output_bn: true
