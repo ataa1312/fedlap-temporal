@@ -1,22 +1,23 @@
+from torch_geometric.loader import NeighborLoader
+
 from src import *
 from src.GNN.DGCN import DGCN, SDGCN, SDGCNMaster, SpectralDGCN
-from src.GNN.fGNN import FGNN, NewFGNN, FEdgeGNN
-from src.GNN.sGNN import SGNNSlave, SGNNMaster, SClassifier, SEdgeClassifier
-from src.classifier import Classifier, EdgeClassifier
+from src.GNN.fGNN import FGNN
+from src.GNN.laplace import LanczosLaplace, SLaplace, SpectralLaplace
+from src.GNN.sGNN import SClassifier, SGNNMaster, SGNNSlave
+from src.utils.graph import AGraph, Graph
 from src.utils.data import Data
-from src.GNN.laplace import (
-    SLaplace,
-    SEdgeLaplace,
-    LanczosLaplace,
-    SpectralLaplace,
-    LanczosLaplaceNew,
-    LanczosEdgeLaplace,
-    SpectralEdgeLaplace,
-)
-from src.utils.graph import Graph, AGraph
+from src.classifier import Classifier
 
 
-class FedMixin:
+class FedClassifier(Classifier):
+    def __init__(self, fgraph: Graph, sgraph: Graph):
+        super().__init__(fgraph)
+        self.fmodel: Classifier = None
+        self.create_fmodel(fgraph)
+        self.smodel: Classifier = None
+        self.create_smodel(sgraph)
+
     def state_dict(self):
         weights = super().state_dict()
         weights["fmodel"] = self.fmodel.state_dict()
@@ -78,7 +79,17 @@ class FedMixin:
     def set_QD(self, U, D):
         self.smodel.set_QD(U, D)
 
+    def create_smodel(self):
+        raise NotImplementedError
+
+    def create_fmodel(self, fgraph) -> Classifier:
+        if isinstance(fgraph, AGraph):
+            self.fmodel = DGCN(fgraph)
+        if isinstance(fgraph, Graph):
+            self.fmodel = FGNN(fgraph)
+
     def get_SFV(self):
+        # return self.smodel()
         return self.smodel.get_SFV()
 
     def get_x(self):
@@ -88,44 +99,13 @@ class FedMixin:
         return self.smodel.get_D()
 
     def get_embeddings(self):
-        H = self.fmodel.get_embeddings()
-        S = self.smodel.get_embeddings()
+        H = self.fmodel()
+        S = self.smodel()
         O = H + S
         return O
 
     def __call__(self):
         return self.get_embeddings()
-
-    def intrinsic_regularizer(self):
-        return self.smodel.intrinsic_regularizer()
-
-    def ambient_regularizer(self):
-        return self.smodel.ambient_regularizer()
-
-    def calc_mask_metric(self, mask="test", metric=""):
-        res = super().calc_mask_metric(mask=mask, metric=metric)
-        f_res = self.fmodel.calc_mask_metric(mask=mask, metric=metric)
-        s_res = self.smodel.calc_mask_metric(mask=mask, metric=metric)
-
-        return res + f_res + s_res
-
-
-class FedClassifier(FedMixin, Classifier):
-    def __init__(self, fgraph: Graph, sgraph: Graph):
-        super().__init__(fgraph)
-        self.fmodel: Classifier = None
-        self.create_fmodel(fgraph)
-        self.smodel: Classifier = None
-        self.create_smodel(sgraph)
-
-    def create_smodel(self, sgraph: Graph):
-        raise NotImplementedError
-
-    def create_fmodel(self, fgraph) -> Classifier:
-        if isinstance(fgraph, AGraph):
-            self.fmodel = DGCN(fgraph)
-        if isinstance(fgraph, Graph):
-            self.fmodel = FGNN(fgraph)
 
     def get_prediction(self):
         H = self.get_embeddings()
@@ -134,6 +114,12 @@ class FedClassifier(FedMixin, Classifier):
         else:
             y_pred = torch.nn.functional.softmax(H, dim=1)
         return y_pred
+
+    def intrinsic_regularizer(self):
+        return self.smodel.intrinsic_regularizer()
+
+    def ambient_regularizer(self):
+        return self.smodel.ambient_regularizer()
 
     def train_step(self, eval_=True):
         res = super().train_step(eval_=eval_)
@@ -147,47 +133,12 @@ class FedClassifier(FedMixin, Classifier):
         else:
             return res
 
+    def calc_mask_metric(self, mask="test", metric=""):
+        res = super().calc_mask_metric(mask=mask, metric=metric)
+        f_res = self.fmodel.calc_mask_metric(mask=mask, metric=metric)
+        s_res = self.smodel.calc_mask_metric(mask=mask, metric=metric)
 
-class FedEdgeClassifier(FedMixin, EdgeClassifier):
-    def __init__(
-        self,
-        fgraph: Graph,
-        sgraph: Graph,
-        link_feature_operator: LinkFeatureOperator = "hadamard",
-    ):
-        super().__init__(fgraph, link_feature_operator)
-        self.fmodel: EdgeClassifier = None
-        self.create_fmodel(fgraph, link_feature_operator)
-        self.smodel: EdgeClassifier = None
-        self.create_smodel(sgraph, link_feature_operator)
-        # FIXME: This is a hack to get have logistic regression model for combined edge prediction as well
-        self.logistic_regression_model = self.fmodel.logistic_regression_model
-        self.smodel.logistic_regression_model = self.fmodel.logistic_regression_model
-
-    def create_smodel(self, sgraph: Graph, link_feature_operator: LinkFeatureOperator):
-        raise NotImplementedError
-
-    def create_fmodel(
-        self, fgraph: Graph, link_feature_operator: LinkFeatureOperator
-    ) -> EdgeClassifier:
-        if isinstance(fgraph, Graph):
-            self.fmodel = FEdgeGNN(fgraph, link_feature_operator)
-        # Note: Edge prediction for AGraph/DGCN not yet implemented
-        # if isinstance(fgraph, AGraph):
-        #     self.fmodel = EdgeDGCN(fgraph, link_feature_operator)
-
-    def train_step(self, eval_=True):
-        res = super().train_step(eval_=eval_)
-
-        if eval_:
-            # Use AUC for edge prediction instead of accuracy
-            f_res = self.fmodel.calc_mask_metric(mask="val", metric="auc")
-            s_res = self.smodel.calc_mask_metric(mask="val", metric="auc")
-            f_test = self.fmodel.calc_mask_metric(mask="test", metric="auc")
-            s_test = self.smodel.calc_mask_metric(mask="test", metric="auc")
-            return res + f_res + s_res + f_test + s_test
-        else:
-            return res
+        return res + f_res + s_res
 
 
 class FedSlave(FedClassifier):
@@ -266,19 +217,3 @@ class FedLanczosLaplaceClassifier(FedClassifier):
 class FedMLPClassifier(FedClassifier):
     def create_smodel(self, sgraph: Graph):
         self.smodel = SClassifier(sgraph)
-
-
-# Edge prediction analogues
-class FedLaplaceEdgeClassifier(FedEdgeClassifier):
-    def create_smodel(self, sgraph: Graph, link_feature_operator: LinkFeatureOperator):
-        self.smodel = SEdgeLaplace(sgraph, link_feature_operator)
-
-
-class FedSpectralLaplaceEdgeClassifier(FedEdgeClassifier):
-    def create_smodel(self, sgraph: Graph, link_feature_operator: LinkFeatureOperator):
-        self.smodel = SpectralEdgeLaplace(sgraph, link_feature_operator)
-
-
-class FedLanczosLaplaceEdgeClassifier(FedEdgeClassifier):
-    def create_smodel(self, sgraph: Graph, link_feature_operator: LinkFeatureOperator):
-        self.smodel = LanczosEdgeLaplace(sgraph, link_feature_operator)
