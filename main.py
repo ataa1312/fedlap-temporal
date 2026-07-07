@@ -24,6 +24,34 @@ def _seed(s: int) -> None:
     torch.manual_seed(s)
 
 
+def _wandb_meta():
+    """Group/name/config/tags so multi-seed runs of one condition group and
+    average in the wandb UI. group excludes seed (so seeds collapse together);
+    name/config carry the seed. f+s/structure add update_mode + sfv_share."""
+    ds = config["dataset"]["name"]
+    m = config["model"]
+    dt = m["data_type"]
+    C = config["subgraph"]["num_subgraphs"]
+    temporal = config["gnn"]["embed_update_method"]
+    um = config["spectral"]["update_mode"]
+    sfv = config["federated"]["sfv_share"]
+    parts = [ds, temporal, str(dt), f"C{C}"]
+    if dt in ("f+s", "structure"):
+        parts += [f"um-{um}", f"sfv-{sfv}"]
+    group = "_".join(parts)
+    cfg = {
+        "dataset": ds, "temporal": temporal, "data_type": dt, "num_clients": C,
+        "update_mode": um, "sfv_share": sfv, "seed": config["seed"],
+        "iterations": m["iterations"], "local_epochs": m["local_epochs"],
+        "base_lr": config["optim"]["base_lr"], "fusion": m["fusion"],
+        "smodel_type": m["smodel_type"], "spectral_len": config["spectral"]["spectral_len"],
+    }
+    tags = [ds, str(dt), f"C{C}", temporal]
+    if dt in ("f+s", "structure"):
+        tags += [f"um-{um}", f"sfv-{sfv}"]
+    return group, cfg, tags
+
+
 def _init_wandb():
     wb = config["wandb"] if "wandb" in config else None
     mode = wb["mode"] if (wb is not None and "mode" in wb) else "disabled"
@@ -31,7 +59,11 @@ def _init_wandb():
         return None
     import wandb
 
-    return wandb.init(project=wb["project"], mode=mode, reinit=True)
+    group, cfg, tags = _wandb_meta()
+    return wandb.init(
+        project=wb["project"], mode=mode, reinit=True,
+        group=group, name=f"{group}_s{config['seed']}", tags=tags, config=cfg,
+    )
 
 
 def run_once() -> dict:
@@ -60,6 +92,17 @@ def run_once() -> dict:
 
     wb = _init_wandb()
     if wb is not None:
+        import wandb
+
+        # Replay the per-snapshot history as a time series (step = snapshot idx)
+        # so the over-time curves exist in wandb; server stays wandb-agnostic.
+        mh = results["metrics_history"]
+        for t, mrr in enumerate(results["mrr_history"]):
+            log = {"snapshot/mrr": mrr}
+            if t < len(mh):
+                for k, v in mh[t].items():
+                    log[f"snapshot/{k}"] = v
+            wandb.log(log, step=t)
         wb.summary["mean_mrr"] = results["mean_mrr"]
         wb.summary["std_mrr"] = results["std_mrr"]
         for k, v in mm.items():
