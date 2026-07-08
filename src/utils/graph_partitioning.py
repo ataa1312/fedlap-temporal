@@ -7,7 +7,6 @@ import networkx as nx
 from src import *
 from sklearn.cluster import k_means
 from src.utils.graph import Graph
-from src.FedGCN.utils import get_in_comm_indexes, label_dirichlet_partition
 from torch_geometric.utils import subgraph
 
 
@@ -350,6 +349,7 @@ def metis_cut(edge_index, num_nodes, num_subgraphs):
 
 
 def drichlet_cut(labels, num_nodes, num_subgraphs, num_classes):
+    from src.FedGCN.utils import label_dirichlet_partition  # lazy: torch_sparse-dependent, dormant path
     subgraph_node_ids = label_dirichlet_partition(
         labels.cpu().numpy(),
         num_nodes,
@@ -433,6 +433,7 @@ def create_mend_graph(subgraph: Graph, graph: Graph, val=1):
 
 def create_comm_indexes(graph: Graph, subgraph_node_ids: Graph, num_hops=2):
     # edge_index, subgraph_node_ids, train_mask, test_mask):
+    from src.FedGCN.utils import get_in_comm_indexes  # lazy: torch_sparse-dependent, dormant path
     train_mask = graph.train_mask
     test_mask = graph.test_mask
     edge_index = graph.edge_index
