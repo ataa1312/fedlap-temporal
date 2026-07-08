@@ -9,7 +9,11 @@ import torch
 import torch.nn.functional as F
 from src import *
 from scipy import sparse
-from torch_sparse import SparseTensor
+try:
+    from torch_sparse import SparseTensor
+except (ImportError, OSError):
+    class SparseTensor:  # torch_sparse ABI-incompatible with torch>=2.9 on Linux; used here only as a type hint
+        pass
 from src.models.GDV import GDV
 from src.utils.data import Data
 from src.GNN.Lanczos import estimate_eigh

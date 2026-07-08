@@ -13,7 +13,11 @@ import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from dotenv import load_dotenv
-from torch_sparse import SparseTensor
+try:
+    from torch_sparse import SparseTensor
+except (ImportError, OSError):
+    class SparseTensor:  # torch_sparse ABI-incompatible with torch>=2.9 on Linux; used here only as a type hint
+        pass
 from sklearn.metrics import roc_auc_score, average_precision_score
 from sklearn.manifold import TSNE
 from src.utils.logger import getLOGGER
