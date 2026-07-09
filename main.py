@@ -35,13 +35,16 @@ def _wandb_meta():
     temporal = config["gnn"]["embed_update_method"]
     um = config["spectral"]["update_mode"]
     sfv = config["federated"]["sfv_share"]
+    proc = config["spectral"]["use_procrustes"]
     parts = [ds, temporal, str(dt), f"C{C}"]
     if dt in ("f+s", "structure"):
         parts += [f"um-{um}", f"sfv-{sfv}"]
+        if um in ("update", "recompute"):  # procrustes only applies to these modes
+            parts.append(f"proc-{'on' if proc else 'off'}")
     group = "_".join(parts)
     cfg = {
         "dataset": ds, "temporal": temporal, "data_type": dt, "num_clients": C,
-        "update_mode": um, "sfv_share": sfv, "seed": config["seed"],
+        "update_mode": um, "sfv_share": sfv, "use_procrustes": proc, "seed": config["seed"],
         "iterations": m["iterations"], "local_epochs": m["local_epochs"],
         "base_lr": config["optim"]["base_lr"], "fusion": m["fusion"],
         "smodel_type": m["smodel_type"], "spectral_len": config["spectral"]["spectral_len"],
@@ -49,6 +52,8 @@ def _wandb_meta():
     tags = [ds, str(dt), f"C{C}", temporal]
     if dt in ("f+s", "structure"):
         tags += [f"um-{um}", f"sfv-{sfv}"]
+        if um in ("update", "recompute"):
+            tags.append(f"proc-{'on' if proc else 'off'}")
     return group, cfg, tags
 
 
