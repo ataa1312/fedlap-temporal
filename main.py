@@ -36,11 +36,15 @@ def _wandb_meta():
     um = config["spectral"]["update_mode"]
     sfv = config["federated"]["sfv_share"]
     proc = config["spectral"]["use_procrustes"]
+    sf = config["dataset"]["snapshot_freq"]
+    custom_freq = isinstance(sf, str) and sf.endswith("s") and sf[:-1].isdigit()
     parts = [ds, temporal, str(dt), f"C{C}"]
     if dt in ("f+s", "structure"):
         parts += [f"um-{um}", f"sfv-{sfv}"]
         if um in ("update", "recompute"):  # procrustes only applies to these modes
             parts.append(f"proc-{'on' if proc else 'off'}")
+    if custom_freq:  # coarsened window; keep distinct from the default calendar-freq groups
+        parts.append(f"freq-{sf}")
     group = "_".join(parts)
     cfg = {
         "dataset": ds, "temporal": temporal, "data_type": dt, "num_clients": C,
@@ -48,12 +52,15 @@ def _wandb_meta():
         "iterations": m["iterations"], "local_epochs": m["local_epochs"],
         "base_lr": config["optim"]["base_lr"], "fusion": m["fusion"],
         "smodel_type": m["smodel_type"], "spectral_len": config["spectral"]["spectral_len"],
+        "snapshot_freq": sf,
     }
     tags = [ds, str(dt), f"C{C}", temporal]
     if dt in ("f+s", "structure"):
         tags += [f"um-{um}", f"sfv-{sfv}"]
         if um in ("update", "recompute"):
             tags.append(f"proc-{'on' if proc else 'off'}")
+    if custom_freq:
+        tags.append(f"freq-{sf}")
     return group, cfg, tags
 
 
