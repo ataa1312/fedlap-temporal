@@ -417,6 +417,11 @@ class DynamicServer(Server):
         for cl in self.clients:
             nid = cl.snaps[t].node_ids.cpu()
             cl.classifier.set_QD(U[nid].to(device), D.to(device))
+        # Bound GPU memory: only snapshot 0 (procrustes/keep reference) and the last
+        # two (prev for tracking, current) are ever read again. Without this,
+        # stored_spectrals retains every snapshot's U/D/Q and OOMs on long series.
+        for k in [k for k in self.stored_spectrals if k not in (0, t - 1, t)]:
+            del self.stored_spectrals[k]
 
     def _eval_mrr(self, t, mrr_k, mrr_method):
         zs, ids = [], []

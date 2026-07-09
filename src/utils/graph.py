@@ -397,6 +397,7 @@ class Graph(Data):
             self_loop=self_loop,
         )
         assert self.L is not None
+        prev_Q = prev_Q.to(self.L.device)  # L is CPU-built; keep the projection on one device
         next_H = prev_Q.T @ self.L @ prev_Q
         next_D, next_V = torch.linalg.eigh(next_H)
         next_U = prev_Q @ next_V
