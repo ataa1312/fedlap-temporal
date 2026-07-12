@@ -19,3 +19,6 @@
 \runs
 *FedStruct.egg-info
 **/wandb/**
+/checkpoints/
+*.ckpt
+*.done

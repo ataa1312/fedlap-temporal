@@ -1,3 +1,4 @@
+import os
 import math
 import random
 import statistics
@@ -38,6 +39,23 @@ def _to_cpu_sf(U, D, Q) -> SpectralFeatures:
         D=D.detach().cpu() if D is not None else None,
         Q=Q.detach().cpu() if Q is not None else None,
     )
+
+
+def _get_sfv(clf):
+    """The learnable SFV W (smodel.graph.x) — a leaf param that is NOT in the
+    state_dict when federated.sfv_share='local', so checkpoints capture it here."""
+    smodel = getattr(clf, "smodel", None)
+    if smodel is None or smodel.graph.x is None:
+        return None
+    return smodel.graph.x.detach().cpu()
+
+
+def _set_sfv(clf, w):
+    smodel = getattr(clf, "smodel", None)
+    if smodel is None or w is None:
+        return
+    with torch.no_grad():
+        smodel.graph.x.copy_(w.to(smodel.graph.x.device))
 
 
 def _weighted_mean_metrics(
@@ -171,6 +189,7 @@ class DynamicServer(Server):
         log=True,
         plot=False,
         model_type="",
+        log_cb=None,
         **kwargs,
     ):
         # epochs = FedAvg rounds per snapshot; None -> config at call time (the
@@ -224,10 +243,27 @@ class DynamicServer(Server):
                 f"federated live_update needs >= 2 snapshots; got {len(self.global_snaps)}"
             )
 
+        # Checkpointing (gated on train.auto_resume): dump resumable state every
+        # ckpt_period snapshots; on restart skip already-done runs or resume mid-run.
+        ckpt_every = config["train"]["ckpt_period"] if config["train"]["auto_resume"] else 0
+
         mrr_history: list[float] = []
         metrics_history: list[dict] = []
         w_init = None  # running meta W_init (moving-avg across snapshots; FL path)
-        for t in range(n_tasks):
+        t_start = 0
+        if ckpt_every > 0:
+            done = self._load_done_ckpt()
+            if done is not None:
+                if log:
+                    LOGGER.info(f"{self._run_id()}: already complete, skipping (checkpoint)")
+                done["_resumed_complete"] = True
+                return done
+            resumed = self._load_partial_ckpt()
+            if resumed is not None:
+                t_start, w_init, mrr_history, metrics_history = resumed
+                if log:
+                    LOGGER.info(f"{self._run_id()}: resuming from t={t_start}")
+        for t in range(t_start, n_tasks):
             # 0. Spectral provider: U_t on the cumulative global graph, sliced to
             #    every owner via set_QD (before eval — encoding snap_t needs Q_t).
             if use_spectral:
@@ -244,6 +280,8 @@ class DynamicServer(Server):
                 mrr_history.append(mrr)
                 if metrics is not None:
                     metrics_history.append(metrics)
+                if log_cb is not None:  # live per-snapshot wandb (resumable run)
+                    log_cb(t, mrr, metrics)
                 if log:
                     m = metrics or {}
                     LOGGER.info(
@@ -302,6 +340,9 @@ class DynamicServer(Server):
             for cl in self.clients:
                 cl.refresh(t)
 
+            if ckpt_every > 0 and (t + 1) % ckpt_every == 0 and t + 1 < n_tasks:
+                self._save_partial_ckpt(t, w_init, mrr_history, metrics_history)
+
         mean = statistics.fmean(mrr_history) if mrr_history else None
         std = statistics.pstdev(mrr_history) if len(mrr_history) > 1 else 0.0
         mean_metrics = _weighted_mean_metrics(
@@ -312,13 +353,113 @@ class DynamicServer(Server):
                 f"live-update done: mean_mrr={mean} std={std:.4f} "
                 f"over {len(mrr_history)} snapshots"
             )
-        return {
+        results = {
             "mean_mrr": mean,
             "std_mrr": std,
             "mrr_history": mrr_history,
             "mean_metrics": mean_metrics,
             "metrics_history": metrics_history,
         }
+        if ckpt_every > 0:
+            self._save_done_ckpt(results)
+        return results
+
+    # ---- checkpointing: resume long live-update runs across crashes ---- #
+
+    def _run_id(self) -> str:
+        """Filesystem-safe identity for this exact run (mirrors the wandb group +
+        seed) so a re-launched run finds its own checkpoint and no other."""
+        ds = config["dataset"]
+        dt = config["model"]["data_type"]
+        um = config["spectral"]["update_mode"]
+        parts = [
+            ds["name"], config["gnn"]["embed_update_method"], str(dt),
+            f"C{config['subgraph']['num_subgraphs']}",
+        ]
+        if dt in ("f+s", "structure"):
+            parts += [f"um-{um}", f"sfv-{config['federated']['sfv_share']}"]
+            if um in ("update", "recompute"):
+                parts.append(f"proc-{'on' if config['spectral']['use_procrustes'] else 'off'}")
+        sf = ds["snapshot_freq"]
+        if isinstance(sf, str) and sf.endswith("s") and sf[:-1].isdigit():
+            parts.append(f"freq-{sf}")
+        parts.append(f"s{config['seed']}")
+        return "_".join(parts)
+
+    def _wandb_id(self) -> str:
+        """Deterministic wandb run id (from run_id) so a resumed run continues the
+        SAME wandb run instead of minting a new one. main.py derives the same id."""
+        import hashlib
+        return hashlib.sha1(self._run_id().encode()).hexdigest()[:20]
+
+    def _ckpt_paths(self):
+        d = config["train"]["ckpt_dir"]
+        os.makedirs(d, exist_ok=True)
+        base = os.path.join(d, self._run_id())
+        return base + ".ckpt", base + ".done"
+
+    def _save_partial_ckpt(self, t, w_init, mrr_history, metrics_history):
+        ckpt_path, _ = self._ckpt_paths()
+        ckpt = {
+            "run_id": self._run_id(),
+            "wandb_id": self._wandb_id(),  # so resume continues the same wandb run
+            "t": t,  # last COMPLETED snapshot; resume at t+1
+            "server_state": self.state_dict(),
+            "server_sfv": _get_sfv(self.classifier),
+            "client_sfv": [_get_sfv(cl.classifier) for cl in self.clients],
+            "client_hs": [cl.hs for cl in self.clients],
+            "w_init": w_init,
+            "first_spectral": self._first_spectral,
+            "prev_spectral": self._prev_spectral,
+            "cum_edges": self._cum_edges,
+            "mrr_history": mrr_history,
+            "metrics_history": metrics_history,
+        }
+        tmp = ckpt_path + ".tmp"
+        torch.save(ckpt, tmp)
+        os.replace(tmp, ckpt_path)  # atomic: a crash mid-save can't corrupt the ckpt
+        LOGGER.info(f"checkpoint saved at t={t} -> {ckpt_path}")
+
+    def _load_partial_ckpt(self):
+        ckpt_path, _ = self._ckpt_paths()
+        if not os.path.exists(ckpt_path):
+            return None
+        try:
+            ckpt = torch.load(ckpt_path, weights_only=False)  # our own trusted ckpt
+        except Exception as e:
+            LOGGER.warning(f"could not load checkpoint {ckpt_path}: {e}")
+            return None
+        if ckpt.get("run_id") != self._run_id():
+            return None
+        self.load_state_dict(ckpt["server_state"])
+        self.share_weights()  # sync clients' fmodel to the restored global weights
+        _set_sfv(self.classifier, ckpt.get("server_sfv"))
+        for cl, w in zip(self.clients, ckpt.get("client_sfv", [])):
+            _set_sfv(cl.classifier, w)  # local SFV isn't in state_dict for sfv_share=local
+        for cl, hs in zip(self.clients, ckpt["client_hs"]):
+            cl.hs = None if hs is None else [h.to(device) for h in hs]
+        self._first_spectral = ckpt["first_spectral"]
+        self._prev_spectral = ckpt["prev_spectral"]
+        self._cum_edges = ckpt["cum_edges"]
+        return ckpt["t"] + 1, ckpt["w_init"], ckpt["mrr_history"], ckpt["metrics_history"]
+
+    def _save_done_ckpt(self, results):
+        ckpt_path, done_path = self._ckpt_paths()
+        done = dict(results)
+        done["run_id"] = self._run_id()
+        torch.save(done, done_path)
+        if config["train"]["ckpt_clean"] and os.path.exists(ckpt_path):
+            os.remove(ckpt_path)
+
+    def _load_done_ckpt(self):
+        _, done_path = self._ckpt_paths()
+        if not os.path.exists(done_path):
+            return None
+        try:
+            done = torch.load(done_path, map_location="cpu", weights_only=False)
+        except Exception:
+            return None
+        return done if done.get("run_id") == self._run_id() else None
 
     # ---- spectral provider (ported from GNNServer; graph passed explicitly) ---- #
 

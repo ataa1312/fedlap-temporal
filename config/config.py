@@ -68,8 +68,9 @@ def _train() -> Registry:
     t["early_stopping"] = False
     t["eval_period"] = 10
     t["ckpt_period"] = 100
-    t["auto_resume"] = False
-    t["ckpt_clean"] = True
+    t["auto_resume"] = False                # gate: when True, joint_train_w checkpoints + resumes
+    t["ckpt_clean"] = True                  # delete the partial ckpt on successful completion
+    t["ckpt_dir"] = "checkpoints"           # where {run_id}.ckpt / .done live
     t["internal_validation_tolerance"] = 5
     t["stop_live_update_after"] = 99999999
     t["num_runs"] = 1                       # FedLap multi-seed (also overridable via --repeat)

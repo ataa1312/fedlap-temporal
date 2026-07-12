@@ -64,6 +64,13 @@ def _wandb_meta():
     return group, cfg, tags
 
 
+def _wandb_id(name):
+    import hashlib
+    # deterministic id (matches DynamicServer._wandb_id) so a resumed run continues
+    # the SAME wandb run instead of minting a duplicate.
+    return hashlib.sha1(name.encode()).hexdigest()[:20]
+
+
 def _init_wandb():
     wb = config["wandb"] if "wandb" in config else None
     mode = wb["mode"] if (wb is not None and "mode" in wb) else "disabled"
@@ -72,10 +79,31 @@ def _init_wandb():
     import wandb
 
     group, cfg, tags = _wandb_meta()
-    return wandb.init(
+    name = f"{group}_s{config['seed']}"
+    run = wandb.init(
         project=wb["project"], mode=mode, reinit=True,
-        group=group, name=f"{group}_s{config['seed']}", tags=tags, config=cfg,
+        group=group, name=name, id=_wandb_id(name), resume="allow",
+        tags=tags, config=cfg,
     )
+    # plot per-snapshot metrics against the snapshot index (not the wandb step) so
+    # a resumed run appends cleanly without step-monotonicity conflicts.
+    wandb.define_metric("snapshot/idx")
+    wandb.define_metric("snapshot/*", step_metric="snapshot/idx")
+    return run
+
+
+def _wandb_snapshot_logger(wb):
+    if wb is None:
+        return None
+    import wandb
+
+    def _cb(t, mrr, metrics):
+        d = {"snapshot/idx": t, "snapshot/mrr": mrr}
+        for k, v in (metrics or {}).items():
+            d[f"snapshot/{k}"] = v
+        wandb.log(d)
+
+    return _cb
 
 
 def run_once() -> dict:
@@ -93,7 +121,15 @@ def run_once() -> dict:
     server = DynamicServer(global_snaps)
     for snaps in client_snaps:
         server.add_client(snaps)
-    results = server.joint_train_w()
+
+    # Init wandb BEFORE training for LIVE per-snapshot logging that survives resume
+    # (deterministic id -> a resumed run continues the same wandb run). Skip entirely
+    # if this exact run already completed, so a re-launch doesn't duplicate it.
+    ckpt_on = config["train"]["auto_resume"] and config["train"]["ckpt_period"] > 0
+    already_done = ckpt_on and server._load_done_ckpt() is not None
+    wb = None if already_done else _init_wandb()
+
+    results = server.joint_train_w(log_cb=_wandb_snapshot_logger(wb))
     mm = results.get("mean_metrics") or {}
     LOGGER.info(
         f"RESULT dataset={name} clients={n_clients} seed={config['seed']} "
@@ -102,19 +138,7 @@ def run_once() -> dict:
         f"snapshots={len(results['mrr_history'])}"
     )
 
-    wb = _init_wandb()
     if wb is not None:
-        import wandb
-
-        # Replay the per-snapshot history as a time series (step = snapshot idx)
-        # so the over-time curves exist in wandb; server stays wandb-agnostic.
-        mh = results["metrics_history"]
-        for t, mrr in enumerate(results["mrr_history"]):
-            log = {"snapshot/mrr": mrr}
-            if t < len(mh):
-                for k, v in mh[t].items():
-                    log[f"snapshot/{k}"] = v
-            wandb.log(log, step=t)
         wb.summary["mean_mrr"] = results["mean_mrr"]
         wb.summary["std_mrr"] = results["std_mrr"]
         for k, v in mm.items():
