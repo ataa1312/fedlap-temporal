@@ -30,6 +30,16 @@ class SpectralFeatures:
     Q: torch.Tensor | None = None
 
 
+def _to_cpu_sf(U, D, Q) -> SpectralFeatures:
+    """Detach + move spectral tensors to CPU for the first/prev caches so the big
+    n x spectral_len eigenvectors never accumulate on the GPU across snapshots."""
+    return SpectralFeatures(
+        U=U.detach().cpu() if U is not None else None,
+        D=D.detach().cpu() if D is not None else None,
+        Q=Q.detach().cpu() if Q is not None else None,
+    )
+
+
 def _weighted_mean_metrics(
     metrics_list: list[dict], weights: list[float]
 ) -> dict[str, float]:
@@ -74,7 +84,11 @@ class DynamicServer(Server):
         super().__init__(graph=global_graph)
         self.global_snaps = global_snaps
         self.clients = list[DynamicClient]()
-        self.stored_spectrals = dict[int, SpectralFeatures]()
+        # ROLAND spectral tracking needs only the FIRST snapshot (keep basis +
+        # procrustes anchor) and the PREVIOUS one (update tracking), held on CPU.
+        # (The old growing per-snapshot dict was a DySAT-era artifact and OOMed.)
+        self._first_spectral: SpectralFeatures | None = None
+        self._prev_spectral: SpectralFeatures | None = None
         self._cum_edges = None  # undirected union of global edges up to the current t
 
     def add_client(self, snaps):
@@ -170,7 +184,7 @@ class DynamicServer(Server):
         dt = config["model"]["data_type"] if data_type is None else data_type
         smt = config["model"]["smodel_type"] if smodel_type is None else smodel_type
         use_spectral = dt in ("structure", "f+s")
-        self.stored_spectrals.clear()  # runs are independent (fresh W, fresh Bernoulli draws)
+        self._first_spectral = self._prev_spectral = None  # runs are independent (fresh W, fresh Bernoulli draws)
         self._cum_edges = None
         rounds = config["model"]["iterations"] if epochs is None else epochs
         local_epochs = config["model"]["local_epochs"]
@@ -311,17 +325,12 @@ class DynamicServer(Server):
     def get_previous_UD(
         self, spectral_update_mode: str, ss_idx: int
     ) -> SpectralFeatures:
-        prev_spectrals = SpectralFeatures(U=None, D=None, Q=None)
-
-        if spectral_update_mode in ["keep"]:
-            if len(self.stored_spectrals) > 0:
-                first_index = min(self.stored_spectrals.keys())
-                prev_spectrals = self.stored_spectrals[first_index]
-        else:
-            if ss_idx - 1 in self.stored_spectrals and ss_idx > 0:
-                prev_spectrals = self.stored_spectrals[ss_idx - 1]
-
-        return prev_spectrals
+        empty = SpectralFeatures(U=None, D=None, Q=None)
+        if spectral_update_mode == "keep":
+            return self._first_spectral or empty
+        if ss_idx > 0 and self._prev_spectral is not None:
+            return self._prev_spectral
+        return empty
 
     def get_spectral_features(
         self,
@@ -344,32 +353,22 @@ class DynamicServer(Server):
                 and prev_D is not None
             ):
                 LOGGER.info("Keeping previous eigenvectors U and eigenvalues D...")
-                D, U = prev_D, prev_U
+                D, U, Q = prev_D, prev_U, prev_Q
             elif (
                 spectral_update_mode == "update"
                 and prev_U is not None
                 and prev_D is not None
             ):
-                if ss_idx not in self.stored_spectrals:
-                    LOGGER.info("Updating spectral features...")
-                    D, U, Q = graph.update_eigpairs(prev_Q)
-                    self.stored_spectrals[ss_idx] = SpectralFeatures(U=U, D=D, Q=Q)
-                else:
-                    stored = self.stored_spectrals[ss_idx]
-                    D, U, Q = stored.D, stored.U, stored.Q
+                LOGGER.info("Updating spectral features...")
+                D, U, Q = graph.update_eigpairs(prev_Q)
             else:
-                if ss_idx not in self.stored_spectrals:
-                    LOGGER.info("Computing spectral features...")
-                    D, U, Q = graph.calc_eignvalues(
-                        estimate=not (smodel_type.startswith("Spectral")),
-                        spectral_len=spectral_len,
-                        log=False,
-                    )
-                    assert Q is not None
-                    self.stored_spectrals[ss_idx] = SpectralFeatures(U=U, D=D, Q=Q)
-                else:
-                    stored = self.stored_spectrals[ss_idx]
-                    D, U, Q = stored.D, stored.U, stored.Q
+                LOGGER.info("Computing spectral features...")
+                D, U, Q = graph.calc_eignvalues(
+                    estimate=not (smodel_type.startswith("Spectral")),
+                    spectral_len=spectral_len,
+                    log=False,
+                )
+                assert Q is not None
 
             if (
                 spectral_update_mode in ["recompute", "update"]
@@ -381,6 +380,13 @@ class DynamicServer(Server):
             share["D"] = D
             share["U"] = U
             num_spectral_features = D.shape[0]
+
+            # Cache only the ROLAND-minimal set, on CPU: first (keep basis +
+            # procrustes anchor) and previous (update tracking). No GPU growth.
+            sf = _to_cpu_sf(U, D, Q)
+            if ss_idx == 0:
+                self._first_spectral = sf
+            self._prev_spectral = sf
 
         return share, num_spectral_features
 
@@ -406,7 +412,7 @@ class DynamicServer(Server):
         if mode == "update" and random.random() < config["spectral"]["recompute_prob"]:
             mode = "recompute"  # Bernoulli basis refresh: fresh Lanczos, new Q
         prev = self.get_previous_UD(mode, t)
-        first = self.stored_spectrals.get(0, SpectralFeatures(U=None, D=None, Q=None))
+        first = self._first_spectral or SpectralFeatures(U=None, D=None, Q=None)
         share, _ = self.get_spectral_features(
             graph_t, smodel_type, t, config["spectral"]["spectral_len"], mode, prev, first
         )
@@ -417,11 +423,6 @@ class DynamicServer(Server):
         for cl in self.clients:
             nid = cl.snaps[t].node_ids.cpu()
             cl.classifier.set_QD(U[nid].to(device), D.to(device))
-        # Bound GPU memory: only snapshot 0 (procrustes/keep reference) and the last
-        # two (prev for tracking, current) are ever read again. Without this,
-        # stored_spectrals retains every snapshot's U/D/Q and OOMs on long series.
-        for k in [k for k in self.stored_spectrals if k not in (0, t - 1, t)]:
-            del self.stored_spectrals[k]
 
     def _eval_mrr(self, t, mrr_k, mrr_method):
         zs, ids = [], []
