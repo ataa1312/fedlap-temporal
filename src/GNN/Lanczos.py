@@ -102,8 +102,10 @@ def Lanczos_func(A, m=10, v=None, log=True):
 
 
 def arnoldi_iteration(A, m: int, b=None, log=True):
-    local_dev = "cpu"
-    # local_dev = dev
+    # Run the Krylov iteration on the GPU when on CUDA (the sparse matvec + O(m^2)
+    # Gram-Schmidt dominate; on CPU they pin the run at ~90s/snapshot for 35k-node
+    # graphs). MPS sparse ops are unsupported, so fall back to CPU there.
+    local_dev = dev if str(dev).startswith("cuda") else "cpu"
     """Compute a basis of the (n + 1)-Krylov subspace of the matrix A.
 
     This is the space spanned by the vectors {b, Ab, ..., A^n b}.
