@@ -21,8 +21,14 @@ def test_graph_clone_to():
     clone.foo = "bar"
     assert not hasattr(graph, "foo")
     
+    # to() is out-of-place: a new instance with tensors on the target device,
+    # leaving the original untouched (persistent snapshots must not be mutated
+    # onto the compute device — that stranded/leaked GPU memory).
     returned = graph.to("cpu")
-    assert returned is graph
-    assert graph.x.device.type == "cpu"
-    assert graph.edge_index.device.type == "cpu"
-    assert graph.edge_attr.device.type == "cpu"
+    assert returned is not graph
+    assert isinstance(returned, Graph)
+    assert returned.x.device.type == "cpu"
+    assert returned.edge_index.device.type == "cpu"
+    assert returned.edge_attr.device.type == "cpu"
+    returned.baz = "qux"
+    assert not hasattr(graph, "baz")

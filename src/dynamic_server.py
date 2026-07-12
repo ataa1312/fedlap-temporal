@@ -576,8 +576,12 @@ class DynamicServer(Server):
         pos_test = _pos_for_split(self.global_snaps[t + 1], "test").to(device)
         if pos_test.size(1) == 0:
             return None, None
+        # global_snaps are torch_geometric Data (in-place .to); clone before moving
+        # so the persistent snapshot isn't stranded on the GPU (per-snapshot leak).
         eval_snap = _attach_future_link_pred_labels(
-            self.global_snaps[t].to(device), self.global_snaps[t + 1].to(device), pos_test
+            self.global_snaps[t].clone().to(device),
+            self.global_snaps[t + 1].clone().to(device),
+            pos_test,
         )
         # MRR first, in the server classifier's current mode (unchanged from
         # before metrics were added — keeps the headline reproducible).

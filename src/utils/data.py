@@ -38,12 +38,18 @@ class Data:
         return new
 
     def to(self, device):
-        # Move dense tensor attributes to `device` in place; return self
-        # (matches torch_geometric's Data.to semantics the helpers expect).
-        for k, v in self.__dict__.items():
-            if torch.is_tensor(v):
-                self.__dict__[k] = v.to(device)
-        return self
+        # Out-of-place: return a shallow copy with tensor attributes on `device`,
+        # leaving self untouched. The snapshots in global_snaps / client snaps are
+        # persistent, so an in-place move stranded each visited snapshot's feature/
+        # edge tensors on the GPU forever (a per-snapshot leak that OOMed reddit).
+        # tensor.to(device) is a no-op when already on `device`, so nested re-moves
+        # by the helpers reuse tensors rather than re-allocating.
+        new = self.__class__.__new__(self.__class__)
+        new.__dict__ = {
+            k: (v.to(device) if torch.is_tensor(v) else v)
+            for k, v in self.__dict__.items()
+        }
+        return new
 
     def get_masks(self):
         return (self.train_mask, self.val_mask, self.test_mask)
