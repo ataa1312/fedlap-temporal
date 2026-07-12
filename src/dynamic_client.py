@@ -67,14 +67,18 @@ class DynamicClient(Client):
     def can_train(self, t: int) -> bool:
         # Can fine-tune at t only if snap_{t+1} has both train and val positives
         # after the per-client edge split (tiny subgraphs otherwise abstain), AND
-        # snap_t has >= 2 nodes: BatchNorm in training mode needs >1 sample, so a
-        # degenerate 1-node client-subgraph (occurs at high client counts) would
-        # crash the encoder/layer BN. Such a client abstains from this round.
+        # snap_t has >= 2 nodes AND >= 2 edges: BatchNorm in training mode needs >1
+        # sample, so a degenerate 1-node subgraph crashes the node/layer BN and a
+        # 1-edge subgraph crashes the edge-encoder BN (both occur at high client
+        # counts on small graphs). Such a client abstains from this round.
         today = self.snaps[t]
         tomorrow = self.snaps[t + 1]
         n_nodes = today.x.shape[0] if today.x is not None else today.num_nodes
+        ei = getattr(today, "edge_index", None)
+        n_edges = ei.shape[1] if ei is not None else 0
         return (
             n_nodes >= 2
+            and n_edges >= 2
             and _pos_for_split(tomorrow, "train").size(1) > 0
             and _pos_for_split(tomorrow, "val").size(1) > 0
         )

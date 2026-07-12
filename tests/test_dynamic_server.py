@@ -153,10 +153,12 @@ def test_dynamic_client_can_train(global_config_restore):
     _partition_edges_per_snapshot(cl_sparse.snaps, [0.8, 0.1, 0.1], seed=42)
     assert not cl_sparse.can_train(0)
     
-    edges = torch.randint(0, 5, (2, 20), generator=g)
-    s1_dense = Graph(x=x, edge_index=edges, edge_attr=torch.randn(20, 1), node_ids=torch.arange(5))
-    
-    cl_dense = DynamicClient([s0, s1_dense], id=0)
+    # dense today AND tomorrow: >=2 nodes and >=2 edges at snap_t (edge-encoder BN needs
+    # >1 edge) plus train/val positives at snap_{t+1} -> can_train.
+    s0_dense = Graph(x=x, edge_index=torch.randint(0, 5, (2, 20), generator=g), edge_attr=torch.randn(20, 1), node_ids=torch.arange(5))
+    s1_dense = Graph(x=x, edge_index=torch.randint(0, 5, (2, 20), generator=g), edge_attr=torch.randn(20, 1), node_ids=torch.arange(5))
+
+    cl_dense = DynamicClient([s0_dense, s1_dense], id=0)
     _partition_edges_per_snapshot(cl_dense.snaps, [0.8, 0.1, 0.1], seed=42)
     assert cl_dense.can_train(0)
 
