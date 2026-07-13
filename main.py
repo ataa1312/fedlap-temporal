@@ -61,6 +61,7 @@ def _wandb_meta():
             tags.append(f"proc-{'on' if proc else 'off'}")
     if custom_freq:
         tags.append(f"freq-{sf}")
+        tags += ["coarse-snap", f"coarse-{round(int(sf[:-1]) / 86400)}d"]
     return group, cfg, tags
 
 
