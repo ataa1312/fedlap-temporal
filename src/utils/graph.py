@@ -516,14 +516,13 @@ class Graph(Data):
         # U = U[:, sorted_indices]
         # D = D[sorted_indices, sorted_indices]
 
-        # ss = torch.sign(torch.sum(torch.sign(U), dim=0))
-        ss = torch.sign(torch.sum(U, dim=0))
-        # ii = torch.argmax(torch.abs(U), dim=0)
-        # ss = []
-        # for ind, uu in enumerate(ii):
-        #     ss.append(torch.sign(U[uu, ind]))
-        # ss = torch.tensor(ss)
-        # ss = torch.sign(U[0, :])
+        if config["spectral"]["robust_sign"]:
+            # canonicalize each eigenvector's sign by its LARGEST-|component| entry (well away from
+            # zero) instead of the near-zero column-sum, so the sign is stable across snapshots.
+            ii = torch.argmax(torch.abs(U), dim=0)
+            ss = torch.sign(U[ii, torch.arange(U.shape[1], device=U.device)])
+        else:
+            ss = torch.sign(torch.sum(U, dim=0))
         U = torch.einsum("i,ji->ji", ss, U)
 
         if V is not None:

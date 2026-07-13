@@ -129,8 +129,14 @@ def arnoldi_iteration(A, m: int, b=None, log=True):
     A = deepcopy(A).double()
     A = A.to_sparse().to(local_dev)
     if b is None:
-        # b = torch.ones(A.shape[0], dtype=torch.double, device=dev)
-        b = torch.randn(A.shape[0], dtype=torch.double, device=local_dev)
+        # b = torch.ones(A.shape[0], dtype=torch.double, device=dev)  # =Laplacian null vector -> breaks down
+        if config["spectral"]["deterministic_start"]:
+            # fixed-seed CPU start -> identical every solve, so recompute's eigenvectors move
+            # only as the graph moves (stable gauge) instead of re-randomizing each snapshot.
+            g = torch.Generator().manual_seed(0)
+            b = torch.randn(A.shape[0], generator=g, dtype=torch.double).to(local_dev)
+        else:
+            b = torch.randn(A.shape[0], dtype=torch.double, device=local_dev)
         if torch.sum(b) < 0:
             b = -b
     eps = 1e-12
