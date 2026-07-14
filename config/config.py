@@ -221,6 +221,11 @@ def _spectral() -> Registry:
     s["recompute_prob"] = 0.0               # update mode: per-snapshot Bernoulli full re-Lanczos (basis refresh)
     s["use_procrustes"] = True
     s["output_bn"] = True                   # BatchNorm on smodel output S (bounds spectral amplification; gamma zero-init)
+    # SignNet smodel (model.smodel_type=SignNet): S = rho(sum_i [phi(u_i)+phi(-u_i)]).
+    # phi is the shared per-entry map R^1->phi_dims (last = phi_out); rho maps
+    # phi_out -> rho_dims -> gnn.dims[-1]. Ignored by the Laplace smodels.
+    s["signnet_phi_dims"] = [64, 64]        # phi hidden+output widths (phi_out = last)
+    s["signnet_rho_dims"] = [64]            # rho hidden widths (output = fusion width)
     return s
 
 

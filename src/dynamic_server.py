@@ -487,7 +487,7 @@ class DynamicServer(Server):
         share = {}
         num_spectral_features = None
 
-        if smodel_type in ["SpectralLaplace", "LanczosLaplace"]:
+        if smodel_type in ["SpectralLaplace", "LanczosLaplace", "SignNet"]:
             if (
                 spectral_update_mode == "keep"
                 and prev_U is not None
@@ -508,6 +508,7 @@ class DynamicServer(Server):
                     estimate=not (smodel_type.startswith("Spectral")),
                     spectral_len=spectral_len,
                     log=False,
+                    canonicalize_sign=(smodel_type != "SignNet"),
                 )
                 assert Q is not None
 

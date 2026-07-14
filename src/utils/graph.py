@@ -404,7 +404,9 @@ class Graph(Data):
 
         return next_D, next_U, prev_Q
 
-    def calc_eignvalues(self, estimate=False, self_loop=True, log=True, spectral_len=0):
+    def calc_eignvalues(
+        self, estimate=False, self_loop=True, log=True, spectral_len=0, canonicalize_sign=True
+    ):
         V = None  # not every decomposition path binds V (the eigh path doesn't)
         if config["spectral"]["matrix"] == "lap":
             self.create_L(
@@ -516,17 +518,23 @@ class Graph(Data):
         # U = U[:, sorted_indices]
         # D = D[sorted_indices, sorted_indices]
 
-        if config["spectral"]["robust_sign"]:
-            # canonicalize each eigenvector's sign by its LARGEST-|component| entry (well away from
-            # zero) instead of the near-zero column-sum, so the sign is stable across snapshots.
-            ii = torch.argmax(torch.abs(U), dim=0)
-            ss = torch.sign(U[ii, torch.arange(U.shape[1], device=U.device)])
-        else:
-            ss = torch.sign(torch.sum(U, dim=0))
-        U = torch.einsum("i,ji->ji", ss, U)
+        # Per-eigenvector sign canonicalization. SignNet is exactly invariant to
+        # this transformation, so it is inert (and conceptually redundant) under it:
+        # the caller passes canonicalize_sign=False for SignNet to leave the solver's
+        # raw sign untouched. Procrustes (a rotation alignment, a different gauge) is
+        # independent and still applies when enabled.
+        if canonicalize_sign:
+            if config["spectral"]["robust_sign"]:
+                # canonicalize each eigenvector's sign by its LARGEST-|component| entry (well away from
+                # zero) instead of the near-zero column-sum, so the sign is stable across snapshots.
+                ii = torch.argmax(torch.abs(U), dim=0)
+                ss = torch.sign(U[ii, torch.arange(U.shape[1], device=U.device)])
+            else:
+                ss = torch.sign(torch.sum(U, dim=0))
+            U = torch.einsum("i,ji->ji", ss, U)
 
-        if V is not None:
-            V = torch.einsum("i,ji->ji", ss, V)
+            if V is not None:
+                V = torch.einsum("i,ji->ji", ss, V)
 
         # AA = torch.diag(DD) @ U @ torch.diag(-D) @ U.T
         # AA[AA > 1] = 1

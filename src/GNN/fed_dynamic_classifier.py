@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 
 from src import *
+from src.classifier import Classifier
 from src.utils.graph import Graph
 from src.GNN.sGNN import SClassifier
 from src.GNN.laplace import SpectralLaplaceMixin
@@ -96,6 +97,143 @@ class DynamicSLaplace(SpectralLaplaceMixin, SClassifier):
 
     def zero_grad(self, set_to_none=False):
         super().zero_grad(set_to_none)
+        self.bn.zero_grad(set_to_none=set_to_none)
+
+
+class DynamicSSignNet(Classifier):
+    """Sign-invariant spectral structure model (SignNet, Lim et al. 2022) for the
+    dynamic path. S = rho( sum_i [ phi(u_i) + phi(-u_i) ] ): a shared phi maps each
+    eigenvector entry and its sign-flip, the two are summed (invariant to the
+    per-eigenvector sign gauge), summed again over the spectral_len columns
+    (DeepSets over eigenvectors), then rho maps the per-node aggregate to the
+    fusion width. This REPLACES DynamicSLaplace's sign-fix + procrustes gauge
+    handling at the source. There is no Q@W filter, so there is no SFV to federate
+    (federated.sfv_share is moot); phi/rho join FedAvg through state_dict like the
+    fmodel. Q, D are per-client buffers set via set_QD each snapshot; only Q is
+    consumed. out_dim sizes rho for fusion (add/concat) with the recurrent z."""
+
+    def __init__(self, graph: Graph, out_dim):
+        super().__init__(graph)
+        self.out_dim = out_dim
+        self.Q = None
+        self.D = None
+        if graph.x is not None:
+            graph.x.requires_grad_(False)  # SFV leaf is unused by SignNet
+        self.create_smodel()
+
+    def create_smodel(self):
+        phi_dims = config["spectral"]["signnet_phi_dims"]
+        rho_dims = config["spectral"]["signnet_rho_dims"]
+        # phi: shared per-entry map R^1 -> R^phi_out. NO input normalization -- the
+        # MLP normalizes its INPUT layer, and Layer/BatchNorm over a width-1 input
+        # would erase the eigenvector value.
+        self.phi = ModelBinder(
+            [
+                ModelSpecs(
+                    type="MLP",
+                    layer_sizes=[1] + list(phi_dims),
+                    final_activation_function="linear",
+                    normalization=None,
+                )
+            ]
+        )
+        # rho: aggregated node encoding R^phi_out -> R^out_dim (fusion width).
+        self.rho = ModelBinder(
+            [
+                ModelSpecs(
+                    type="MLP",
+                    layer_sizes=[phi_dims[-1]] + list(rho_dims) + [self.out_dim],
+                    final_activation_function="linear",
+                    normalization="layer",
+                )
+            ]
+        )
+        self.phi.to(device)
+        self.rho.to(device)
+        # Zero-init output BatchNorm (same role as DynamicSLaplace): bounds the
+        # spectral amplification and starts S at 0, so f+s begins exactly at the
+        # feature-only baseline and grows only as training earns it. Owned here so
+        # it joins parameters / state_dict / FedAvg / early-stop restore-best.
+        if config["spectral"]["output_bn"]:
+            self.bn = nn.BatchNorm1d(
+                self.out_dim, affine=True, track_running_stats=False
+            ).to(device)
+            nn.init.zeros_(self.bn.weight)
+        else:
+            self.bn = nn.Identity()
+
+    def set_QD(self, Q, D):
+        self.Q = Q
+        self.D = D
+
+    def get_D(self):
+        return self.D
+
+    def get_SFV(self):
+        return None
+
+    def get_embeddings(self):
+        Q = self.Q
+        N, k = Q.shape
+        x = Q.reshape(N * k, 1)
+        h = self.phi(x) + self.phi(-x)  # sign-invariant per (node, eigenvector)
+        h = h.reshape(N, k, -1).sum(dim=1)  # DeepSets sum over the k eigenvectors
+        S = self.rho(h)
+        return self.bn(S)
+
+    # ---- FedLap Classifier protocol (phi + rho + output bn) ---- #
+
+    def parameters(self):
+        return (
+            list(self.phi.parameters())
+            + list(self.rho.parameters())
+            + list(self.bn.parameters())
+        )
+
+    def state_dict(self):
+        return {
+            "phi": self.phi.state_dict(),
+            "rho": self.rho.state_dict(),
+            "bn": self.bn.state_dict(),
+        }
+
+    def load_state_dict(self, weights):
+        self.phi.load_state_dict(weights["phi"])
+        self.rho.load_state_dict(weights["rho"])
+        if "bn" in weights:
+            self.bn.load_state_dict(weights["bn"])
+
+    def get_grads(self, just_SFV=False):
+        if just_SFV:
+            return {}
+        return {
+            "phi": self.phi.get_grads(),
+            "rho": self.rho.get_grads(),
+            "bn": [p.grad for p in self.bn.parameters()],
+        }
+
+    def set_grads(self, grads):
+        if "phi" in grads:
+            self.phi.set_grads(grads["phi"])
+        if "rho" in grads:
+            self.rho.set_grads(grads["rho"])
+        if "bn" in grads:
+            for p, g in zip(self.bn.parameters(), grads["bn"]):
+                p.grad = g
+
+    def train(self, mode: bool = True):
+        self.phi.train(mode)
+        self.rho.train(mode)
+        self.bn.train(mode)
+
+    def eval(self):
+        self.phi.eval()
+        self.rho.eval()
+        self.bn.eval()
+
+    def zero_grad(self, set_to_none=False):
+        self.phi.zero_grad(set_to_none=set_to_none)
+        self.rho.zero_grad(set_to_none=set_to_none)
         self.bn.zero_grad(set_to_none=set_to_none)
 
 
@@ -194,9 +332,15 @@ class FedDynamicLanczosLaplaceClassifier(FedDynamicClassifier):
         self.smodel = DynamicSLaplace(sgraph, out_dim=config["gnn"]["dims"][-1])
 
 
+class FedDynamicSignNetClassifier(FedDynamicClassifier):
+    def create_smodel(self, sgraph: Graph):
+        self.smodel = DynamicSSignNet(sgraph, out_dim=config["gnn"]["dims"][-1])
+
+
 FED_DYNAMIC_CLASSIFIERS = {
     "SpectralLaplace": FedDynamicSpectralLaplaceClassifier,
     "LanczosLaplace": FedDynamicLanczosLaplaceClassifier,
+    "SignNet": FedDynamicSignNetClassifier,
 }
 
 
