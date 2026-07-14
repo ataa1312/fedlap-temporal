@@ -10,7 +10,7 @@ from src.utils.graph import Graph
 from src.dynamic_client import DynamicClient
 from src.GNN.dynamic_classifier import DynamicClassifier
 from src.GNN.fed_dynamic_classifier import make_fed_dynamic_classifier
-from src.metrics.mrr import compute_mrr_from_z
+from src.metrics.mrr import compute_mrr_from_z, compute_hard_auc_ap_from_z
 from src.metrics.classification import binary_classification_metrics
 from src.train.federated_orchestrator import (
     _partition_edges_per_snapshot,
@@ -593,7 +593,14 @@ class DynamicServer(Server):
         self.classifier.eval()
         with torch.no_grad():
             pred, label = self.classifier.decode(gz, eval_snap)
-        metrics = binary_classification_metrics(pred, label)
+            metrics = binary_classification_metrics(pred, label)
+            if config["metric"]["hard_neg"] != "random":
+                # de-saturate auc/ap with hard (degree-weighted) negatives; overrides the
+                # ~1:1 random-negative roc_auc/ap. mrr + f1/mcc stay on the original set.
+                # 1 hard negative per positive (1:1) so auc AND ap stay comparable to the
+                # easy 1:1 baseline (K:1 would crush ap via the positive base-rate).
+                h_auc, h_ap = compute_hard_auc_ap_from_z(gz, eval_snap, 1, device, self.classifier)
+                metrics["roc_auc"], metrics["ap"] = h_auc, h_ap
         self.classifier.train(was_training)
         return mrr, metrics
 

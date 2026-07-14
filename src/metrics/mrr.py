@@ -2,7 +2,53 @@ import torch
 import torch.nn as nn
 from torch_geometric.data import Data
 
-__all__ = ["compute_mrr", "compute_mrr_from_z"]
+from src.metrics.classification import _roc_auc, _average_precision
+
+__all__ = ["compute_mrr", "compute_mrr_from_z", "compute_hard_auc_ap_from_z"]
+
+
+def _sample_degree_negatives(unique_sources, pos_u, pos_v, deg, N, K, device):
+    """K HARD negative targets per source, sampled proportional to node degree
+    (popular nodes are structurally plausible targets, so the pair (u, v') is
+    genuinely hard to reject — unlike a uniform-random v' which is trivially
+    unrelated). Excludes the source's true positives, like the random sampler."""
+    n_sources = unique_sources.size(0)
+    probs = deg.float() + 1.0
+    v_neg = torch.multinomial(probs, n_sources * K, replacement=True).view(n_sources, K).to(device)
+    src_col = unique_sources.to(torch.long).unsqueeze(1)
+    pos_key = pos_u.to(torch.long) * N + pos_v.to(torch.long)
+    for _ in range(8):
+        collide = torch.isin(src_col * N + v_neg, pos_key)
+        n_collide = int(collide.sum())
+        if n_collide == 0:
+            break
+        v_neg[collide] = torch.multinomial(probs, n_collide, replacement=True).to(device)
+    return v_neg
+
+
+@torch.no_grad()
+def compute_hard_auc_ap_from_z(z, snap, K, device, model):
+    """De-saturated discrimination: AUC/AP of true edges vs K degree-weighted HARD
+    negatives per source (scored via the head), instead of the ~1:1 random-negative
+    deepsnap set that saturates near 1.0. Returns (roc_auc, ap)."""
+    pos_mask = snap.edge_label == 1.0
+    if pos_mask.sum().item() == 0:
+        return float("nan"), float("nan")
+    pos_edges = snap.edge_label_index[:, pos_mask]
+    u, v_pos = pos_edges[0], pos_edges[1]
+    N = snap.num_nodes
+    deg = torch.bincount(snap.edge_index.reshape(-1).to(device), minlength=N).float()
+    unique_sources = torch.unique(u)
+    v_neg = _sample_degree_negatives(unique_sources, u, v_pos, deg, N, K, device)
+    src_rep = unique_sources.unsqueeze(1).expand(-1, K).flatten()
+    v_neg_flat = v_neg.flatten()
+    temp = snap.clone()
+    temp.edge_label_index = torch.stack([torch.cat([u, src_rep]), torch.cat([v_pos, v_neg_flat])], dim=0)
+    temp.edge_label = torch.zeros(temp.edge_label_index.size(1), device=device)
+    scores, _ = model.decode(z, temp)
+    labels = torch.cat([torch.ones(u.size(0), device=device),
+                        torch.zeros(v_neg_flat.size(0), device=device)])
+    return _roc_auc(scores, labels), _average_precision(scores, labels)
 
 
 def _sample_filtered_negatives(

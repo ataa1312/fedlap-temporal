@@ -168,6 +168,9 @@ def _experimental() -> Registry:
 def _metric() -> Registry:
     m = Registry("metric")
     m["mrr_method"] = "max"                 # 'min', 'max', 'mean'
+    m["hard_neg"] = "random"                # discrimination negatives for auc/ap: 'random'
+                                            # (deepsnap ~1:1, saturates ~0.96) or 'degree'
+                                            # (degree-weighted hard, de-saturates auc/ap)
     return m
 
 
