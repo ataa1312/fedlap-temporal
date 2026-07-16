@@ -231,6 +231,11 @@ def _spectral() -> Registry:
 
 def _federated() -> Registry:
     f = Registry("federated")
+    f["fl"] = True                          # FedLap's FL flag. False = local-only baseline: each client
+                                            # trains on its own subgraph and evaluates on its own next
+                                            # snapshot, with NO broadcast and NO aggregation (metrics
+                                            # node-count-weight-averaged). The utility FLOOR that
+                                            # federation must beat to be worth anything.
     f["aggregation"] = "fedavg"             # cross-client weight aggregation
     f["weighting"] = "node_count"           # 'node_count', 'uniform'
     f["sfv_share"] = "local"                # learnable spectral W: 'local' per-client (FedLap joint_train_w

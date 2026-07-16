@@ -37,8 +37,11 @@ def _wandb_meta():
     sfv = config["federated"]["sfv_share"]
     proc = config["spectral"]["use_procrustes"]
     sf = config["dataset"]["snapshot_freq"]
+    fl = config["federated"]["fl"]
     custom_freq = isinstance(sf, str) and sf.endswith("s") and sf[:-1].isdigit()
     parts = [ds, temporal, str(dt), f"C{C}"]
+    if not fl:  # local-only floor: keep it out of the federated groups' averages
+        parts.append("local")
     if dt in ("f+s", "structure"):
         parts += [f"um-{um}", f"sfv-{sfv}"]
         if um in ("update", "recompute"):  # procrustes only applies to these modes
@@ -49,12 +52,15 @@ def _wandb_meta():
     cfg = {
         "dataset": ds, "temporal": temporal, "data_type": dt, "num_clients": C,
         "update_mode": um, "sfv_share": sfv, "use_procrustes": proc, "seed": config["seed"],
+        "fl": fl,
         "iterations": m["iterations"], "local_epochs": m["local_epochs"],
         "base_lr": config["optim"]["base_lr"], "fusion": m["fusion"],
         "smodel_type": m["smodel_type"], "spectral_len": config["spectral"]["spectral_len"],
         "snapshot_freq": sf,
     }
     tags = [ds, str(dt), f"C{C}", temporal]
+    if not fl:
+        tags.append("local")
     if dt in ("f+s", "structure"):
         tags += [f"um-{um}", f"sfv-{sfv}"]
         if um in ("update", "recompute"):
@@ -130,10 +136,13 @@ def run_once() -> dict:
     already_done = ckpt_on and server._load_done_ckpt() is not None
     wb = None if already_done else _init_wandb()
 
-    results = server.joint_train_w(log_cb=_wandb_snapshot_logger(wb))
+    results = server.joint_train_w(
+        FL=config["federated"]["fl"], log_cb=_wandb_snapshot_logger(wb)
+    )
     mm = results.get("mean_metrics") or {}
     LOGGER.info(
-        f"RESULT dataset={name} clients={n_clients} seed={config['seed']} "
+        f"RESULT dataset={name} clients={n_clients} fl={config['federated']['fl']} "
+        f"seed={config['seed']} "
         f"mean_mrr={results['mean_mrr']} std={results['std_mrr']} "
         f"auc={mm.get('roc_auc')} ap={mm.get('ap')} f1={mm.get('f1')} mcc={mm.get('mcc')} "
         f"snapshots={len(results['mrr_history'])}"

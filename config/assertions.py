@@ -71,6 +71,11 @@ def assert_cfg(config: Registry) -> None:
         )
 
     # ----- hard checks (federated / spectral) ----- #
+    if not isinstance(federated["fl"], bool):
+        raise ValueError(
+            "federated.fl must be a bool (true = federated, false = local-only floor), "
+            f"got {federated['fl']!r}"
+        )
     _require_in(federated["aggregation"], _AGGREGATIONS, "federated.aggregation")
     _require_in(federated["weighting"], _WEIGHTINGS, "federated.weighting")
 
