@@ -17,6 +17,7 @@ _EMBED_UPDATE_METHODS = {"moving_average", "masked_gru", "gru"}
 _META_METHODS = {"none", "moving_average", "online_mean"}
 _TRAIN_MODES = {"live_update"}
 _MRR_METHODS = {"min", "max", "mean"}
+_EVAL_SCOPES = {"auto", "local", "global"}
 _WANDB_MODES = {"online", "offline", "disabled"}
 _AGGREGATIONS = {"fedavg"}
 _WEIGHTINGS = {"node_count", "uniform"}
@@ -75,6 +76,13 @@ def assert_cfg(config: Registry) -> None:
         raise ValueError(
             "federated.fl must be a bool (true = federated, false = local-only floor), "
             f"got {federated['fl']!r}"
+        )
+    _require_in(metric["eval_scope"], _EVAL_SCOPES, "metric.eval_scope")
+    if metric["eval_scope"] == "global" and not federated["fl"]:
+        raise ValueError(
+            "metric.eval_scope='global' requires federated.fl=true: the global eval decodes "
+            "the stitched z with the SERVER model, which is never aggregated (so never "
+            "trained) when fl=false. Use eval_scope='local' to compare fl=true vs fl=false."
         )
     _require_in(federated["aggregation"], _AGGREGATIONS, "federated.aggregation")
     _require_in(federated["weighting"], _WEIGHTINGS, "federated.weighting")

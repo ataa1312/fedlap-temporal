@@ -167,6 +167,16 @@ def _experimental() -> Registry:
 
 def _metric() -> Registry:
     m = Registry("metric")
+    m["eval_scope"] = "auto"                # which test set the reported metrics are scored on:
+                                            # 'auto'  = global when federated.fl else per-client (the
+                                            #           historical coupling; keeps prior runs reproducible)
+                                            # 'local' = always per-client (each client scored on its OWN
+                                            #           subgraph) -- the apples-to-apples setting for
+                                            #           comparing fl=true vs fl=false, since only the
+                                            #           TRAINING then differs, not the test set
+                                            # 'global'= always the stitched global graph. Needs fl=true:
+                                            #           _eval_mrr decodes with the SERVER model, which is
+                                            #           never aggregated (so never trained) when fl=false.
     m["mrr_method"] = "max"                 # 'min', 'max', 'mean'
     m["hard_neg"] = "random"                # discrimination negatives for auc/ap: 'random'
                                             # (deepsnap ~1:1, saturates ~0.96) or 'degree'

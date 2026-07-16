@@ -222,9 +222,15 @@ class DynamicServer(Server):
         is_meta = config["meta"]["is_meta"]
         meta_alpha = config["meta"]["alpha"]
         meta_method = config["meta"]["method"]
+        # Which test set the reported metrics are scored on. 'auto' keeps the historical
+        # coupling (global when FL, per-client otherwise); 'local' scores both FL settings
+        # on each client's own subgraph, so fl=true vs fl=false differ only in TRAINING.
+        scope = config["metric"]["eval_scope"]
+        global_eval = scope == "global" or (scope == "auto" and FL)
         if log:
             tag = model_type or ("FL WA" if FL else "Local WA")
-            LOGGER.info(f"{tag} live-update starts!")
+            LOGGER.info(f"{tag} live-update starts! (eval_scope={scope} -> "
+                        f"{'global' if global_eval else 'per-client'})")
 
         # Global edge split -> pos_test for the reported eval; per-client splits ->
         # pos_train/pos_val for local fine-tune (seed offset per client).
@@ -272,7 +278,7 @@ class DynamicServer(Server):
             # 1. Reported eval. FL: clients hold the global weights (share_weights
             #    at initialize_FL / end of the previous snapshot) -> global stitch.
             #    Local-only: weighted mean of per-client local MRRs.
-            if FL:
+            if global_eval:
                 mrr, metrics = self._eval_mrr(t, mrr_k, mrr_method)
             else:
                 mrr, metrics = self._eval_mrr_local(t, loss_fn, mrr_k, mrr_method)
