@@ -334,6 +334,16 @@ class DynamicServer(Server):
                     for cl in self.clients:
                         if cl.can_train(t):
                             cl.local_finetune(t, local_epochs, loss_fn)
+                # local_finetune ends in TRAIN mode whenever it exhausts local_epochs
+                # without an early-stop break. The FL path always lands in eval (its
+                # per-round val_loss calls model.eval()), and refresh() deliberately
+                # inherits whatever mode it finds -- so in train mode a degenerate
+                # 1-node client crashes the encoder BatchNorm ("Expected more than 1
+                # value per channel"). can_train guards training but not refresh, so
+                # normalize to eval here: the local path then refreshes its carried
+                # hs exactly like the FL path, keeping the two comparable.
+                for cl in self.clients:
+                    cl.classifier.eval()
 
             # 3. Refresh each client's carried hidden state (from the aggregate
             #    when FL, from its own weights when local-only).
