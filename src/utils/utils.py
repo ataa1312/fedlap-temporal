@@ -382,12 +382,16 @@ def create_adj(
         edge_weight = deg_inv[row] * edge_weight
     elif normalization == "sym":
         # Compute A_norm = -D^{-1/2} A D^{-1/2}.
-        deg_inv_sqrt = deg.pow_(-0.5)
+        # Index with row/col (from directed_edges) like the 'rw' branch above -- NOT the
+        # raw edge_index, which is pre-self-loop and pre-edge_mask and so has a different
+        # length than edge_weight (that mismatch made this branch raise outright). pow()
+        # not pow_(): the in-place form destroys `deg` while deg2 is still to be derived.
+        deg_inv_sqrt = deg.pow(-0.5)
         deg_inv_sqrt = deg_inv_sqrt.masked_fill_(deg_inv_sqrt == float("inf"), 0)
         deg2 = scatter(edge_weight, col, 0, dim_size=num_nodes, reduce="sum")
-        deg_inv_sqrt2 = deg2.pow_(-0.5)
+        deg_inv_sqrt2 = deg2.pow(-0.5)
         deg_inv_sqrt2 = deg_inv_sqrt2.masked_fill_(deg_inv_sqrt2 == float("inf"), 0)
-        edge_weight *= deg_inv_sqrt[edge_index[0]] * deg_inv_sqrt2[edge_index[1]]
+        edge_weight = edge_weight * deg_inv_sqrt[row] * deg_inv_sqrt2[col]
     if dev != "mps":
         adj = torch.sparse_coo_tensor(
             directed_edges,
