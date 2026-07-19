@@ -399,7 +399,31 @@ class Graph(Data):
         assert self.L is not None
         prev_Q = prev_Q.to(self.L.device)  # L is CPU-built; keep the projection on one device
         next_H = prev_Q.T @ self.L @ prev_Q
-        next_D, next_V = torch.linalg.eigh(next_H)
+        # Rayleigh-Ritz. torch.linalg.eigh reads ONE triangle and assumes symmetry, so it
+        # is only valid when H is. That holds for L_type in {normal, sym} but NOT for the
+        # default 'rw': L_rw = I - D^-1 A is non-symmetric (it is merely *similar* to the
+        # symmetric L_sym), so H inherits the asymmetry and eigh silently returns the
+        # spectrum of (H+H^T)/2 instead. Fall back to the general solver there.
+        # CAVEAT: L_rw's own spectrum is real (via the similarity to L_sym), but the
+        # PROJECTION Q^T L_rw Q does not inherit that -- it can and does pick up complex
+        # eigenvalues (measured max|Im| ~ 2e-2 on a toy graph, with Ritz residuals ~1e-2).
+        # Taking the real part is therefore a pragmatic fallback, NOT an exact identity;
+        # the warning below fires when the imaginary part is material. Under L_type=sym
+        # this branch is not taken at all and the tracking is exact (residual ~1e-7), which
+        # is an argument for 'sym' in `update` mode specifically, independent of MRR.
+        # Sorting ascending preserves eigh's ordering contract, which keeps the tracked
+        # columns in a consistent order from snapshot to snapshot.
+        if torch.allclose(next_H, next_H.transpose(-1, -2), atol=1e-6, rtol=0):
+            next_D, next_V = torch.linalg.eigh(next_H)
+        else:
+            D_c, V_c = torch.linalg.eig(next_H)
+            if D_c.imag.abs().max() > 1e-4 * max(D_c.real.abs().max().item(), 1.0):
+                LOGGER.warning(
+                    "update_eigpairs: projected H has complex spectrum "
+                    f"(max|Im|={D_c.imag.abs().max().item():.3e}); taking the real part"
+                )
+            order = torch.argsort(D_c.real)
+            next_D, next_V = D_c.real[order], V_c.real[:, order]
         next_U = prev_Q @ next_V
 
         return next_D, next_U, prev_Q
