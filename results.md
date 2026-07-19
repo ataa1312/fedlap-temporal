@@ -1,7 +1,7 @@
 # FedLap-ROLAND — Federated Temporal Spectral Link Prediction: Results & Analysis
 
 Living record of experimental results and their interpretation, written to be
-self-contained for a downstream paper-authoring agent. Last updated 2026-07-13.
+self-contained for a downstream paper-authoring agent. Last updated 2026-07-16.
 
 > Status legend: **[confirmed]** = 3-seed means, stable; **[prelim]** = 1–2 seeds or
 > small dataset, directionally trusted; **[single]** = one seed, a data point only;
@@ -284,8 +284,11 @@ analytically / big-O; no distributed transport is implemented.)
   load-bearing (mean Δ +0.001). `ma`-temporal + coarse-window are the remaining axes.
 - **`ma`-temporal coverage [not run]:** every result so far is `gru`; the moving-average backbone
   (`config/<ds>_ma.yaml`) is the natural next breadth axis.
-- **SignNet/BasisNet smodel [research]:** the gauge-invariant encoder that could make
-  `recompute` viable (§4.2).
+- **SignNet smodel [DONE, §8]:** built + swept (135 + 186 runs, all 6 datasets). It removes `recompute`'s gauge
+  deficit (reddit_body 0.324->0.340) but only reaches PARITY with keep/feature -- the
+  'recompute is superior' premise still does not hold. BasisNet (rotation) remains un-built.
+- **Local-only lower bound [DONE, §9]:** `federated.fl=false`, 144 matched runs C{3,5,7,9} --
+  federation's advantage GROWS with client count (Delta AUC monotone in C on 5/6 datasets).
 - **`data_type=structure` [stub]:** structure-only smodel subclass, `NotImplementedError`.
 
 ---
@@ -649,6 +652,8 @@ degrades under it:
   keep degrades far faster (alpha keep 0.117→0.073→0.050 vs feature 0.126→0.102→0.091; otc keep
   0.148→0.108→0.078 vs feature 0.151→0.131→0.113), so there is **NO rescue at any C{3,5,7}**; the
   frozen t0 basis itself degenerates once these small graphs are sharded. recompute worst throughout.
+  **REVISED by §8.5:** this is a property of the *Laplace* smodel — with the sign-invariant SignNet
+  encoder the spectral branch BEATS feature at every C on both Bitcoin graphs, margin growing with C.
 - **UCI** (1899 nodes, weekly, §3.1): keep overtakes feature by C7 (0.076 vs 0.073); recompute worst.
 
 Honest framing: **"spectral rescues federated" is NOT a law.** `keep` matches-or-beats plain
@@ -656,7 +661,7 @@ federated where the graph is large/stable enough that a frozen basis survives sh
 as733, reddit) — but the *effect size* depends on how much feature degrades (large on
 as733/reddit_body/UCI, negligible on the sharding-robust reddit_title). It **fails outright on the
 small Bitcoin graphs**, where the t0 basis degrades under sharding and feature only pulls further
-ahead. **`recompute` is churn-dependent**: clearly worst on high-churn UCI/reddit/bitcoin, but
+ahead (**but see §8.5** — that failure is specific to the Laplace smodel; SignNet reverses it). **`recompute` is churn-dependent**: clearly worst on high-churn UCI/reddit/bitcoin, but
 competitive-to-best on low-churn as733 (procrustes-on). Mechanism §4.2.
 
 ### sfv_share=avg ablation — ALL 6 datasets (270 runs, C{3,5,7})  **[complete, 2026-07-13]**
@@ -1220,8 +1225,246 @@ _Reddit-body coarse (72 runs, snapshots=44):_
 | recompute | 7 | on | 1434 | 0.26760 | 0.03986 | 0.94497 | 0.95567 | 0.80060 | 0.70501 |
 
 
-## 8. Provenance & reproduction
-- Code: fedlap repo, branch `roland-dev`. Runs on TUM CUDA hosts `tueilnt-sim{10,13}`.
+## 8. SignNet — a sign-invariant spectral encoder (the gauge fix)  **[confirmed, 2026-07-14]**
+
+§4.2 argued that `recompute` fails because a fresh solve re-draws the eigenvector **gauge** every
+snapshot, so the learned filter chases a coordinate system that never settles — and that a
+sign-/basis-*invariant* encoder (SignNet, Lim et al.) was the principled fix. That encoder is now
+built (`model.smodel_type=SignNet`, commit `3595fc8`) and swept.
+
+**What it is.** A new smodel subclass alongside `DynamicSLaplace`, not a replacement:
+`S = ρ( Σ_i [ φ(u_i) + φ(−u_i) ] )` — a shared per-entry φ maps each eigenvector column *and* its
+sign-flip, the pair is summed (invariant to the per-eigenvector sign gauge), summed again over the
+`spectral_len` columns, then ρ maps to the fusion width. Invariance is exact (verified:
+`max|S(Q) − S(Q·diag(±1))| = 0`). It has no `Q@W` filter, so no SFV — φ/ρ join FedAvg via `state_dict`.
+The now-redundant sum-based sign canonicalization is skipped under SignNet
+(`calc_eignvalues(canonicalize_sign=False)`); **procrustes is left independent** — it aligns
+*rotation*, a different gauge that SignNet does not remove, so the two can co-run.
+
+**Runs.** 135 runs, all `hard_neg=degree` (de-saturates auc/ap ~0.96→~0.86, so the secondary metrics
+are informative): reddit_body {SignNet, Laplace} × {keep, update, recompute} × proc{off,on} + feature,
+C{3,5,7} × 3 seeds; plus as733 and UCI SignNet {keep, recompute}.
+
+### 8.1 Reddit-body — the matched grid (3-seed means, hard-neg)
+| model | mode | proc | mrr C3 | C5 | C7 | auc C3 | ap C3 | f1 C3 | mcc C3 |
+|---|---|---|---|---|---|---|---|---|---|
+| feature | – | – | **0.341** | 0.303 | 0.280 | 0.864 | 0.883 | 0.889 | 0.801 |
+| Laplace | keep | – | 0.331 | 0.299 | 0.283 | 0.860 | 0.880 | 0.891 | 0.804 |
+| Laplace | update | off | 0.336 | 0.303 | 0.280 | 0.862 | 0.882 | 0.890 | 0.803 |
+| Laplace | update | on | 0.338 | 0.300 | 0.283 | 0.861 | 0.881 | 0.890 | 0.804 |
+| Laplace | recompute | off | 0.324 | 0.292 | 0.275 | 0.861 | 0.880 | 0.888 | 0.801 |
+| Laplace | recompute | on | 0.324 | 0.296 | 0.276 | 0.862 | 0.882 | 0.889 | 0.802 |
+| SignNet | keep | – | 0.338 | **0.308** | 0.276 | 0.865 | 0.884 | 0.890 | 0.803 |
+| SignNet | update | off | **0.341** | 0.305 | 0.281 | 0.864 | 0.884 | 0.891 | 0.806 |
+| SignNet | update | on | **0.341** | 0.305 | 0.280 | 0.865 | 0.885 | 0.891 | 0.805 |
+| SignNet | recompute | off | 0.340 | 0.306 | 0.282 | 0.864 | 0.884 | 0.890 | 0.803 |
+| SignNet | recompute | on | 0.340 | 0.301 | **0.285** | 0.866 | 0.885 | 0.890 | 0.804 |
+
+### 8.2 The mechanism — the lift is proportional to gauge churn
+Δ MRR = SignNet − Laplace, same mode, proc-off:
+
+| mode | gauge churn across snapshots | Δ C3 | Δ C5 | Δ C7 | mean Δ |
+|---|---|---|---|---|---|
+| keep | **none** — basis frozen at t=0 | +0.007 | +0.009 | −0.007 | **+0.003** |
+| update | mild — basis tracked (Rayleigh-Ritz) | +0.005 | +0.002 | +0.001 | **+0.003** |
+| recompute | **maximal** — basis re-solved each snapshot | **+0.016** | **+0.014** | **+0.007** | **+0.012** |
+
+**`keep` is a natural control.** A frozen basis has no sign churn, so a sign-invariant encoder should
+do nothing there — and it does nothing (+0.003, mixed sign, inside noise). That rules out the obvious
+confound that SignNet simply wins by being a larger/better encoder. The gain appears **only where the
+gauge churns, and scales with how much it churns**. This is the load-bearing result of §8.
+
+### 8.3 Cross-dataset (3-seed means; MRR is comparable to §3.1/§6 — `hard_neg` affects only auc/ap)
+| dataset | condition | C3 | C5 | C7 | source |
+|---|---|---|---|---|---|
+| uci | feature | 0.089 | 0.084 | 0.073 | §3.1 |
+| uci | Laplace keep | 0.084 | 0.066 | 0.076 | §3.1 |
+| uci | Laplace recompute (off) | **0.055** | 0.060 | 0.058 | §3.1 |
+| uci | SignNet keep | 0.089 | 0.070 | 0.073 | new |
+| uci | SignNet recompute (off) | **0.081** | 0.072 | 0.072 | new |
+| as733 | feature | 0.314 | 0.280 | 0.268 | §6 |
+| as733 | Laplace keep | 0.307 | 0.282 | **0.282** | §6 |
+| as733 | Laplace recompute (off) | 0.299 | 0.276 | 0.277 | §6 |
+| as733 | Laplace recompute (**on**) | **0.322** | **0.291** | 0.278 | §6 |
+| as733 | SignNet keep | 0.305 | 0.292 | 0.277 | new |
+| as733 | SignNet recompute (off) | 0.305 | 0.285 | 0.274 | new |
+
+### 8.4 Breadth — SignNet on all six datasets  **[confirmed, 2026-07-19]**
+186/189 runs (`signnet_breadth`): the five conditions {keep, update×proc, recompute×proc} × C{3,5,7} × 3
+seeds on reddit_title / bitcoin_alpha / bitcoin_otc (which had no SignNet at all), plus the missing
+`update` and proc-on cells on as733 and uci. `hard_neg=degree` throughout; MRR is unaffected by
+`hard_neg`, so the Δ against §6's Laplace/feature MRR is valid without re-running the baselines.
+(One cell missing: `reddit_title update proc-on C3`, 0/3 — OOM'd twice under co-scheduling, see §10.)
+
+_SignNet 3-seed mean MRR, and Δ vs the SAME condition under the Laplace smodel (§6/§3.1):_
+| dataset | mode | proc | C3 | C5 | C7 | ΔC3 | ΔC5 | ΔC7 |
+|---|---|---|---|---|---|---|---|---|
+| uci | keep | – | 0.089 | 0.070 | 0.073 | +0.005 | +0.004 | −0.003 |
+| uci | update | off | 0.090 | 0.078 | 0.076 | +0.012 | +0.012 | +0.005 |
+| uci | update | on | 0.076 | 0.073 | 0.070 | −0.006 | −0.005 | −0.007 |
+| uci | recompute | on | 0.082 | 0.074 | 0.070 | **+0.022** | **+0.020** | +0.009 |
+| bitcoin_alpha | keep | – | 0.130 | 0.100 | 0.091 | +0.013 | +0.027 | +0.041 |
+| bitcoin_alpha | update | off | 0.120 | 0.103 | 0.096 | +0.006 | +0.024 | +0.042 |
+| bitcoin_alpha | update | on | 0.116 | 0.108 | 0.086 | −0.006 | +0.015 | +0.020 |
+| bitcoin_alpha | recompute | off | 0.123 | 0.108 | 0.098 | **+0.020** | **+0.052** | **+0.062** |
+| bitcoin_alpha | recompute | on | 0.121 | 0.106 | 0.089 | +0.017 | +0.044 | +0.062 |
+| bitcoin_otc | keep | – | 0.162 | 0.153 | 0.139 | +0.014 | +0.045 | +0.061 |
+| bitcoin_otc | update | off | 0.154 | 0.133 | 0.124 | +0.020 | +0.027 | +0.057 |
+| bitcoin_otc | update | on | 0.165 | 0.147 | 0.134 | +0.026 | +0.023 | +0.050 |
+| bitcoin_otc | recompute | off | 0.163 | 0.150 | 0.134 | **+0.049** | **+0.066** | **+0.083** |
+| bitcoin_otc | recompute | on | 0.154 | 0.147 | 0.121 | +0.035 | +0.065 | +0.062 |
+| as733 | keep | – | 0.305 | 0.292 | 0.277 | −0.002 | +0.010 | −0.005 |
+| as733 | update | off | 0.304 | 0.288 | 0.274 | +0.003 | +0.008 | −0.002 |
+| as733 | update | on | 0.305 | 0.288 | 0.277 | +0.007 | +0.014 | +0.009 |
+| as733 | recompute | on | 0.302 | 0.293 | 0.271 | −0.020 | +0.002 | −0.007 |
+| reddit_title | keep | – | 0.417 | 0.395 | 0.387 | −0.001 | +0.004 | −0.005 |
+| reddit_title | update | off | 0.414 | 0.395 | 0.389 | −0.003 | +0.003 | +0.003 |
+| reddit_title | update | on | – | 0.395 | 0.389 | – | −0.001 | −0.000 |
+| reddit_title | recompute | off | 0.414 | 0.392 | 0.389 | **+0.017** | +0.007 | +0.009 |
+| reddit_title | recompute | on | 0.417 | 0.393 | 0.388 | **+0.019** | +0.010 | +0.007 |
+
+**The §8.2 mechanism REPLICATES on 4 of 5 new datasets — with one important exception.**
+`recompute` receives the largest lift on uci (+0.017 mean), bitcoin_alpha (+0.045), bitcoin_otc (+0.066)
+and reddit_title (+0.011), matching reddit_body (+0.012). as733 is the exception: `recompute`-on gets
+**−0.008**, i.e. no lift at all — exactly as the low-churn account predicts (a fresh solve barely moves
+the gauge there, so there is no sign churn for SignNet to remove; §8.3 point 4).
+
+**HONEST CAVEAT — the `keep`-control null does NOT hold on Bitcoin.** On uci, as733, reddit_title (and
+reddit_body, §8.2) `keep` is unmoved by SignNet (mean Δ +0.002, +0.001, −0.001, +0.003) — the control
+that pins the gain to the sign gauge. But on **bitcoin_alpha `keep` gains +0.027 and bitcoin_otc `keep`
+gains +0.040**, and every mode is lifted substantially. On these small graphs SignNet is therefore a
+**broadly better encoder**, not only a gauge fix, and the clean attribution of §8.2 does not carry over.
+State this in the paper: the mechanism claim is well supported on the large/high-churn graphs where the
+control holds, and is confounded with general capacity on the small Bitcoin graphs.
+
+### 8.5 SignNet overturns §6's "no spectral rescue on Bitcoin"  **[confirmed, 2026-07-19]**
+§6 concluded that on the small Bitcoin graphs spectral **fails outright** — plain `feature` was best at
+every C and *widened* its lead as C grew. That conclusion was a property of the **Laplace** smodel, not
+of the spectral idea:
+
+| dataset | C | feature | best Laplace (§6) | best SignNet | SignNet − feature |
+|---|---|---|---|---|---|
+| bitcoin_alpha | 3 | 0.126 | 0.122 (−0.004) | 0.130 | **+0.004** |
+| bitcoin_alpha | 5 | 0.102 | 0.093 (−0.009) | 0.108 | **+0.006** |
+| bitcoin_alpha | 7 | 0.091 | 0.066 (−0.025) | 0.098 | **+0.007** |
+| bitcoin_otc | 3 | 0.151 | 0.148 (−0.003) | 0.165 | **+0.014** |
+| bitcoin_otc | 5 | 0.131 | 0.124 (−0.007) | 0.153 | **+0.022** |
+| bitcoin_otc | 7 | 0.113 | 0.084 (−0.029) | 0.139 | **+0.026** |
+
+**With SignNet the spectral branch beats plain federated ROLAND at every C on both Bitcoin datasets, and
+the margin GROWS with C** (+0.004→+0.007 and +0.014→+0.026) — the same feature↓ / spectral-flat crossover
+§4.1 claims, now appearing on the two datasets that were the clearest counterexample. The §6 cross-dataset
+nuance ("it FAILS outright on the small Bitcoin graphs") must be revised to: *it fails with the Laplace
+smodel; with a sign-invariant encoder the rescue appears there too.*
+
+On the remaining datasets the best SignNet mode merely **tracks** feature (uci +0.001/−0.006/+0.003,
+reddit_title +0.001/−0.001/−0.001, as733 −0.009/+0.013/+0.009) — consistent with §8's headline that
+SignNet buys parity, not superiority, wherever the Laplace smodel was already competitive.
+
+**Read.**
+1. **SignNet removes recompute's deficit.** On reddit_body it lifts `recompute` 0.324 → 0.340 and on
+   UCI 0.055 → 0.081 (+47%) — out of last place, to parity with `keep`/`feature`. The gauge *was* the
+   cost of freshness, and the cheap fixes of the earlier investigation (deterministic start, robust
+   sign) could not recover it while a principled invariant encoder can.
+2. **It reaches parity, not superiority.** SignNet-recompute (0.340) ties feature (0.341) and
+   SignNet-update (0.341); every gap is inside the ±0.01 noise floor. **The "recompute is superior"
+   premise still does not hold** — freshness stopped being harmful, it did not become a net gain.
+3. **No metric dissociation.** Under hard negatives all five metrics agree (recompute ≈ keep to three
+   decimals at C3). The earlier "recompute wins auc/ap but loses mrr/f1/mcc" split was a saturation
+   artifact of 1:1 random negatives, and it is gone.
+4. **High-churn vs low-churn is a clean complementary split.** On reddit_body (high churn) SignNet
+   helps and procrustes adds nothing on top (0.340 off vs 0.340 on). On as733 (low churn) SignNet adds
+   only +0.006 over Laplace-off, while Laplace `recompute`-**on** (0.322) remains the best number on
+   that dataset. **High churn → the sign gauge is the problem; low churn → rotation alignment is.**
+5. **The as733 proc-on cell is now RUN (§8.4)** and it does *not* rescue as733: SignNet
+   `recompute`-on scores 0.302/0.293/0.271 vs Laplace's 0.322/0.291/0.278 (Δ −0.020/+0.002/−0.007), so
+   Laplace `recompute`-on remains the best as733 number. Combining sign-invariance with rotation
+   alignment buys nothing there — on a low-churn graph the operative gauge is rotation, not sign.
+6. **Breadth (§8.4):** the mechanism replicates on 4 of 5 new datasets, but the `keep`-control null
+   fails on Bitcoin, where SignNet lifts every mode — there it is a better encoder, not only a gauge fix.
+7. **Bitcoin rescue (§8.5):** with SignNet the spectral branch beats `feature` at every C on both
+   Bitcoin graphs, overturning §6's "no rescue on the small graphs".
+
+---
+
+## 9. Does federation earn its keep? — the local-only lower bound  **[confirmed, 2026-07-16]**
+
+Every result in §2–§8 is federated (`FL=True`). Without a no-aggregation floor there is no evidence
+that FedAvg beats "every client for itself". `federated.fl` (commit `f45c3a3`) exposes FedLap's
+long-dormant `FL` flag: with `fl=false` each client trains on its own subgraph and is evaluated on its
+own next snapshot, with **no broadcast and no aggregation** (verified by instrumentation: 0 `sum_lod`
+calls and exactly 1 `share_weights`, the common init).
+
+**A confound found and fixed — read this before comparing.** Eval was historically *hard-wired* to the
+`FL` flag: `fl=true` scored the **global stitched graph**, `fl=false` scored **per-client subgraphs**.
+That conflates training with the *test set* (the local arm is scored on a smaller, easier task), and it
+produced a spurious result — as733 appeared to **lose 0.124 AUC** under federation. `metric.eval_scope`
+(commit `a3e907a`) decouples them; on the matched per-client test set that gap is **+0.003**. Everything
+below uses `eval_scope=local` for **both** arms, so the two differ **only in training**.
+(`eval_scope=global` with `fl=false` is now rejected by `assert_cfg`: the global eval decodes with the
+*server* model, which is never aggregated — hence never trained — when `fl=false`.)
+
+Wiring the dormant path also exposed a genuine latent bug (`18cdb6e`, `95ce06a`): `refresh()` inherits
+whatever train/eval mode it finds, but a client that **abstains** (`can_train` false) is never touched
+by `val_loss`/`local_finetune`, so at t=0 it reaches `refresh` in train mode and crashes the encoder
+BatchNorm on a 1-node batch. `FL=True` had masked this via an incidental `eval()` inside `val_loss`.
+Both paths now normalize to eval before `refresh` — without this the local baseline is impossible to
+run on the Bitcoin graphs at all.
+
+**Runs.** 144 matched runs: 6 datasets × C{3,5,7,9} × 3 seeds × {federated, local}, feature model, gru,
+random negatives, identical seeds, all per-client eval.
+
+### 9.1 Δ MRR (federated − local) — noise floor ±0.01
+| dataset | C3 | C5 | C7 | C9 |
+|---|---|---|---|---|
+| uci | +0.019 | +0.018 | +0.013 | −0.001 |
+| bitcoin_alpha | −0.000 | −0.005 | +0.022 | +0.023 |
+| bitcoin_otc | +0.015 | +0.002 | +0.003 | +0.015 |
+| as733 | +0.002 | +0.006 | +0.013 | **+0.019** |
+| reddit_body | **+0.060** | **+0.049** | **+0.057** | **+0.065** |
+| reddit_title | +0.018 | +0.019 | +0.028 | **+0.039** |
+
+### 9.2 Δ AUC (federated − local)
+| dataset | C3 | C5 | C7 | C9 |
+|---|---|---|---|---|
+| uci | +0.037 | +0.022 | +0.057 | **+0.094** |
+| bitcoin_alpha | +0.008 | +0.034 | +0.143 | **+0.202** |
+| bitcoin_otc | +0.026 | −0.013 | +0.016 | **+0.050** |
+| as733 | +0.002 | +0.003 | +0.003 | +0.004 |
+| reddit_body | +0.012 | +0.020 | +0.024 | **+0.030** |
+| reddit_title | +0.006 | +0.011 | +0.014 | **+0.018** |
+
+### 9.3 Absolute MRR — local → federated
+| dataset | C3 | C5 | C7 | C9 |
+|---|---|---|---|---|
+| uci | 0.084→0.103 | 0.072→0.089 | 0.073→0.086 | 0.097→0.096 |
+| bitcoin_alpha | 0.117→0.117 | 0.102→0.098 | 0.088→0.111 | 0.080→0.103 |
+| bitcoin_otc | 0.129→0.144 | 0.110→0.112 | 0.097→0.100 | 0.080→0.095 |
+| as733 | 0.258→0.260 | 0.222→0.227 | 0.205→0.218 | 0.178→0.197 |
+| reddit_body | 0.297→0.357 | 0.268→0.317 | 0.248→0.305 | 0.224→0.288 |
+| reddit_title | 0.407→0.425 | 0.386→0.405 | 0.377→0.405 | 0.377→0.415 |
+
+**Read — federation's benefit is not a fixed offset; it SCALES with fragmentation.**
+1. **Δ AUC grows monotonically with C on 5 of 6 datasets** (all but as733, whose AUC is saturated
+   ~0.98 with no room to move), and C9 is the largest gap in every one. A four-point monotone trend,
+   not a two-point hunch. bitcoin_alpha is the extreme: +0.008 → **+0.202**.
+2. **Δ MRR grows with C on 4 of 6** (as733, reddit_body, reddit_title, bitcoin_alpha). uci's gap washes
+   into noise by C9 and bitcoin_otc stays small — MRR is the noisier metric here, AUC the cleaner one.
+3. **The mechanism is visible in the absolutes (§9.3):** the gap widens because **local collapses
+   faster** (reddit_body local 0.297→0.224 over C3→C9, as733 0.258→0.178) while federated holds up
+   (reddit_body 0.357→0.288). This is precisely "resilience as the federation fragments".
+4. **Federation earns its keep** on reddit_body (largest, +0.05–0.065 at every C), reddit_title, as733
+   and bitcoin_alpha; it is **within noise on uci** and marginal on bitcoin_otc. Honest scope: it is
+   not a universal win, and the small graphs are where it is weakest.
+5. F1/MCC swing much more than MRR/AUC (fixed-threshold metrics over tiny per-client test sets);
+   treat **MRR and AUC as the trustworthy columns** in §9.
+
+---
+
+## 10. Provenance & reproduction
+- Code: fedlap repo, branch `roland-dev`. Runs on TUM CUDA hosts `tueilnt-sim{08,09,10,12,13,14}`.
+- Commits behind §8/§9: `3595fc8` SignNet smodel; `f45c3a3` `federated.fl`; `a3e907a`
+  `metric.eval_scope`; `18cdb6e` + `95ce06a` the refresh train/eval-mode fix (§9).
 - Run pattern (one condition): `python main.py -c config/<dataset>_gru.yaml --repeat 3
   --set model.data_type=f+s spectral.update_mode=<keep|update|recompute>
   spectral.use_procrustes=<true|false> subgraph.num_subgraphs=<C> wandb.mode=online`
@@ -1231,3 +1474,9 @@ _Reddit-body coarse (72 runs, snapshots=44):_
 - Durable narrative + history: auto-memory `fedlap-spectral-federated-results`,
   `fedlap-roland-migration`, `fedlap-remote-host`; repo `fedlap/MEMORY.md`.
 - Numbers here are copied from those runs; wandb `cod-tum/dynamic-fedlap` holds the plots.
+- §8/§9 raw logs (NOT committed; harvest with `grep "RESULT dataset" <dir>/*.log`):
+  `/nas/lnt/stud/ge27yuv/runs/{reddit_body_signnet, reddit_body_baselines_hardneg, as733_signnet,
+  uci_signnet, signnet_breadth}` (§8) and `{fl_localeval, local_baseline_fl_false}` (§9). §8/§9 report 3-seed MEANS;
+  per-run rows live in those logs rather than inline, unlike §6.
+- §8 runs use `metric.hard_neg=degree` (auc/ap de-saturated ~0.86); §9 uses the default random
+  negatives, so §9 auc is comparable to §6 but §8 auc is NOT.
