@@ -219,9 +219,12 @@ def _spectral() -> Registry:
     s["lanczos_iter"] = 400
     s["L_type"] = "rw"                      # 'normal', 'rw', 'sym'
     s["method"] = "arnoldi"                 # 'arnoldi', 'lanczos'
-    s["deterministic_start"] = False        # arnoldi start: fixed-seed vector (stable gauge across
+    s["deterministic_start"] = True         # arnoldi start: fixed-seed vector (stable gauge across
                                             # snapshots -> recompute eigvecs move only as the graph
                                             # moves) vs a re-drawn random start each solve
+    s["basis_source"] = "laplacian"         # ABLATION: 'laplacian' (real eigenbasis) vs null controls
+                                            # 'random' (Haar orthonormal, same shape) / 'shuffled'
+                                            # (real eigvecs, node rows permuted) -- see _substitute_basis
     s["robust_sign"] = False                # eigvec sign canon: by largest-|component| entry (stable)
                                             # vs the near-zero column-sum (noisy -> flips across snaps)
     s["regularizer_coef"] = 0
