@@ -480,6 +480,33 @@ class DynamicServer(Server):
 
     # ---- spectral provider (ported from GNNServer; graph passed explicitly) ---- #
 
+    def _substitute_basis(self, U, Q, ss_idx):
+        """spectral.basis_source control: swap the Laplacian eigenbasis for a
+        null basis of the SAME shape, to test whether the spectral branch uses
+        the graph spectrum or merely a well-conditioned per-node signature.
+        'random' = Haar-random orthonormal (QR of a Gaussian); 'shuffled' = the
+        real eigenvectors with the node->row assignment permuted (matched value
+        distribution and orthonormality, structure destroyed). Applied only where
+        the basis is actually (re)computed, so each update_mode keeps its own
+        semantics for free: keep freezes the t=0 substitute, recompute re-draws
+        one per snapshot, update tracks the substitute via Rayleigh-Ritz.
+        D is left untouched (it feeds only the off-by-default regularizer)."""
+        src = config["spectral"]["basis_source"]
+        if src == "laplacian":
+            return U, Q
+        g = torch.Generator().manual_seed(config["seed"] * 1000003 + ss_idx)
+        if src == "random":
+            M = torch.randn(U.shape, generator=g, dtype=torch.float32)
+            sub, _ = torch.linalg.qr(M, mode="reduced")
+        elif src == "shuffled":
+            sub = U.detach().float().cpu()[torch.randperm(U.shape[0], generator=g)]
+        else:
+            raise ValueError(f"unknown spectral.basis_source={src!r}")
+        sub = sub.to(dtype=U.dtype, device=U.device)
+        # Q is the tracking basis for `update`; substitute it too so the control
+        # stays coherent there (otherwise update would evolve the REAL subspace).
+        return sub, (sub if Q is not None else None)
+
     def get_previous_UD(
         self, spectral_update_mode: str, ss_idx: int
     ) -> SpectralFeatures:
@@ -528,6 +555,7 @@ class DynamicServer(Server):
                     canonicalize_sign=(smodel_type != "SignNet"),
                 )
                 assert Q is not None
+                U, Q = self._substitute_basis(U, Q, ss_idx)
 
             if (
                 spectral_update_mode in ["recompute", "update"]
