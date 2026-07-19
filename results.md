@@ -652,8 +652,9 @@ degrades under it:
   keep degrades far faster (alpha keep 0.117→0.073→0.050 vs feature 0.126→0.102→0.091; otc keep
   0.148→0.108→0.078 vs feature 0.151→0.131→0.113), so there is **NO rescue at any C{3,5,7}**; the
   frozen t0 basis itself degenerates once these small graphs are sharded. recompute worst throughout.
-  **REVISED by §8.5:** this is a property of the *Laplace* smodel — with the sign-invariant SignNet
-  encoder the spectral branch BEATS feature at every C on both Bitcoin graphs, margin growing with C.
+  **REVISED by §8.5:** this is a property of the *Laplace* smodel — a higher-capacity encoder (SignNet)
+  removes the failure: decisively on bitcoin_otc (+0.026 over feature at C7), to parity on bitcoin_alpha
+  (sub-noise). NB §8.5: that gain is general encoder capacity, not the sign-invariance mechanism.
 - **UCI** (1899 nodes, weekly, §3.1): keep overtakes feature by C7 (0.076 vs 0.073); recompute worst.
 
 Honest framing: **"spectral rescues federated" is NOT a law.** `keep` matches-or-beats plain
@@ -1329,6 +1330,17 @@ and reddit_title (+0.011), matching reddit_body (+0.012). as733 is the exception
 **−0.008**, i.e. no lift at all — exactly as the low-churn account predicts (a fresh solve barely moves
 the gauge there, so there is no sign churn for SignNet to remove; §8.3 point 4).
 
+_Control diagnostic — Δ MRR = SignNet − Laplace (same condition), averaged over C{3,5,7}. If the lift is
+gauge-specific, `keep` (frozen basis, no sign churn) must be NULL while `recompute` lifts:_
+| dataset | keep | update-off | update-on | recomp-off | recomp-on | recompute mean | control |
+|---|---|---|---|---|---|---|---|
+| reddit_body | +0.003 | +0.002 | +0.004 | +0.015 | +0.010 | **+0.012** | holds (4.9×) |
+| reddit_title | −0.001 | +0.001 | −0.001 | +0.011 | +0.012 | **+0.011** | holds (12.5×) |
+| as733 | +0.001 | +0.003 | +0.010 | +0.004 | −0.008 | **−0.002** | holds (low-churn: nothing to fix) |
+| uci | +0.002 | +0.010 | −0.006 | +0.017 | +0.017 | **+0.017** | holds (7.6×) |
+| **bitcoin_alpha** | **+0.027** | +0.024 | +0.010 | +0.045 | +0.041 | **+0.043** | **FAILS (1.6×)** |
+| **bitcoin_otc** | **+0.040** | +0.035 | +0.033 | +0.066 | +0.054 | **+0.060** | **FAILS (1.5×)** |
+
 **HONEST CAVEAT — the `keep`-control null does NOT hold on Bitcoin.** On uci, as733, reddit_title (and
 reddit_body, §8.2) `keep` is unmoved by SignNet (mean Δ +0.002, +0.001, −0.001, +0.003) — the control
 that pins the gain to the sign gauge. But on **bitcoin_alpha `keep` gains +0.027 and bitcoin_otc `keep`
@@ -1337,7 +1349,7 @@ gains +0.040**, and every mode is lifted substantially. On these small graphs Si
 State this in the paper: the mechanism claim is well supported on the large/high-churn graphs where the
 control holds, and is confounded with general capacity on the small Bitcoin graphs.
 
-### 8.5 SignNet overturns §6's "no spectral rescue on Bitcoin"  **[confirmed, 2026-07-19]**
+### 8.5 Bitcoin — SignNet removes the spectral failure, but via capacity not gauge  **[confirmed, 2026-07-19]**
 §6 concluded that on the small Bitcoin graphs spectral **fails outright** — plain `feature` was best at
 every C and *widened* its lead as C grew. That conclusion was a property of the **Laplace** smodel, not
 of the spectral idea:
@@ -1351,11 +1363,23 @@ of the spectral idea:
 | bitcoin_otc | 5 | 0.131 | 0.124 (−0.007) | 0.153 | **+0.022** |
 | bitcoin_otc | 7 | 0.113 | 0.084 (−0.029) | 0.139 | **+0.026** |
 
-**With SignNet the spectral branch beats plain federated ROLAND at every C on both Bitcoin datasets, and
-the margin GROWS with C** (+0.004→+0.007 and +0.014→+0.026) — the same feature↓ / spectral-flat crossover
-§4.1 claims, now appearing on the two datasets that were the clearest counterexample. The §6 cross-dataset
-nuance ("it FAILS outright on the small Bitcoin graphs") must be revised to: *it fails with the Laplace
-smodel; with a sign-invariant encoder the rescue appears there too.*
+**The two Bitcoin datasets must be reported separately — only one is a genuine win.**
+- **bitcoin_otc — a real rescue.** All five SignNet modes clear `feature` at C7, and the best-spectral
+  margin (+0.014 / +0.022 / **+0.026**) **exceeds the ±0.01 noise floor at C5 and C7**. §6's "no rescue"
+  is overturned here, and the margin grows with C (the §4.1 crossover shape).
+- **bitcoin_alpha — parity, NOT a win.** The best-spectral margin is +0.004 / +0.006 / +0.007 — all three
+  **inside the noise floor**, with individual modes mixed-sign. The honest statement is that SignNet lifts
+  spectral from *clearly below* `feature` to *level with* it. **Do not claim a win on bitcoin_alpha.**
+
+**CRITICAL — this is the §8.4 control failure, not the gauge mechanism.** The two datasets where spectral
+improves here are *exactly* the two where the `keep`-control fails (§8.4: keep gains +0.027 / +0.040).
+Since `keep` freezes the basis and therefore has **no sign churn to remove**, a gain there cannot be
+gauge-related. The Bitcoin improvement is therefore SignNet acting as a **better encoder** on small graphs
+— more capacity than the old `Q@W` filter — and **not** the sign-invariance mechanism of §8.2.
+§8.4's caveat and §8.5's rescue are **the same effect observed twice, not two independent findings**;
+reporting them as separate wins would double-count one phenomenon. The §6 nuance should be revised to:
+*spectral's failure on the small Bitcoin graphs is specific to the Laplace smodel; a higher-capacity
+encoder removes it (decisively on bitcoin_otc, to parity on bitcoin_alpha).*
 
 On the remaining datasets the best SignNet mode merely **tracks** feature (uci +0.001/−0.006/+0.003,
 reddit_title +0.001/−0.001/−0.001, as733 −0.009/+0.013/+0.009) — consistent with §8's headline that
@@ -1382,8 +1406,10 @@ SignNet buys parity, not superiority, wherever the Laplace smodel was already co
    alignment buys nothing there — on a low-churn graph the operative gauge is rotation, not sign.
 6. **Breadth (§8.4):** the mechanism replicates on 4 of 5 new datasets, but the `keep`-control null
    fails on Bitcoin, where SignNet lifts every mode — there it is a better encoder, not only a gauge fix.
-7. **Bitcoin rescue (§8.5):** with SignNet the spectral branch beats `feature` at every C on both
-   Bitcoin graphs, overturning §6's "no rescue on the small graphs".
+7. **Bitcoin (§8.5):** SignNet overturns §6's "no rescue" on **bitcoin_otc** (best spectral +0.014/
+   +0.022/+0.026 vs feature, clearing the noise floor at C5/C7); on **bitcoin_alpha** it reaches only
+   parity (+0.004/+0.006/+0.007, all sub-noise). Both are driven by the §8.4 control failure — a
+   general encoder gain, NOT the sign-invariance mechanism. Points 6 and 7 describe ONE effect.
 
 ---
 
