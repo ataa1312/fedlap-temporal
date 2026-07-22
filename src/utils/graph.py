@@ -448,32 +448,51 @@ class Graph(Data):
         A.setdiag(0)
         A.eliminate_zeros()
         deg = np.asarray(A.sum(axis=1)).ravel()
-        dis = np.where(deg > 0, 1.0 / np.sqrt(np.maximum(deg, 1e-12)), 0.0)
+        # Solve on the ACTIVE subgraph only: isolated nodes contribute a huge
+        # exact-eigenvalue cluster that stalls ARPACK on early cumulative graphs
+        # (most nodes unseen yet), and they carry no structure anyway — their PE
+        # rows are zero. Early graphs thereby fall into the dense path.
+        act = np.where(deg > 0)[0]
+        m = act.size
+        if m < 2:
+            return torch.zeros(k), torch.zeros(n, k)
+        Aa = A[act][:, act]
+        dis = 1.0 / np.sqrt(np.asarray(Aa.sum(axis=1)).ravel())
         Dis = sparse.diags(dis)
-        Lsym = sparse.eye(n) - Dis @ A @ Dis
+        Lsym = sparse.eye(m) - Dis @ Aa @ Dis
 
-        if n <= dense_max:
+        if m <= dense_max:
             w, V = np.linalg.eigh(Lsym.toarray())
         else:
             # shift-invert about a point just below 0: L+|sigma|I is SPD, so the
             # factorization is safe, and 'LM' in shifted space = smallest eigs.
-            m = min(k + 64, n - 2)
-            w, V = sp.sparse.linalg.eigsh(Lsym.tocsc(), k=m, sigma=-0.01, which="LM")
+            req = min(k + 64, m - 2)
+            try:
+                w, V = sp.sparse.linalg.eigsh(
+                    Lsym.tocsc(), k=req, sigma=-0.01, which="LM",
+                    ncv=min(m - 1, max(4 * req, 2 * req + 1)),
+                )
+            except sp.sparse.linalg.ArpackError:
+                if m > 12000:
+                    raise
+                w, V = np.linalg.eigh(Lsym.toarray())
         order = np.argsort(w)
         w, V = w[order], V[:, order]
         keep = w > drop_tol
         w, V = w[keep][:k], V[:, keep][:, :k]
         if V.shape[1] < k:  # early/tiny graphs: fewer informative pairs than k
             pad = k - V.shape[1]
-            V = np.hstack([V, np.zeros((n, pad))])
+            V = np.hstack([V, np.zeros((m, pad))])
             w = np.concatenate([w, np.zeros(pad)])
         ii = np.abs(V).argmax(axis=0)
         ss = np.sign(V[ii, np.arange(V.shape[1])])
         ss[ss == 0] = 1.0
         V = V * ss
+        Vfull = np.zeros((n, k))
+        Vfull[act] = V
         return (
             torch.tensor(w, dtype=torch.float32),
-            torch.tensor(V, dtype=torch.float32),
+            torch.tensor(Vfull, dtype=torch.float32),
         )
 
     def calc_eignvalues(
