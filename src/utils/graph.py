@@ -428,6 +428,54 @@ class Graph(Data):
 
         return next_D, next_U, prev_Q
 
+    def calc_eigs_exact_sym(self, k, drop_tol=1e-8, dense_max=3000):
+        """Exact k lowest NONTRIVIAL eigenpairs of the symmetric normalized
+        Laplacian L_sym = I - D^-1/2 A D^-1/2 over this graph's undirected
+        edges. The Krylov estimate (calc_eignvalues estimate=True) cannot
+        resolve the clustered low end of the spectrum, which is where the
+        structural signal lives — this solver exists for the input-PE path
+        (model.data_type=f+pe) where that signal is the whole point.
+        Near-zero eigenpairs (constant/component indicators, no pairwise
+        information) are dropped; short results are zero-padded to k columns.
+        Sign is canonicalized by each eigenvector's largest-|entry| element.
+        Dense eigh below dense_max nodes, sparse shift-invert eigsh above."""
+        n = self.num_nodes
+        e = self.edge_index.cpu().numpy()
+        A = sparse.coo_matrix(
+            (np.ones(e.shape[1]), (e[0], e[1])), shape=(n, n)
+        ).tocsr()
+        A = ((A + A.T) > 0).astype(np.float64)
+        A.setdiag(0)
+        A.eliminate_zeros()
+        deg = np.asarray(A.sum(axis=1)).ravel()
+        dis = np.where(deg > 0, 1.0 / np.sqrt(np.maximum(deg, 1e-12)), 0.0)
+        Dis = sparse.diags(dis)
+        Lsym = sparse.eye(n) - Dis @ A @ Dis
+
+        if n <= dense_max:
+            w, V = np.linalg.eigh(Lsym.toarray())
+        else:
+            # shift-invert about a point just below 0: L+|sigma|I is SPD, so the
+            # factorization is safe, and 'LM' in shifted space = smallest eigs.
+            m = min(k + 64, n - 2)
+            w, V = sp.sparse.linalg.eigsh(Lsym.tocsc(), k=m, sigma=-0.01, which="LM")
+        order = np.argsort(w)
+        w, V = w[order], V[:, order]
+        keep = w > drop_tol
+        w, V = w[keep][:k], V[:, keep][:, :k]
+        if V.shape[1] < k:  # early/tiny graphs: fewer informative pairs than k
+            pad = k - V.shape[1]
+            V = np.hstack([V, np.zeros((n, pad))])
+            w = np.concatenate([w, np.zeros(pad)])
+        ii = np.abs(V).argmax(axis=0)
+        ss = np.sign(V[ii, np.arange(V.shape[1])])
+        ss[ss == 0] = 1.0
+        V = V * ss
+        return (
+            torch.tensor(w, dtype=torch.float32),
+            torch.tensor(V, dtype=torch.float32),
+        )
+
     def calc_eignvalues(
         self, estimate=False, self_loop=True, log=True, spectral_len=0, canonicalize_sign=True
     ):

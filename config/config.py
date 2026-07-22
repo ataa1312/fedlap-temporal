@@ -89,7 +89,7 @@ def _model() -> Registry:
     # FedLap-kept (spectral smodel dispatch + structural reg)
     m["smodel_type"] = "LanczosLaplace"     # structure model; '' or None to disable spectral
     m["fmodel_type"] = "GNN"
-    m["data_type"] = "f+s"                  # 'feature', 'structure', 'f+s'
+    m["data_type"] = "f+s"                  # 'feature', 'structure', 'f+s', 'f+pe' (input LapPE)
     m["fusion"] = "add"                     # combine node(z)+spectral(S) at output: 'add' (FedLap-native,
                                             # smodel MLP matches z width) | 'concat' (head widened to 2d)
     m["weight_decay"] = 5e-4
@@ -224,7 +224,11 @@ def _spectral() -> Registry:
                                             # moves) vs a re-drawn random start each solve
     s["basis_source"] = "laplacian"         # ABLATION: 'laplacian' (real eigenbasis) vs null controls
                                             # 'random' (Haar orthonormal, same shape) / 'shuffled'
-                                            # (real eigvecs, node rows permuted) -- see _substitute_basis
+                                            # (real eigvecs, node rows permuted); '*_fixed' variants
+                                            # freeze the draw across snapshots (stability-matched
+                                            # structure controls) -- see _substitute_basis
+    s["pe_dim"] = 50                        # data_type=f+pe: k lowest exact sym-Laplacian eigvecs
+                                            # concatenated to node features at the INPUT (LapPE)
     s["robust_sign"] = False                # eigvec sign canon: by largest-|component| entry (stable)
                                             # vs the near-zero column-sum (noisy -> flips across snaps)
     s["regularizer_coef"] = 0

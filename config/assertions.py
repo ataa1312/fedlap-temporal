@@ -23,9 +23,9 @@ _AGGREGATIONS = {"fedavg"}
 _WEIGHTINGS = {"node_count", "uniform"}
 _SPECTRAL_SMODELS = {"SpectralLaplace", "LanczosLaplace", "SpectralDGCN", "LanczosDGCN", "SignNet"}
 _FUSIONS = {"add", "concat"}
-_DATA_TYPES = {"feature", "f+s", "structure"}
+_DATA_TYPES = {"feature", "f+s", "structure", "f+pe"}
 _UPDATE_MODES = {"keep", "update", "recompute"}
-_BASIS_SOURCES = {"laplacian", "random", "shuffled"}
+_BASIS_SOURCES = {"laplacian", "random", "shuffled", "random_fixed", "shuffled_fixed"}
 _SFV_SHARES = {"local", "avg"}
 
 
@@ -105,14 +105,18 @@ def assert_cfg(config: Registry) -> None:
     _require_in(model["fusion"], _FUSIONS, "model.fusion")
     _require_in(federated["sfv_share"], _SFV_SHARES, "federated.sfv_share")
 
-    if model["data_type"] in {"structure", "f+s"}:
+    if model["data_type"] in {"structure", "f+s", "f+pe"}:
         if spectral["update_mode"] is None:
             raise ValueError(
-                "spectral.update_mode is None — for data_type=f+s/structure choose it "
+                "spectral.update_mode is None — for data_type=f+s/structure/f+pe choose it "
                 "explicitly, e.g. --set spectral.update_mode=update (or keep / recompute)"
             )
         _require_in(spectral["update_mode"], _UPDATE_MODES, "spectral.update_mode")
         _require_in(spectral["basis_source"], _BASIS_SOURCES, "spectral.basis_source")
+        if model["data_type"] == "f+pe" and spectral["pe_dim"] <= 0:
+            raise ValueError(
+                f"spectral.pe_dim must be >0 for data_type=f+pe, got {spectral['pe_dim']!r}"
+            )
         if model["smodel_type"] in _SPECTRAL_SMODELS and spectral["spectral_len"] <= 0:
             raise ValueError(
                 f"spectral.spectral_len must be >0 for smodel_type={model['smodel_type']!r}, "

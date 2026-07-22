@@ -48,7 +48,7 @@ class DynamicClassifier(Classifier):
         else:
             effective_edge_dim = raw_edge_dim
 
-        d = self.graph.num_features
+        d = self.input_dim()
         if ds["node_encoder"]:
             specs.append(ModelSpecs(
                 type="node_encoder",
@@ -104,6 +104,12 @@ class DynamicClassifier(Classifier):
 
     # ---- encode / decode ---- #
 
+    def input_dim(self):
+        return self.graph.num_features
+
+    def node_input(self, g):
+        return g.x
+
     def encode(self, data=_UNSET, hs=_UNSET):
         g = self.graph if data is _UNSET else data
         h = self.hs if hs is _UNSET else hs
@@ -111,7 +117,7 @@ class DynamicClassifier(Classifier):
         if active is not None:
             active = active > 0
         z, new_hs = self.model.encode(
-            g.x, g.edge_index, h,
+            self.node_input(g), g.edge_index, h,
             edge_attr=getattr(g, "edge_attr", None),
             keep_ratio=getattr(g, "keep_ratio", None),
             active_mask=active,

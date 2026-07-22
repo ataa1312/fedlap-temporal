@@ -9,7 +9,10 @@ from src.server import Server
 from src.utils.graph import Graph
 from src.dynamic_client import DynamicClient
 from src.GNN.dynamic_classifier import DynamicClassifier
-from src.GNN.fed_dynamic_classifier import make_fed_dynamic_classifier
+from src.GNN.fed_dynamic_classifier import (
+    FedDynamicPEClassifier,
+    make_fed_dynamic_classifier,
+)
 from src.metrics.mrr import compute_mrr_from_z, compute_hard_auc_ap_from_z
 from src.metrics.classification import binary_classification_metrics
 from src.train.federated_orchestrator import (
@@ -126,6 +129,9 @@ class DynamicServer(Server):
         share = {}
         if data_type == "feature":
             self.classifier = DynamicClassifier(self.graph)  # global model (decode in eval)
+        elif data_type == "f+pe":
+            # input-side exact-eigenvector PE; nothing spectral to share (no SFV)
+            self.classifier = FedDynamicPEClassifier(self.graph)
         elif data_type == "f+s":
             # learnable W created ONCE on the server and shared so every owner
             # starts from the same init (GNNServer.initialize -> share["SFV"];
@@ -202,7 +208,7 @@ class DynamicServer(Server):
         )
         dt = config["model"]["data_type"] if data_type is None else data_type
         smt = config["model"]["smodel_type"] if smodel_type is None else smodel_type
-        use_spectral = dt in ("structure", "f+s")
+        use_spectral = dt in ("structure", "f+s", "f+pe")
         self._first_spectral = self._prev_spectral = None  # runs are independent (fresh W, fresh Bernoulli draws)
         self._cum_edges = None
         rounds = config["model"]["iterations"] if epochs is None else epochs
@@ -397,6 +403,9 @@ class DynamicServer(Server):
             parts += [f"um-{um}", f"sfv-{config['federated']['sfv_share']}"]
             if um in ("update", "recompute"):
                 parts.append(f"proc-{'on' if config['spectral']['use_procrustes'] else 'off'}")
+        elif dt == "f+pe":
+            parts += [f"um-{um}", f"pe{config['spectral']['pe_dim']}",
+                      f"basis-{config['spectral']['basis_source']}"]
         sf = ds["snapshot_freq"]
         if isinstance(sf, str) and sf.endswith("s") and sf[:-1].isdigit():
             parts.append(f"freq-{sf}")
@@ -494,11 +503,19 @@ class DynamicServer(Server):
         src = config["spectral"]["basis_source"]
         if src == "laplacian":
             return U, Q
-        g = torch.Generator().manual_seed(config["seed"] * 1000003 + ss_idx)
-        if src == "random":
+        # '*_fixed' variants seed by the run seed only, NOT the snapshot index:
+        # under recompute the plain nulls are redrawn every solve (temporally
+        # unstable), which confounds structure with stability (results.md 10.2b).
+        # random_fixed = one constant random basis; shuffled_fixed = one constant
+        # permutation of the DRIFTING real basis — matched numerics AND matched
+        # temporal drift, structure severed. The strict structure control.
+        base = src.removesuffix("_fixed")
+        idx = 0 if src.endswith("_fixed") else ss_idx
+        g = torch.Generator().manual_seed(config["seed"] * 1000003 + idx)
+        if base == "random":
             M = torch.randn(U.shape, generator=g, dtype=torch.float32)
             sub, _ = torch.linalg.qr(M, mode="reduced")
-        elif src == "shuffled":
+        elif base == "shuffled":
             sub = U.detach().float().cpu()[torch.randperm(U.shape[0], generator=g)]
         else:
             raise ValueError(f"unknown spectral.basis_source={src!r}")
@@ -531,7 +548,7 @@ class DynamicServer(Server):
         share = {}
         num_spectral_features = None
 
-        if smodel_type in ["SpectralLaplace", "LanczosLaplace", "SignNet"]:
+        if smodel_type in ["SpectralLaplace", "LanczosLaplace", "SignNet", "ExactPE"]:
             if (
                 spectral_update_mode == "keep"
                 and prev_U is not None
@@ -548,12 +565,19 @@ class DynamicServer(Server):
                 D, U, Q = graph.update_eigpairs(prev_Q)
             else:
                 LOGGER.info("Computing spectral features...")
-                D, U, Q = graph.calc_eignvalues(
-                    estimate=not (smodel_type.startswith("Spectral")),
-                    spectral_len=spectral_len,
-                    log=False,
-                    canonicalize_sign=(smodel_type != "SignNet"),
-                )
+                if smodel_type == "ExactPE":
+                    # input-PE path: exact low-k sym-Laplacian eigenpairs — the
+                    # Krylov estimate is near-uninformative at the clustered low
+                    # end (results.md §10.6), which is the whole signal here.
+                    D, U = graph.calc_eigs_exact_sym(spectral_len)
+                    Q = U
+                else:
+                    D, U, Q = graph.calc_eignvalues(
+                        estimate=not (smodel_type.startswith("Spectral")),
+                        spectral_len=spectral_len,
+                        log=False,
+                        canonicalize_sign=(smodel_type != "SignNet"),
+                    )
                 assert Q is not None
                 U, Q = self._substitute_basis(U, Q, ss_idx)
 
@@ -598,14 +622,23 @@ class DynamicServer(Server):
         mode = config["spectral"]["update_mode"]
         if mode == "update" and random.random() < config["spectral"]["recompute_prob"]:
             mode = "recompute"  # Bernoulli basis refresh: fresh Lanczos, new Q
+        is_pe = config["model"]["data_type"] == "f+pe"
+        if is_pe:
+            smodel_type = "ExactPE"
+        k = config["spectral"]["pe_dim"] if is_pe else config["spectral"]["spectral_len"]
         prev = self.get_previous_UD(mode, t)
         first = self._first_spectral or SpectralFeatures(U=None, D=None, Q=None)
         share, _ = self.get_spectral_features(
-            graph_t, smodel_type, t, config["spectral"]["spectral_len"], mode, prev, first
+            graph_t, smodel_type, t, k, mode, prev, first
         )
         if not share:
             return
         U, D = share["U"], share["D"]
+        if is_pe:
+            # eigenvector entries are O(1/sqrt(N)); scale to O(1) input features.
+            # Applied at serve time (cache stays unscaled) and AFTER any
+            # _substitute_basis swap, so the null controls get identical treatment.
+            U = U * (U.shape[0] ** 0.5)
         self.classifier.set_QD(U.to(device), D.to(device))
         for cl in self.clients:
             nid = cl.snaps[t].node_ids.cpu()

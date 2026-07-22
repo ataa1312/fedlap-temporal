@@ -237,6 +237,49 @@ class DynamicSSignNet(Classifier):
         self.bn.zero_grad(set_to_none=set_to_none)
 
 
+class FedDynamicPEClassifier(DynamicClassifier):
+    """Input-side spectral positional encoding (model.data_type=f+pe): the
+    server-computed exact low-k eigenbasis slice is CONCATENATED to the node
+    features before the encoder, LapPE-style, so message passing can use the
+    coordinates relationally — unlike the smodel path, which fuses at the
+    output where S can only shift each node's final embedding. There is no
+    smodel and nothing spectral is learned or federated; the federated
+    protocol is the plain fmodel one. PE rows follow the owning subgraph's
+    node order (set_QD each snapshot, same serving contract as Q)."""
+
+    def __init__(self, fgraph):
+        self.pe_dim = config["spectral"]["pe_dim"]
+        self.PE = None
+        self.D = None
+        super().__init__(fgraph)
+
+    def input_dim(self):
+        return self.graph.num_features + self.pe_dim
+
+    def node_input(self, g):
+        pe = self.PE
+        assert pe is not None, "f+pe encode before set_QD: no PE served yet"
+        assert pe.shape[0] == g.x.shape[0], (
+            f"PE rows {pe.shape[0]} != nodes {g.x.shape[0]} (slice/order mismatch)"
+        )
+        return torch.cat([g.x, pe], dim=-1)
+
+    # ---- spectral serving surface (FedMixin protocol, nothing learned) ---- #
+
+    def set_QD(self, Q, D):
+        self.PE = Q[:, : self.pe_dim].to(device)
+        self.D = D
+
+    def get_SFV(self):
+        return None
+
+    def get_D(self):
+        return self.D
+
+    def intrinsic_regularizer(self):
+        return torch.zeros((), device=device)
+
+
 class FedDynamicClassifier(DynamicClassifier):
     """DynamicClassifier (the fmodel role) + a spectral smodel, FedLap's f/s
     composition on the dynamic path. encode fuses S = smodel.get_embeddings()

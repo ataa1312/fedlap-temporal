@@ -1,7 +1,10 @@
 from src import *
 from src.client import Client
 from src.GNN.dynamic_classifier import DynamicClassifier
-from src.GNN.fed_dynamic_classifier import make_fed_dynamic_classifier
+from src.GNN.fed_dynamic_classifier import (
+    FedDynamicPEClassifier,
+    make_fed_dynamic_classifier,
+)
 from src.train.federated_orchestrator import (
     _make_optimizer,
     _make_scheduler,
@@ -38,6 +41,8 @@ class DynamicClient(Client):
         smodel_type = config["model"]["smodel_type"] if smodel_type is None else smodel_type
         if data_type == "feature":
             self.classifier = DynamicClassifier(self.snaps[0])
+        elif data_type == "f+pe":
+            self.classifier = FedDynamicPEClassifier(self.snaps[0])
         elif data_type == "f+s":
             SFV = kwargs.get("SFV")
             if SFV is None:
