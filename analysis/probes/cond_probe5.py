@@ -180,7 +180,7 @@ for C in CS:
                 results.setdefault((C, k), []).append(float(np.mean(per_t[k])))
 
 import statistics as st
-print("\n=== MRR-STYLE READOUT — uci, 200 ranking negatives/positive, prequential fusion ===")
+print(f"\n=== MRR-STYLE READOUT — {DATASET}, {NEG_RANK} ranking negatives/positive, prequential fusion ===")
 print(f"{'C':>2s} {'MRR model':>15s} {'Δ MRR real':>17s} {'Δ MRR PLACEBO':>17s} {'MRR spec alone':>15s} {'Δ AUC real':>15s} {'Δ AUC plac':>15s}")
 for C in CS:
     def ms_(k):

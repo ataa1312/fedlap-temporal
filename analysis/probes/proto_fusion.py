@@ -11,7 +11,7 @@ Two leakage-free fusion weights:
           scores; the test arm of this pair also uses eval-mode scores)
 Each has its own placebo arm (fixed node-row permutation of the same basis).
 
-usage: python analysis/probes/proto_fusion.py [dataset] [config] [Cs] [seeds]
+usage: python analysis/probes/proto_fusion.py [dataset] [config] [Cs] [seeds] [K]
 """
 import os
 import sys
@@ -32,7 +32,7 @@ CONFIG = _a[1] if len(_a) > 1 else f"config/{DATASET}_gru.yaml"
 CS = [int(c) for c in _a[2].split(",")] if len(_a) > 2 else [1, 3, 7, 9]
 SEEDS = [int(s) for s in _a[3].split(",")] if len(_a) > 3 else [1234, 1334, 1434]
 
-K_PE = 50        # exact low-k eigenvectors (matches the §10.7/§10.10 probes)
+K_PE = int(_a[4]) if len(_a) > 4 else 50  # exact low-k eigenvectors (§10.7/§10.10 used 50)
 WARM = 5         # snapshots of history before the prequential fit is used
 NEG_FIT = 20     # negatives per source kept from each past snapshot for fitting
 VAL_NEG = 50     # negatives per val positive for the val-fitted weight
@@ -280,7 +280,8 @@ def dd(C, a, b):
     return f"{st.mean(d):+.4f}±{st.pstdev(d):.4f}"
 
 
-print(f"\n=== IN-PROTOCOL FUSION — {DATASET}, K={cfg['experimental']['rank_eval_multiplier']} "
+print(f"\n=== IN-PROTOCOL FUSION — {DATASET}, exact Q{K_PE}, "
+      f"{cfg['experimental']['rank_eval_multiplier']} "
       f"negatives/source, mrr_method={cfg['metric']['mrr_method']}, test split, "
       f"{len(SEEDS)} seeds ===")
 print(f"{'C':>2s} {'MRR model':>15s} {'Δ preq real':>17s} {'Δ preq plac':>17s} "

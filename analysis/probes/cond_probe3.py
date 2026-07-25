@@ -162,7 +162,7 @@ for C in CS:
                 results.setdefault((C, k), []).append(float(np.mean(per_t[k])))
 
 import statistics as st
-print("\n=== FEDERATED CONDITIONAL-INFORMATION PROBE — uci, exact Q50, model-score baseline ===")
+print(f"\n=== FEDERATED CONDITIONAL-INFORMATION PROBE — {DATASET}, exact Q{K}, model-score baseline ===")
 print(f"{'C':>2s} {'cut frac':>13s} {'lost e/snap':>11s} {'model alone':>15s} {'model+spec':>15s} "
       f"{'Δ overall':>17s} {'Δ AA-blind':>17s}")
 for C in CS:
