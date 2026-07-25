@@ -1,14 +1,20 @@
-import sys, math, time
-sys.path.insert(0, "/Users/ata/Desktop/master-thesis-workspace/master-thesis-codes/codes/fedlap")
+"""usage: python analysis/probes/cond_probe3.py [dataset] [config] [Cs] [seeds]"""
+import os, sys, math, time
+from pathlib import Path
+_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_ROOT)); os.chdir(_ROOT)
 import numpy as np
 import torch
 
-SEEDS = [1234, 1334, 1434]
-CS = [1, 3, 7, 9]
+_a = sys.argv[1:]
+DATASET = _a[0] if len(_a) > 0 else "uci"
+CONFIG = _a[1] if len(_a) > 1 else f"config/{DATASET}_gru.yaml"
+CS = [int(c) for c in _a[2].split(",")] if len(_a) > 2 else [1, 3, 7, 9]
+SEEDS = [int(s) for s in _a[3].split(",")] if len(_a) > 3 else [1234, 1334, 1434]
 K = 50
 WARM = 5
 
-sys.argv = ["x", "-c", "config/uci_gru.yaml", "--set", "model.data_type=feature",
+sys.argv = ["x", "-c", CONFIG, "--set", "model.data_type=feature",
             "subgraph.num_subgraphs=1", "wandb.mode=disabled"]
 from parser import Parser
 p = Parser(); cfg = p.load_config(p.parse_args())
@@ -33,7 +39,7 @@ def auc(pos, neg):
     s = np.concatenate([pos, neg]); r = sst.rankdata(s); npos = len(pos)
     return (r[:npos].sum() - npos * (npos + 1) / 2) / (npos * len(neg))
 
-snaps = datasets["uci"](cfg)
+snaps = datasets[DATASET](cfg)
 N, T = snaps[0].num_nodes, len(snaps)
 
 # ---- exact global bases + candidate pairs per t (C- and seed-independent) ----

@@ -1,4 +1,7 @@
-import sys; sys.path.insert(0, "/Users/ata/Desktop/master-thesis-workspace/master-thesis-codes/codes/fedlap")
+import os, sys
+from pathlib import Path
+_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_ROOT)); os.chdir(_ROOT)
 import torch, numpy as np
 sys.argv = ["x","-c","config/uci_gru.yaml","--set","model.data_type=f+s",
             "spectral.update_mode=recompute","subgraph.num_subgraphs=1","wandb.mode=disabled"]

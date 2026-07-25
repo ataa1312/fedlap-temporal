@@ -1,5 +1,7 @@
-import sys, math, time
-sys.path.insert(0, "/Users/ata/Desktop/master-thesis-workspace/master-thesis-codes/codes/fedlap")
+import os, sys, math, time
+from pathlib import Path
+_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_ROOT)); os.chdir(_ROOT)
 import numpy as np
 import torch
 
