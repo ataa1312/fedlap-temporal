@@ -1,7 +1,18 @@
 # FedLap-ROLAND — Federated Temporal Spectral Link Prediction: Results & Analysis
 
 Living record of experimental results and their interpretation, written to be
-self-contained for a downstream paper-authoring agent. Last updated 2026-07-16.
+self-contained for a downstream paper-authoring agent. Last updated 2026-07-25.
+
+> **START HERE — program state (2026-07-25).** The paper's positive result is §9 (federation's
+> resilience grows with fragmentation). The spectral investigation (§10) has refuted, with controls,
+> every implementation-level rescue: fusion style (§10.4), basis quality + injection point (§10.6/7),
+> decoder inductive bias and GNN depth (§10.9), temporal-stability confounds (§10.2/8). Scoping
+> decisions (user, 2026-07-25): decoder/fusion axes CLOSED (concat established); the Laplace smodel
+> SIDELINED (never beat its placebo; sub-baseline under recompute). ONE question remains open —
+> §10.10: the exact basis is demonstrably informative (oracle 0.71 AUC) yet converts to ≤+0.008 MRR;
+> why does conversion stop at parity? Next step: the conditional-information probe, then (conditional
+> on headroom) SignNet x exact basis — the one untested encoder-basis cell. This section supersedes
+> §4.2's gauge mechanism and re-frames §8.
 
 > Status legend: **[confirmed]** = 3-seed means, stable; **[prelim]** = 1–2 seeds or
 > small dataset, directionally trusted; **[single]** = one seed, a data point only;
@@ -212,6 +223,13 @@ opposite slopes** (feature↓, keep↑) reproduced on two graphs of very differe
 the exact crossover C.
 
 ### 4.2 Why the "recompute is best" theory is wrong (and recompute is worst)
+> **SUPERSEDED BY §10 (2026-07-21).** The `keep > update > recompute` ORDERING below is real and
+> reproducible, but the *gauge* explanation for it is not supported. §10's two controls show the
+> branch ignores graph *structure* entirely (a frozen random basis scores like the frozen real one)
+> and responds only to the *temporal stability* of the injected per-node code. That RE-CASTS the
+> churn-dependence below correctly: recompute is worst where the real basis churns, best on
+> low-churn as733 where it is stable — a stability effect, not a spectral one. Read §10 first.
+
 **The a-priori theory.** recompute gives the *exact current* eigenbasis every snapshot, so
 it carries the most faithful spectral information → it should win.
 
@@ -276,20 +294,48 @@ analytically / big-O; no distributed transport is implemented.)
 
 ---
 
-## 5. Open / running experiments
-- **Federated matrix [DONE, §6]:** UCI / as733 / reddit_body / reddit_title / bitcoin_{alpha,otc}
-  × {feature,keep,update,recompute} × C{3,5,7} × proc{on,off} × 3 seeds — all COMPLETE (gru,
-  sfv_share=local); centralized C=1 baseline §2. wandb `cod-tum/dynamic-fedlap`.
-- **`sfv_share=avg` [DONE, §6]:** all 6 datasets C{3,5,7} — **avg≈local universally**, not
-  load-bearing (mean Δ +0.001). `ma`-temporal + coarse-window are the remaining axes.
-- **`ma`-temporal coverage [not run]:** every result so far is `gru`; the moving-average backbone
-  (`config/<ds>_ma.yaml`) is the natural next breadth axis.
-- **SignNet smodel [DONE, §8]:** built + swept (135 + 186 runs, all 6 datasets). It removes `recompute`'s gauge
-  deficit (reddit_body 0.324->0.340) but only reaches PARITY with keep/feature -- the
-  'recompute is superior' premise still does not hold. BasisNet (rotation) remains un-built.
-- **Local-only lower bound [DONE, §9]:** `federated.fl=false`, 144 matched runs C{3,5,7,9} --
-  federation's advantage GROWS with client count (Delta AUC monotone in C on 5/6 datasets).
-- **`data_type=structure` [stub]:** structure-only smodel subclass, `NotImplementedError`.
+## 5. Program state & agenda (rewritten 2026-07-25)
+
+### Closed axes (do not reopen without new evidence; pointers to the closing data)
+- **Decoder choice** — CLOSED (§10.9). concat (ROLAND's own choice) is best everywhere; dot/cosine
+  lose outright, and the dot arm refuted the product-blind-readout hypothesis (real ≈ placebo under
+  a decoder that computes spectral affinity natively; uci + bitcoin_otc).
+- **Fusion style (add vs concat)** — CLOSED (§10.4). Null end-to-end; the rank collapse is upstream.
+- **GNN depth / receptive field** — CLOSED (§10.9). laplacian−placebo shows no depth trend at L=1..8.
+- **Laplace smodel** — SIDELINED (user decision). Never beat its own placebo; below the bare
+  backbone under recompute. No further Laplace-smodel runs.
+- **Basis maintenance policy (keep/update/recompute) as a spectral story** — recast (§10.2): a
+  temporal-stability ordering. **Basis quality** — the Arnoldi estimate is numerically empty
+  (§10.6); the exact solver fixes the basis but not the outcome (§10.7). **BasisNet** — predicted
+  null, not scheduled (§10.5).
+
+### The one open spectral question (§10.10)
+Conversion, not content: the exact basis carries real, partly complementary signal (standalone
+0.71 AUC; 0.674 where Adamic-Adar is blind) yet converts to ≤ +0.008±0.008 MRR. Plan:
+1. **Conditional-information probe [NEXT, zero GPU]:** does exact-spectral affinity add anything
+   GIVEN the trained fmodel's embeddings z? If ~0, parity is a ceiling and the spectral program
+   ends with a complete mechanism; if >0, the failure is trainability.
+2. **SignNet x exact basis [conditional on 1]:** the single untested encoder-basis cell (every
+   SignNet run to date consumed the empty Arnoldi basis — see the §10.10 matrix).
+
+### Recommended non-spectral agenda
+- **§9 x `ma` updater replication** — the headline is currently gru-only; ~54 runs would make the
+  resilience claim updater-robust. Highest information per GPU-hour available.
+- **Partition-scheme ablation for §9** (pending a code check of `subgraph.partitioning` options) —
+  preempts the "IID by construction" reviewer objection.
+- FedLap API-compliance overhaul (supervisor requirement, code not compute); paper drafting.
+
+### Done register (details in the cited sections)
+Federated matrix C{3,5,7} all 6 datasets (§6); sfv_share avg≈local (§6); coarse + high-C (§7);
+SignNet build+sweep (§8); local-only floor / resilience (§9); basis-content controls (§10.2);
+input-PE repair (§10.7); per-snapshot analysis (§10.8); decoder + depth ablations (§10.9).
+`data_type=structure` remains a stub.
+
+### Aborted / partial (2026-07-25 — deliberately stopped, do NOT read as complete)
+The bitcoin_alpha + reddit_body gap-fill sweeps were stopped ~1h in when the program was rescoped
+away from matrix-filling: `runs/abl_btcalpha` (21 partial results), `runs/abl2_btcalpha_signnet`
+(6), `runs/pe_reddit` (0 results, 3 truncated logs), `runs/pe_btcalpha` (never started). Resume
+only if six-dataset control uniformity becomes a paper requirement.
 
 ---
 
@@ -1071,6 +1117,45 @@ reddit_body 0.384) and every federated C sits below it, as expected. So the §4 
 **robust to the forecast horizon**, not an artifact of the weekly window. (UCI at 4× is only ~7
 snapshots → noisy; reddit_body ~44 is cleaner.)
 
+### 7.1 HIGH-C extension — C{10,15,20} on the coarse window  **[confirmed, harvested 2026-07-20]**
+108 runs (`runs/reddit_{body,title}_coarse_highC`, run 2026-07-14, harvested into this record
+2026-07-20). Same 28-day coarse window as the tables above (44 snapshots), so these extend the C
+axis of §7 and are **not** comparable to the weekly §2–§6 numbers. 3-seed mean MRR / AUC.
+
+_Reddit-body coarse, high C:_
+| mode | C10 | C15 | C20 |
+|---|---|---|---|
+| feature | 0.257 / 0.943 | 0.254 / 0.928 | 0.243 / 0.927 |
+| keep | 0.257 / 0.941 | 0.246 / 0.929 | 0.242 / 0.927 |
+| update proc-off | 0.261 / 0.942 | 0.246 / 0.929 | 0.240 / 0.927 |
+| update proc-on | 0.258 / 0.942 | 0.250 / 0.929 | 0.240 / 0.926 |
+| recompute proc-off | 0.250 / 0.943 | 0.242 / 0.929 | 0.234 / 0.929 |
+| recompute proc-on | 0.251 / 0.942 | 0.241 / 0.929 | 0.235 / 0.928 |
+
+_Reddit-title coarse, high C:_
+| mode | C10 | C15 | C20 |
+|---|---|---|---|
+| feature | 0.364 / 0.961 | 0.348 / 0.961 | 0.357 / 0.958 |
+| keep | 0.363 / 0.966 | 0.358 / 0.965 | 0.349 / 0.963 |
+| update proc-off | 0.362 / 0.966 | 0.351 / 0.965 | 0.354 / 0.962 |
+| update proc-on | 0.362 / 0.965 | 0.356 / 0.965 | 0.351 / 0.962 |
+| recompute proc-off | 0.351 / 0.967 | 0.345 / 0.967 | 0.351 / 0.964 |
+| recompute proc-on | 0.363 / 0.967 | 0.353 / 0.967 | 0.353 / 0.964 |
+
+**Read — degradation FLATTENS at high C, and the modes converge.** Extending C3→C7 (above) to
+C10→C20 shows the decline decelerating rather than continuing: reddit_body feature drops 0.273
+(C7) → 0.257 (C10) → 0.243 (C20), and reddit_title is nearly flat (0.364 → 0.357 over C10→C20,
+non-monotone and inside noise). This supports the paper's **resilience** framing: even at 20-way
+sharding the model retains most of its C3 accuracy on these graphs.
+
+**But it also removes the crossover.** At high C every mode is within ~0.01 of `feature` — on
+reddit_body all six rows sit in 0.234–0.261 at C10 and 0.234–0.243 at C20. The §4.1 "spectral
+rescues federated" crossover does **not** widen with more clients; the modes simply converge.
+That is consistent with §10 (the spectral branch does not transport structure) and should be stated
+as such: the high-C data is evidence for *resilience of the backbone*, **not** for a spectral benefit.
+`recompute` remains nominally worst at nearly every cell, and procrustes is neutral-to-mildly-
+positive for recompute on reddit_title (+0.008/+0.008/+0.002) — both consistent with §6.
+
 **Per-run coarse tables (record, all metrics):**
 
 _UCI coarse (72 runs, snapshots=7):_
@@ -1291,11 +1376,13 @@ gauge churns, and scales with how much it churns**. This is the load-bearing res
 | as733 | SignNet recompute (off) | 0.305 | 0.285 | 0.274 | new |
 
 ### 8.4 Breadth — SignNet on all six datasets  **[confirmed, 2026-07-19]**
-186/189 runs (`signnet_breadth`): the five conditions {keep, update×proc, recompute×proc} × C{3,5,7} × 3
-seeds on reddit_title / bitcoin_alpha / bitcoin_otc (which had no SignNet at all), plus the missing
-`update` and proc-on cells on as733 and uci. `hard_neg=degree` throughout; MRR is unaffected by
-`hard_neg`, so the Δ against §6's Laplace/feature MRR is valid without re-running the baselines.
-(One cell missing: `reddit_title update proc-on C3`, 0/3 — OOM'd twice under co-scheduling, see §10.)
+189/189 runs (`signnet_breadth` + `signnet_rtitle_gap`): the five conditions {keep, update×proc,
+recompute×proc} × C{3,5,7} × 3 seeds on reddit_title / bitcoin_alpha / bitcoin_otc (which had no
+SignNet at all), plus the missing `update` and proc-on cells on as733 and uci. `hard_neg=degree`
+throughout; MRR is unaffected by `hard_neg`, so the Δ against §6's Laplace/feature MRR is valid
+without re-running the baselines. (The last hole — `reddit_title update proc-on C3`, which OOM'd
+twice under co-scheduling — was filled 2026-07-22 by re-running it alone at MJ=1: MRR **0.414**,
+Δ −0.005 vs Laplace, i.e. tracks feature like every other reddit_title cell.)
 
 _SignNet 3-seed mean MRR, and Δ vs the SAME condition under the Laplace smodel (§6/§3.1):_
 | dataset | mode | proc | C3 | C5 | C7 | ΔC3 | ΔC5 | ΔC7 |
@@ -1320,7 +1407,7 @@ _SignNet 3-seed mean MRR, and Δ vs the SAME condition under the Laplace smodel 
 | as733 | recompute | on | 0.302 | 0.293 | 0.271 | −0.020 | +0.002 | −0.007 |
 | reddit_title | keep | – | 0.417 | 0.395 | 0.387 | −0.001 | +0.004 | −0.005 |
 | reddit_title | update | off | 0.414 | 0.395 | 0.389 | −0.003 | +0.003 | +0.003 |
-| reddit_title | update | on | – | 0.395 | 0.389 | – | −0.001 | −0.000 |
+| reddit_title | update | on | 0.414 | 0.395 | 0.389 | −0.005 | −0.001 | −0.000 |
 | reddit_title | recompute | off | 0.414 | 0.392 | 0.389 | **+0.017** | +0.007 | +0.009 |
 | reddit_title | recompute | on | 0.417 | 0.393 | 0.388 | **+0.019** | +0.010 | +0.007 |
 
@@ -1335,7 +1422,7 @@ gauge-specific, `keep` (frozen basis, no sign churn) must be NULL while `recompu
 | dataset | keep | update-off | update-on | recomp-off | recomp-on | recompute mean | control |
 |---|---|---|---|---|---|---|---|
 | reddit_body | +0.003 | +0.002 | +0.004 | +0.015 | +0.010 | **+0.012** | holds (4.9×) |
-| reddit_title | −0.001 | +0.001 | −0.001 | +0.011 | +0.012 | **+0.011** | holds (12.5×) |
+| reddit_title | −0.001 | +0.001 | −0.002 | +0.011 | +0.012 | **+0.011** | holds (12.5×) |
 | as733 | +0.001 | +0.003 | +0.010 | +0.004 | −0.008 | **−0.002** | holds (low-churn: nothing to fix) |
 | uci | +0.002 | +0.010 | −0.006 | +0.017 | +0.017 | **+0.017** | holds (7.6×) |
 | **bitcoin_alpha** | **+0.027** | +0.024 | +0.010 | +0.045 | +0.041 | **+0.043** | **FAILS (1.6×)** |
@@ -1487,7 +1574,461 @@ random negatives, identical seeds, all per-client eval.
 
 ---
 
-## 10. Provenance & reproduction
+## 10. The basis-content control — structure is never used; only temporal stability is  **[confirmed, 2026-07-21]**
+
+> **This section supersedes the mechanism of §4.2 and re-frames §8.** It is the most
+> consequential result in this file. Read it before designing any further spectral encoder.
+> **One-line finding:** across two orthogonal controls, the spectral branch does **not** use the
+> graph's structural content at all; the only thing it is (mildly) sensitive to is the **temporal
+> stability** of whatever per-node code is injected — and the real eigenbasis provides that only
+> incidentally, on low-churn graphs.
+
+### 10.1 The two controls
+§4.2 explained `recompute`'s deficit as a **gauge** problem, and §8 built SignNet to remove the sign
+gauge — parity only. Before building BasisNet we asked the prior question no experiment had tested:
+**does the branch use the graph spectrum at all?** `spectral.basis_source` (commit `1690824`) swaps
+the eigenbasis for a null basis of the same shape, server-side in `_substitute_basis`, identically
+for every smodel and mode:
+- `laplacian` — the real Laplacian eigenbasis (default).
+- `random` — a Haar-random orthonormal matrix (QR of a Gaussian), **redrawn every snapshot-solve**.
+- `shuffled` — the **real** eigenvectors with the node→row order permuted (identical values, exact
+  orthonormality, structure destroyed), **re-permuted every snapshot-solve**.
+
+Crossed with `update_mode` this yields two clean, separable controls:
+- **STRUCTURE control** = `keep` (basis frozen at t=0). All three sources are then *temporally
+  constant*, so they differ **only in structural content**. If structure is used, `laplacian` must
+  beat `random`/`shuffled` here.
+- **STABILITY effect** = `recompute` (basis re-solved each snapshot). The real basis is re-solved
+  but on a low-churn graph barely moves (temporally *stable*); `random`/`shuffled` are redrawn from
+  scratch each step (temporally *unstable*). This isolates sensitivity to **temporal stability**.
+
+### 10.2 Result — structure control is NULL everywhere; the only non-null is a stability effect
+Grid: {uci, bitcoin_otc, reddit_body, as733, reddit_title} × {keep, recompute} × fusion{add, concat}
+× basis{laplacian, random, shuffled} × C{3,7} (C3 only for as733/reddit_title) × 3 seeds, gru,
+`sfv_share=local`. Noise floor 0.005–0.007 MRR.
+
+**(a) STRUCTURE control — `keep`, frozen basis. `laplacian` vs `random`/`shuffled`:**
+| dataset | lap | random | shuffled | Δrandom | Δshuffled |
+|---|---|---|---|---|---|
+| reddit_body / keep / add / C3 | 0.337 | 0.313 | 0.337 | −0.024 | −0.000 |
+| bitcoin_otc / keep / add / C3 | 0.140 | 0.141 | 0.141 | +0.001 | +0.001 |
+| uci / keep / add / C3 | 0.088 | 0.097 | 0.088 | +0.010 | +0.000 |
+| **as733 / keep / add / C3** | **0.305** | **0.318** | **0.299** | **+0.013** | **−0.006** |
+| reddit_title / keep / add / C3 | 0.417 | 0.416 | 0.416 | −0.001 | −0.001 |
+
+Over all matched `keep` conditions the deltas are mean ≈ 0 with mixed sign and max |Δ| at the noise
+floor. **The real eigenbasis never beats a random matrix of the same shape when both are frozen —
+including on as733, where `random` is nominally *higher*.** Graph-structural content is not used.
+
+**(b) STABILITY effect — `recompute`. The one real deviation is as733, and it is about stability:**
+Per-seed MRR, as733 recompute/add/C3 (3 seeds, no cross-condition overlap):
+| basis | seed 1234 | 1334 | 1434 | mean |
+|---|---|---|---|---|
+| laplacian (stable on low-churn) | 0.341 | 0.345 | 0.339 | **0.342** |
+| random (redrawn each snapshot) | 0.297 | 0.305 | 0.297 | 0.300 |
+| shuffled (re-permuted each snapshot) | 0.296 | 0.299 | 0.297 | 0.297 |
+
+Here `laplacian` beats both null bases by **~0.042**, cleanly above noise on every seed. But (a)
+already proved this is **not** structure: a *frozen* random basis (as733 keep/random 0.318) does as
+well as the frozen real one (0.305). The recompute gap therefore isolates **temporal stability** —
+the real basis wins only because on low-churn as733 a fresh solve returns nearly the same basis each
+step, while `random`/`shuffled` re-randomize the per-node code every snapshot.
+
+**(c) The stability effect vanishes on high churn — as predicted.** as733 is the *only* dataset
+where recompute's real basis is temporally stable. On high-churn reddit_body the real basis churns
+as much as random, so recompute is null again: reddit_body recompute/add/C3 lap 0.324 / random 0.326
+/ shuffled 0.335 (per-seed lap 0.317/0.335/0.321 — fully overlapping with the null bases). Same on
+uci and bitcoin_otc.
+
+**Aggregate (Laplace smodel), 5 datasets:**
+| comparison | scope | n | mean Δ | mean abs Δ | max abs Δ | verdict |
+|---|---|---|---|---|---|---|
+| random − laplacian | keep (structure) | 16 | −0.001 | 0.007 | 0.024 | NULL — structure unused |
+| shuffled − laplacian | keep (structure) | 16 | −0.003 | 0.006 | 0.026 | NULL — structure unused |
+| random − laplacian | recompute, high-churn (uci/btc/reddit) | 14 | +0.003 | 0.004 | 0.009 | NULL — real basis also churns |
+| random − laplacian | **recompute, as733 (low-churn)** | 2 | **−0.037** | 0.037 | 0.042 | **real basis wins via stability** |
+| concat − add (laplacian) | keep+recompute | 16 | +0.003 | 0.006 | 0.027 | NULL — fusion not the bottleneck |
+
+(as733/reddit_title were C3-only, so their recompute buckets are n=2 per basis; the as733 stability
+gain is nonetheless clean — all three seeds separate with no overlap, §10.2b.)
+
+**`shuffled` is the tighter control** (matched on every numeric: byte-identical values, ‖·‖_F 9.899
+vs the real 9.899, identical conditioning; `random` differs also in norm ‖·‖_F √300≈17.32 and exact
+orthonormality). Since clients receive a **row slice** `U[nid]` (`dynamic_server.py`), permuting rows
+severs the node↔coordinate map while holding all numerics fixed — and it too is null under `keep`.
+
+**Plumbing verified, not assumed.** The delivered basis was instrumented at the smodel: `laplacian`
+‖·‖_F 9.899, `random` 17.320 (orthonormality residual 1.6e-6), `shuffled` 9.899 with permuted rows —
+the model demonstrably receives a different matrix in each arm, so the nulls are real nulls.
+
+### 10.3 The mechanism — the smodel discards the spectrum before fusion
+Instrumented effective rank (entropy of the Gram spectrum) through the Laplace smodel, UCI keep
+C=1, comparing the first and last 10% of encode calls:
+
+| stage | at init | trained |
+|---|---|---|
+| `Q` (N,300) eigenbasis | 94.6 | 94.6 |
+| `Z = Q@W` (N,512) | 73.4 | 34.7 |
+| LayerNorm(512) | 92.8 | 15.8 |
+| Linear→128 | 19.1 | 3.4 |
+| Linear→64 (`H`) | 4.6 | **1.7** |
+| `S = bn(H)` (N,64) | 4.9 | **2.3** |
+
+`Q` carries ~95 effective dimensions; **~2 reach the fusion point**, and the collapse is *learned*
+(rank 4.9 → 2.3 over training). A rank-2 channel cannot transport the spectrum, which is exactly
+why its content is interchangeable with noise.
+
+Magnitude is **not** the problem — the obvious rival hypothesis is refuted. Because `gnn.l2norm=True`
+makes `z` unit-norm while `S` is added raw, ‖S‖/‖z‖ *is* the signal ratio: measured **0.29 (keep)
+/ 0.43 (recompute)**, with **99% of S's energy node-varying** (not a constant offset). The branch is
+a large, node-specific perturbation that carries no usable information — and `recompute`'s *larger*
+‖S‖ with the same rank-2 content is a natural account of why it scores *worse* (0.062 vs 0.101 on
+UCI C=1): more noise injected into a unit-norm embedding.
+
+### 10.4 Fusion is not the bottleneck either
+`concat` (own 64 dims, independent head weights, no perturbation of `z`) was the alternative
+hypothesis — that additive fusion crowds S out. It is refuted twice: end-to-end **mean Δ +0.0007**
+(table above), and mechanistically the trained rank under `concat` is **1.8**, no better than
+`add`'s 2.3. Giving the branch its own channels does not stop the optimizer throttling it.
+
+### 10.5 What this explains, and what it costs
+The two-control result — *structure never used; only temporal stability matters* — explains every
+prior finding in this file with a single mechanism:
+1. **The four null prototypes** (active-node Laplacian, symmetric Laplacian, count/running-mean edge
+   weights, EMA decay) all varied *how Q is built*, i.e. its structural content. Structure is not
+   used, so all four had to come back null. This is now a corollary, not a coincidence.
+2. **`keep > update > recompute` (§3/§6) is a stability ordering, not a spectral one.** `keep`
+   injects a temporally constant code (most stable → best); `recompute` re-randomizes the code each
+   snapshot unless churn is low (least stable → worst on high-churn graphs); `update` drifts in
+   between. §4.2 attributed this to the eigenvector *gauge*; the correct variable is the temporal
+   stability of the injected per-node signal, which the eigenbasis affects only via churn. The
+   **churn-dependence §4.2/§6 already documented is real and now has the right cause**: as733 is the
+   one low-churn graph, so it is the one place recompute's real basis is stable and beats its own
+   random control (§10.2b) — the clean confirmation the churn story needed.
+3. **SignNet's parity (§8).** An invariant encoder over a signal whose *content* is unused cannot add
+   information; consistent with §8.4/§8.5's own reading (capacity on small graphs, not a gauge fix).
+   The reddit_body SignNet basis control is itself null (keep Δ +0.002/+0.003), i.e. on the large
+   graph SignNet does not use structure either — **with one flagged exception, bitcoin_otc, below.**
+
+**The one cell that resists the null — bitcoin_otc under SignNet [prelim, 2026-07-22].** The full
+SignNet basis control on bitcoin_otc (36 runs, C{3,7} × {keep, recompute} × 3 bases) is NOT clean:
+| condition | laplacian | random | shuffled | Δrnd | Δshf |
+|---|---|---|---|---|---|
+| keep C3 | 0.160 | 0.155 | 0.165 | −0.005 | +0.005 |
+| keep C7 | 0.141 | 0.127 | 0.120 | **−0.015** | **−0.021** |
+| recompute C3 | 0.171 | 0.159 | 0.160 | −0.012 | −0.011 |
+| recompute C7 | 0.140 | 0.121 | 0.120 | **−0.018** | **−0.020** |
+Per-seed structure matters here: `laplacian` is *stable on all six C7 seeds* (0.134–0.149) while
+each null arm has one collapsed seed (0.091–0.110) plus otherwise slightly-lower values. On the
+noisiest dataset (per-run std ~0.09–0.13) three seeds cannot settle whether this is a real
+structural signal or occasional training instability under a meaningless injected code — but the
+direction is consistent across all four conditions, and notably this is the SAME dataset where
+SignNet's win over `feature` was real (§8.5). Two honest readings: (a) on the small sharded graph
+the real basis genuinely contributes (then §8.5's "+0.026 over feature at C7" decomposes into a
+generic injected-code part — null bases still beat feature 0.120–0.127 vs 0.115 — plus a
+basis-specific part ~0.015–0.020); or (b) null-code training is simply less stable on tiny shards
+and occasionally collapses a seed. Distinguishing them needs more seeds; **flagged [prelim], not
+folded into the §10 headline, which rests on the five clean datasets.** Keep C3's null (mixed sign)
+argues against a simple structure story even here.
+4. **BasisNet is predicted null** and should not be built. It would make the encoder invariant to the
+   basis's rotation/sign — but the basis's structural content is unused, and the one thing that
+   matters (temporal stability) is already maximized by `keep` / a deterministic solve, neither of
+   which BasisNet touches. §1's degeneracy rationale is also unsupported: on the **cumulative** union
+   the model consumes, the Ritz spectrum has **0/299 gaps < 1e-4 and no zero eigenvalues** (uci,
+   reddit_body) — no degenerate eigenspaces to be invariant to. The "31k–35k zero eigenvalues" figure
+   describes per-window slices, which `_spectral_step` deliberately does not use.
+
+**Honest scope.** Confirmed on 5 datasets (uci, bitcoin_otc, reddit_body at C{3,7}; as733,
+reddit_title at C3), gru, `keep`/`recompute`, Laplace smodel + reddit_body SignNet; the one
+resisting cell is bitcoin_otc under SignNet at C7 ([prelim] above — needs more seeds). It does **not**
+prove graph spectra are useless for this task — it proves **this pipeline does not transport their
+structure**; every result in §3–§8 attributed to *basis maintenance policy* must be re-read as a
+temporal-stability effect on a rank-2 injected code. The as733 recompute stability gain (~0.04) is
+the one place the real basis measurably helps, and even there a stable *random* code would do the
+same job.
+
+**Where a real spectral result would have to start:** the bottleneck is the smodel's capacity (the
+512→128→64 MLP with `dropout=0.5` and LayerNorm on a 512-wide input collapses Q's ~95 effective dims
+to ~2, §10.3), not the basis. Either remove that bottleneck, or bypass the learned filter and feed a
+*stable* structural code the fmodel cannot switch off. Until a variant beats its own
+`basis_source=random` control under `keep` (i.e. uses structure, not just stability), no encoder
+change should be believed. **[This experiment was subsequently run — §10.7. Verdict: still no
+consistent gain.]**
+
+### 10.6 The oracle probes — the consumed basis never carried the signal  **[confirmed, 2026-07-22; UCI-only]**
+
+Model-free measurement of what the spectral representation *could* contribute, independent of any
+smodel/optimizer: score node pairs by spectral affinity (cosine/dot/heat-kernel of basis rows) and
+compute AUC on two tasks — *reconstructing the current cumulative graph* (can the basis encode the
+graph it was computed from at all?) and *predicting t+1 links* (the actual task). Random negatives;
+27 snapshots; per-t means.
+
+| representation | reconstruct current graph | predict t+1 links |
+|---|---|---|
+| **Arnoldi-300 of L_rw — what every §3–§8 run consumed** | **0.53** | **0.50–0.52** |
+| exact eigh, sym-normalized, 300 lowest nontrivial | 0.965 | 0.663 |
+| exact eigh, 50 lowest nontrivial | 0.871 | **0.710** |
+| Adamic-Adar / degree-product / previous-edge (baselines) | – | 0.674 / 0.762 / 0.704 |
+
+Two findings, one per row block:
+1. **The pipeline's basis is empty.** The Arnoldi/Lanczos estimate (`lanczos_iter=400`,
+   `spectral_len=300`, both `LanczosLaplace` and `SignNet` consume it via `estimate=True`) is at
+   CHANCE even at reconstructing its own graph. The cause is classical numerics: the informative
+   eigenvectors are the smooth low-frequency ones, and the cumulative graph's low spectrum is
+   massively clustered (§10.5: 292/299 gaps < 1e-2) — exactly where a plain Krylov run returns
+   arbitrary mixtures instead of eigenvectors (corroborated: orthogonality residual 0.37, a negative
+   Ritz value on a PSD operator). **§10.2's real≈random null is therefore overdetermined** — the
+   "real" basis was itself nearly noise.
+2. **Real signal exists, and part of it is complementary.** The exact low-50 basis predicts future
+   links at 0.710 — comparable to the local heuristics — and on the **52% of future edges where
+   Adamic-Adar is blind** (zero common neighbors) it still scores **0.674**. So on UCI there is
+   genuinely complementary structural signal that no local-neighborhood feature carries. (Whether
+   the 8-layer message-passing fmodel already captures it is what §10.7 tests.)
+
+Scope: UCI only (dense eigh is cheap at 1.9k nodes); affinity tested under cosine/dot/two
+heat-kernel weightings, all agreeing. Probe scripts in the session scratchpad, not committed.
+
+### 10.7 Input-side exact LapPE — the fix-everything experiment, still no consistent gain  **[confirmed, 2026-07-23]**
+
+§10.3–§10.6 identified three stacked causes: empty consumed basis, output-side fusion, learned rank
+collapse. `model.data_type=f+pe` (commits `e525928`, `bcc43af`) removes all three at once:
+- **exact** k=50 lowest nontrivial eigenpairs of the **sym-normalized** Laplacian
+  (`Graph.calc_eigs_exact_sym`: dense eigh ≤3k nodes, sparse shift-invert above, solved on the
+  active subgraph — isolated nodes get zero rows), scaled by √N to O(1) entries;
+- **injected at the INPUT** (`FedDynamicPEClassifier` concatenates the served per-client slice onto
+  node features before the encoder), LapPE-style, so message passing can use the coordinates
+  relationally and no learned filter can throttle them;
+- judged against **stability-matched structure controls**: `basis_source=shuffled_fixed` (one FIXED
+  node-permutation of the drifting real basis — identical values, identical temporal drift,
+  node↔structure correspondence severed) and `random_fixed` (one frozen random orthonormal basis).
+  These close §10.2's confound: under `recompute` the plain nulls redraw per snapshot and mix
+  stability into the comparison.
+
+**Δ MRR = laplacian-PE − shuffled_fixed-PE (the structure signal), 3-seed means:**
+| dataset | mode | C1 | C3 | C7 |
+|---|---|---|---|---|
+| uci | recompute | **+0.013** | **+0.015** | −0.001 |
+| uci | keep | +0.007 | +0.006 | +0.007 |
+| bitcoin_otc | recompute | +0.007 | **−0.023** | −0.018 |
+| bitcoin_otc | keep | – | −0.009 | **−0.013** |
+| as733 | recompute | – | +0.006 | **−0.012** |
+
+**Verdict: no consistent structural benefit — the sign flips across datasets.**
+- **uci**: the one real positive of the whole program — 5/6 cells positive, mean **+0.008**, and
+  laplacian-PE beats plain `feature` at every C (+0.012/+0.004/+0.003; C1 all three seeds separate).
+  This is exactly the dataset where §10.6 measured complementary oracle signal, so the effect lands
+  where predicted — but it is small (~1–1.5× the noise floor).
+- **bitcoin_otc**: the real basis is neutral at C1 and *worse than its own structure-destroyed
+  control* federated (mean −0.011). Echoing §8.5/§10.5: the null codes themselves BEAT `feature` at
+  C7 (`shuffled_fixed` keep 0.137 vs feature 0.124) — on small sharded graphs *any* extra input
+  code helps as capacity, while the real drifting basis actively hurts at high C
+  (recompute-laplacian C7 0.093 vs feature 0.124).
+- **as733**: within noise at C3 (0.334 vs 0.328, seeds overlap).
+
+**Full-metric record (3-seed means; random negatives, so auc/ap are the saturated variant comparable
+to §6, not §8's hard-neg):**
+
+_uci (27 snaps/run):_
+| condition | C | mrr | auc | ap | f1 | mcc |
+|---|---|---|---|---|---|---|
+| feature | 1 | 0.1126 | 0.899 | 0.905 | 0.802 | 0.636 |
+| feature | 3 | 0.0898 | 0.862 | 0.874 | 0.735 | 0.562 |
+| feature | 7 | 0.0762 | 0.801 | 0.822 | 0.508 | 0.369 |
+| PE keep/laplacian | 1 | 0.1199 | 0.903 | 0.911 | 0.785 | 0.637 |
+| PE keep/laplacian | 3 | 0.0869 | 0.871 | 0.880 | 0.718 | 0.568 |
+| PE keep/laplacian | 7 | 0.0832 | 0.792 | 0.820 | 0.490 | 0.387 |
+| PE keep/shuffled_fixed | 1 | 0.1134 | 0.901 | 0.908 | 0.783 | 0.641 |
+| PE keep/shuffled_fixed | 3 | 0.0812 | 0.859 | 0.870 | 0.707 | 0.544 |
+| PE keep/shuffled_fixed | 7 | 0.0762 | 0.794 | 0.819 | 0.511 | 0.391 |
+| PE recompute/laplacian | 1 | 0.1242 | 0.901 | 0.909 | 0.787 | 0.644 |
+| PE recompute/laplacian | 3 | 0.0942 | 0.863 | 0.875 | 0.706 | 0.544 |
+| PE recompute/laplacian | 7 | 0.0789 | 0.790 | 0.818 | 0.471 | 0.367 |
+| PE recompute/shuffled_fixed | 1 | 0.1114 | 0.890 | 0.897 | 0.780 | 0.616 |
+| PE recompute/shuffled_fixed | 3 | 0.0793 | 0.863 | 0.876 | 0.716 | 0.552 |
+| PE recompute/shuffled_fixed | 7 | 0.0798 | 0.809 | 0.830 | 0.490 | 0.372 |
+| PE recompute/random_fixed | 1 | 0.1140 | 0.897 | 0.903 | 0.788 | 0.633 |
+| PE recompute/random_fixed | 3 | 0.0847 | 0.862 | 0.874 | 0.707 | 0.545 |
+| PE recompute/random_fixed | 7 | 0.0756 | 0.797 | 0.822 | 0.471 | 0.371 |
+
+_bitcoin_otc (261 snaps/run):_
+| condition | C | mrr | auc | ap | f1 | mcc |
+|---|---|---|---|---|---|---|
+| feature | 1 | 0.2020 | 0.947 | 0.958 | 0.887 | 0.793 |
+| feature | 3 | 0.1502 | 0.850 | 0.889 | 0.756 | 0.578 |
+| feature | 7 | 0.1235 | 0.809 | 0.846 | 0.540 | 0.320 |
+| PE keep/laplacian | 3 | 0.1502 | 0.887 | 0.915 | 0.785 | 0.617 |
+| PE keep/laplacian | 7 | 0.1239 | 0.798 | 0.841 | 0.557 | 0.288 |
+| PE keep/shuffled_fixed | 3 | 0.1593 | 0.892 | 0.917 | 0.769 | 0.601 |
+| PE keep/shuffled_fixed | 7 | 0.1372 | 0.841 | 0.865 | 0.500 | 0.262 |
+| PE recompute/laplacian | 1 | 0.2054 | 0.950 | 0.962 | 0.892 | 0.804 |
+| PE recompute/laplacian | 3 | 0.1317 | 0.843 | 0.892 | 0.745 | 0.562 |
+| PE recompute/laplacian | 7 | 0.0929 | 0.805 | 0.848 | 0.581 | 0.394 |
+| PE recompute/shuffled_fixed | 1 | 0.1989 | 0.948 | 0.960 | 0.887 | 0.796 |
+| PE recompute/shuffled_fixed | 3 | 0.1546 | 0.881 | 0.912 | 0.744 | 0.565 |
+| PE recompute/shuffled_fixed | 7 | 0.1105 | 0.812 | 0.851 | 0.618 | 0.364 |
+| PE recompute/random_fixed | 1 | 0.2059 | 0.952 | 0.965 | 0.887 | 0.797 |
+| PE recompute/random_fixed | 3 | 0.1348 | 0.849 | 0.896 | 0.755 | 0.572 |
+| PE recompute/random_fixed | 7 | 0.1134 | 0.748 | 0.816 | 0.500 | 0.243 |
+
+_as733 (732 snaps/run; feature row = the fresh `abl_as733` baseline, same code era; C7 harvested
+2026-07-25 after the ban was lifted):_
+| condition | C | mrr |
+|---|---|---|
+| feature | 3 | 0.3270 |
+| PE recompute/laplacian | 3 | 0.3339 |
+| PE recompute/shuffled_fixed | 3 | 0.3280 |
+| PE recompute/laplacian | 7 | 0.2699 |
+| PE recompute/shuffled_fixed | 7 | 0.2821 |
+
+(as733 C3 secondary metrics: laplacian 0.939/0.948/0.799/0.679 vs shuffled 0.940/0.948/0.798/0.678
+— an all-metric null; at C7 the real basis is 0.012 BELOW its placebo.)
+
+Cross-metric notes: (a) on bitcoin_otc at C3/C7 the PE conditions lift auc/ap over feature by
++0.03–0.04 — but for the NULL bases as much as (or more than) the real one (keep/shuffled_fixed C7
+auc 0.841 vs keep/laplacian 0.798 vs feature 0.809), so even on secondary metrics the injected-code
+benefit on small graphs is capacity, not structure, and it does not convert into MRR; (b) on as733
+all five metrics are identical between laplacian and shuffled_fixed to ~3 decimals — a textbook
+all-metric null; (c) on uci the secondary metrics track the small MRR gains (keep/laplacian C3 auc
+0.871 vs shuffled 0.859) without changing the story.
+
+### 10.8 Per-snapshot analysis — a late-emerging effect the whole-run means dilute  **[prelim, 2026-07-25]**
+
+A methodological objection (user-raised, correct to check): all §10 verdicts are whole-run MEAN
+MRR, which could mask time-dependence — e.g. the cumulative graph densifies over the run, so the
+basis (and the model's ability to use it) may differ early vs late. Two checks:
+
+**(a) Does the Arnoldi basis become informative late, as density grows? NO — it degrades.**
+Re-running the §10.6 oracle probe binned by early/mid/late thirds (uci): reconstruction AUC
+0.56 → 0.53 → 0.52, future-link 0.52 → 0.52 → 0.50 (dot variant 0.52 → 0.50 → 0.48). Densification
+CLUSTERS the low spectrum further, which hurts a fixed-budget Krylov solve more than density helps
+it. The §10.6 conclusion is time-uniform.
+
+**(b) Does the REAL basis's advantage grow late? YES, in the recompute conditions — the means
+were diluting it.** Δ MRR (laplacian − shuffled control) from the per-snapshot logs, binned:
+
+| condition | Δ early | Δ mid | Δ late |
+|---|---|---|---|
+| f+s Arnoldi, uci recompute C3 | +0.004 | −0.006 | **+0.025** |
+| f+s Arnoldi, as733 recompute C3 | +0.014 | +0.055 | **+0.065** |
+| input-PE exact, uci recompute C1 | +0.010 | +0.021 | +0.008 |
+| input-PE exact, uci recompute C3 | −0.001 | −0.004 | **+0.050** |
+| input-PE exact, as733 recompute C3 | −0.000 | +0.003 | +0.016 |
+| input-PE exact, bitcoin_otc recompute C3 | −0.022 | −0.013 | **−0.034** |
+| (keep conditions, all) | ~0 | ~0 | ~0 |
+
+Reads, stated carefully: (1) the late-window growth in the f+s-Arnoldi rows cannot be basis
+quality (see (a)) — on as733 it is the §10.2b stability effect compounding over 732 snapshots
+(the re-drawn control keeps re-randomizing; the real basis barely moves). (2) The **input-PE uci
+late-window +0.050 is against the drift-matched `shuffled_fixed` control**, so it IS
+structure-attributable — and it is 3–6× the whole-run mean (+0.008), i.e. the mean genuinely
+dilutes a late-emerging structural benefit on uci. With ~9 snapshots × 3 seeds per bin it is
+~2.5 standard errors: suggestive, not confirmed. (3) bitcoin_otc stays negative in every bin —
+the cross-dataset sign flip is not a timing artifact. (4) `keep` stays null in every bin — the
+late effect is specific to a fresh basis tracking the grown graph. Implication if (2) replicates:
+on long runs, evaluation windows (early/late splits) should complement whole-run means, and the
+honest §10.7 verdict gains a nuance — "no consistent gain *in whole-run means*; a late-window
+structural benefit exists on uci/as733 but reverses on bitcoin_otc."
+
+### 10.9 Decoder and depth ablations — the last two architectural outs, both null  **[confirmed, 2026-07-25]**
+
+**Decoder (`model.edge_decoding`).** Motivation: spectral affinity is a product (S_u·S_v); the
+concat-MLP head must learn multiplicative interactions, which MLPs do poorly (He et al. 2017 vs
+Rendle et al. 2020; Beutel et al. 2018), while a `dot` decoder computes them natively — a possible
+"product-blind readout" explanation for §10.7's null. Grid: {dot, cosine_similarity(uci only)} x
+{feature, f+pe-recompute laplacian, f+pe-recompute shuffled_fixed} x C{1,3,7} x 3 seeds; concat arm
+= the §10.7 runs. Mean±std:
+
+_uci:_
+| condition | C | concat | dot | cosine |
+|---|---|---|---|---|
+| feature | 1 | 0.113±0.005 | 0.061±0.011 | 0.050±0.005 |
+| f+pe laplacian | 1 | 0.124±0.008 | 0.066±0.013 | 0.048±0.006 |
+| f+pe shuffled_fixed | 1 | 0.111±0.004 | 0.073±0.005 | 0.047±0.006 |
+| feature | 3 | 0.090±0.017 | 0.059±0.014 | 0.043±0.007 |
+| f+pe laplacian | 3 | 0.094±0.005 | 0.064±0.012 | 0.034±0.005 |
+| f+pe shuffled_fixed | 3 | 0.079±0.017 | 0.064±0.007 | 0.040±0.010 |
+| feature | 7 | 0.076±0.012 | 0.051±0.005 | 0.030±0.003 |
+| f+pe laplacian | 7 | 0.079±0.009 | 0.046±0.005 | 0.033±0.005 |
+| f+pe shuffled_fixed | 7 | 0.080±0.003 | 0.045±0.004 | 0.029±0.007 |
+
+_bitcoin_otc (dot arm):_
+| condition | C1 | C3 | C7 |
+|---|---|---|---|
+| feature | 0.201±0.009 | 0.149±0.006 | 0.095±0.010 |
+| f+pe laplacian | 0.198±0.010 | 0.144±0.002 | 0.087±0.026 |
+| f+pe shuffled_fixed | 0.196±0.011 | 0.146±0.006 | 0.087±0.006 |
+
+Verdicts: (1) **concat is decisively best** — ROLAND's own decoder choice validated (dot loses
+0.03–0.05 MRR on uci; on bitcoin dot is free at C1 but loses at C7). (2) **The product-readout
+hypothesis is refuted on both datasets**: under dot, real ≈ placebo at every C, and uci's small
+concat-arm laplacian edge disappears. The decoder axis is CLOSED.
+
+**Depth (`gnn.dims` length L ∈ {1,2,4,8}).** Motivation: 8 MP layers may already span the graph,
+making spectral coordinates redundant — predicting the PE gain should appear at shallow depth.
+Grid: uci, {feature, f+pe-recompute laplacian, f+pe-recompute shuffled_fixed} x C{1,3,7} x 3 seeds.
+
+| condition | C | L=1 | L=2 | L=4 | L=8 |
+|---|---|---|---|---|---|
+| feature | 1 | 0.119±0.003 | 0.121±0.004 | 0.114±0.012 | 0.113±0.012 |
+| PE laplacian | 1 | 0.103±0.005 | 0.109±0.003 | 0.111±0.001 | 0.114±0.012 |
+| PE shuffled_fixed | 1 | 0.102±0.006 | 0.110±0.009 | 0.110±0.005 | 0.108±0.009 |
+| feature | 7 | 0.068±0.006 | 0.069±0.007 | 0.083±0.006 | 0.079±0.006 |
+| PE laplacian | 7 | 0.079±0.013 | 0.078±0.009 | 0.077±0.007 | 0.076±0.008 |
+| PE shuffled_fixed | 7 | 0.081±0.003 | 0.072±0.003 | 0.074±0.016 | 0.075±0.004 |
+
+(C3 similar, all null.) Verdicts: (1) **the receptive-field hypothesis is refuted** — laplacian −
+shuffled_fixed is ~0 at every depth, including L=1 where an undersized receptive field should have
+made real coordinates valuable; (2) at C7/L1 BOTH PE arms beat feature (+0.012, seed ranges
+separate) — the any-code capacity effect again, not structure; (3) side observation: uci needs only
+1–2 MP layers (feature L1 0.119±0.003 ≈ L8 0.113±0.012); the 8-layer Table-3 config is kept for
+parity only. The depth axis is CLOSED.
+
+### 10.10 What remains open — conversion, not content  **[the live question, 2026-07-25]**
+
+Program scoping (user, 2026-07-25): decoder + fusion axes closed; Laplace smodel sidelined. The one
+question the spectral data does NOT answer: **the exact basis is demonstrably informative, yet
+nothing converts that information into ranking performance beyond parity. Why?**
+
+The encoder x basis matrix has exactly one untested cell — every SignNet run to date consumed the
+numerically-empty Arnoldi basis (`get_spectral_features` routes SignNet through `estimate=True`):
+
+| | Arnoldi basis (empty, §10.6) | exact basis (informative, §10.6) |
+|---|---|---|
+| Laplace smodel | run — null/harmful (§10.2) | never run; smodel now sidelined |
+| SignNet smodel | run — parity + capacity (§8) | **NEVER RUN — the open cell** |
+| plain input PE | never run | run — parity, +0.008 uci (§10.7) |
+
+Candidate explanations, ranked:
+1. **Marginal redundancy with the trained backbone** (leading; unmeasured): the oracle's 0.71 AUC is
+   unconditional; the trained fmodel reaches ~0.90. The decision-relevant quantity is CONDITIONAL
+   information — does exact-spectral affinity separate pairs GIVEN the fmodel's z? 8 MP layers + a
+   per-node GRU state may span the useful spectral projection. If conditional gain ≈ 0, parity is a
+   CEILING no encoder can pass, and the program ends with a complete mechanism.
+2. **Feature competition under SGD** (gradient starvation / shortcut learning): the learned rank
+   collapse (§10.3) proves the dynamic operates here; §10.8's late-window uci effect (+0.05 in the
+   final third) fits a slowly-earned pathway.
+3. **Metric mismatch**: the spectral niche (AA-blind, community-level pairs) may barely move
+   live-update MRR, which recency/degree dominate.
+
+**Next step — the conditional-information probe [zero GPU, local]:** capture the trained
+feature-model's per-snapshot eval embeddings z; score t+1 candidates with (a) a z-based scorer and
+(b) z + exact-spectral affinity; compare AUC/MRR overall and on the AA-blind slice. Discriminates
+1 from 2/3 before any sweep. **SignNet x exact** (via a `spectral.solver` knob) runs only if the
+probe shows headroom — scoped to bitcoin_otc + uci, recompute, laplacian vs shuffled_fixed, C{3,7}.
+
+**Program conclusion (implementation loop closed; see §10.10 for the precise residual).** Output-side fusion transported nothing (§10.2–10.4);
+the consumed basis carried nothing to transport (§10.6); and with BOTH repaired — an informative
+exact basis, injected at the input, un-throttleable — the structural gain is small-and-real on the
+one dataset where the oracle predicted it, absent or negative elsewhere. Spectral graph structure is
+**not a reliable lever for ROLAND-style temporal link prediction on these datasets**; its predictive
+content overlaps what the recurrent message-passing backbone already captures, and the residual
+complementary niche (§10.6 point 2) is too small to survive federated noise. The paper's positive
+result remains §9 (federation's resilience); the spectral thread closes as a controls-validated
+negative with a fully measured causal chain.
+
+---
+
+## 11. Provenance & reproduction
 - Code: fedlap repo, branch `roland-dev`. Runs on TUM CUDA hosts `tueilnt-sim{08,09,10,12,13,14}`.
 - Commits behind §8/§9: `3595fc8` SignNet smodel; `f45c3a3` `federated.fl`; `a3e907a`
   `metric.eval_scope`; `18cdb6e` + `95ce06a` the refresh train/eval-mode fix (§9).
@@ -1504,5 +2045,32 @@ random negatives, identical seeds, all per-client eval.
   `/nas/lnt/stud/ge27yuv/runs/{reddit_body_signnet, reddit_body_baselines_hardneg, as733_signnet,
   uci_signnet, signnet_breadth}` (§8) and `{fl_localeval, local_baseline_fl_false}` (§9). §8/§9 report 3-seed MEANS;
   per-run rows live in those logs rather than inline, unlike §6.
+- Commits behind §10: `3291fce` (`spectral.deterministic_start` default → True),
+  `1690824` (`spectral.basis_source` ablation + `_substitute_basis`).
+- §7.1 high-C logs: `/nas/lnt/stud/ge27yuv/runs/reddit_{body,title}_coarse_highC` (108 runs,
+  executed 2026-07-14, harvested into this record 2026-07-20).
+- §10.9 logs: `runs/{dec_abl_uci, dec_abl_btc, depth_abl}` (189 runs, wandb-tagged `dec-abl` /
+  `depth-abl`). Commits: `680688a` (wandb group_suffix/extra_tags + f+pe group parts), `ee9fbf4`
+  (exact solver restricted to the largest connected component — many-component graphs like reddit
+  otherwise return an all-zero basis; caught in pre-launch validation, no runs affected).
+- Analysis tooling: `analysis/compile_results.py` (RESULT-line harvest -> mean±std + coverage);
+  master CSV of the control program: `runs/master_results.csv` (661 runs, 217 conditions,
+  216/217 seed-complete as of 2026-07-25).
+- §10.8 per-snapshot lines parsed from the same §10.7 logs (`grep 't=[0-9]* mrr='`); oracle
+  probe re-run binned (scratchpad `oracle_probe2b.py`).
+- Commits behind §10.7: `e525928` (`data_type=f+pe` input LapPE + `*_fixed` stability-matched
+  basis controls), `bcc43af` (exact solver on the active subgraph — ARPACK stalls on the
+  isolated-node clusters of early cumulative graphs). §10.7 logs:
+  `/nas/lnt/stud/ge27yuv/runs/{pe_uci, pe_btcotc, pe_btcotc_keep, pe_as733}` (runner
+  `runs/run_pe.sh`). Run pattern: `--set model.data_type=f+pe spectral.update_mode=<m>
+  spectral.basis_source=<laplacian|shuffled_fixed|random_fixed> subgraph.num_subgraphs=<C>`.
+- §10 raw logs (runners `runs/run_ablation.sh` fusion×basis and `runs/run_ablation2.sh` smodel×basis,
+  not committed): Laplace basis control = `{abl_uci, abl_btcotc, abl_rb_c3, abl_rb_c7, abl_as733,
+  abl_rtitle}`; SignNet basis control = `{abl2_rb_signnet, abl2_btcotc_signnet}`. §10 uses default
+  random negatives. All under `spectral.deterministic_start=True` (the new default). All §10 sweeps
+  are COMPLETE (2026-07-22): reddit_body SignNet keep-control null; bitcoin_otc SignNet control
+  36/36 (the [prelim] non-null cell, §10.5); `signnet_rtitle_gap` 3/3 (closed the §8.4 hole).
+- **NOTE:** every number in §2–§9 was produced with `spectral.deterministic_start=False`,
+  which is no longer the default — exact reproduction of those rows needs it set back to False.
 - §8 runs use `metric.hard_neg=degree` (auc/ap de-saturated ~0.86); §9 uses the default random
   negatives, so §9 auc is comparable to §6 but §8 auc is NOT.
