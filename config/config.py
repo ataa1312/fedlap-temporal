@@ -282,6 +282,8 @@ def _wandb() -> Registry:
     w["project"] = "dynamic-fedlap"
     w["job_type"] = "edge-prediction"
     w["group"] = ""
+    w["group_suffix"] = ""                  # appended to the auto-built group (sweep-specific runs)
+    w["extra_tags"] = []                    # appended to the auto-built tags, e.g. [depth-abl,L4]
     w["mode"] = "offline"                   # 'online', 'offline', 'disabled'
     return w
 

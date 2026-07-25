@@ -49,8 +49,15 @@ def _wandb_meta():
         parts += [f"um-{um}", f"sfv-{sfv}"]
         if um in ("update", "recompute"):  # procrustes only applies to these modes
             parts.append(f"proc-{'on' if proc else 'off'}")
+    elif dt == "f+pe":
+        # basis_source is the condition axis of the PE experiments — without it
+        # the treatment and its placebo would collapse into one group.
+        parts += [f"um-{um}", f"pe{config['spectral']['pe_dim']}",
+                  f"basis-{config['spectral']['basis_source']}"]
     if custom_freq:  # coarsened window; keep distinct from the default calendar-freq groups
         parts.append(f"freq-{sf}")
+    if config["wandb"]["group_suffix"]:
+        parts.append(config["wandb"]["group_suffix"])
     group = "_".join(parts)
     cfg = {
         "dataset": ds, "temporal": temporal, "data_type": dt, "num_clients": C,
@@ -59,7 +66,9 @@ def _wandb_meta():
         "iterations": m["iterations"], "local_epochs": m["local_epochs"],
         "base_lr": config["optim"]["base_lr"], "fusion": m["fusion"],
         "smodel_type": m["smodel_type"], "spectral_len": config["spectral"]["spectral_len"],
-        "snapshot_freq": sf,
+        "snapshot_freq": sf, "gnn_dims": list(config["gnn"]["dims"]),
+        "pe_dim": config["spectral"]["pe_dim"],
+        "basis_source": config["spectral"]["basis_source"],
     }
     tags = [ds, str(dt), f"C{C}", temporal]
     if not fl:
@@ -70,9 +79,12 @@ def _wandb_meta():
         tags += [f"um-{um}", f"sfv-{sfv}"]
         if um in ("update", "recompute"):
             tags.append(f"proc-{'on' if proc else 'off'}")
+    elif dt == "f+pe":
+        tags += [f"um-{um}", f"basis-{config['spectral']['basis_source']}"]
     if custom_freq:
         tags.append(f"freq-{sf}")
         tags += ["coarse-snap", f"coarse-{round(int(sf[:-1]) / 86400)}d"]
+    tags += [str(t) for t in (config["wandb"]["extra_tags"] or [])]
     return group, cfg, tags
 
 
