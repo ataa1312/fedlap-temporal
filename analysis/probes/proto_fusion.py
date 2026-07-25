@@ -5,13 +5,23 @@ additionally scores the same candidate set with fused scores, so the reported
 per-snapshot MRR (rank_eval_multiplier negatives per source, test-split
 positives, mrr_method) and the fused MRR come from IDENTICAL pairs.
 
-Two leakage-free fusion weights:
-  preq  — logistic over [model score, spectral affinity] fit on PAST snapshots
-  val   — logistic fit on the CURRENT snapshot's val-split edges (eval-mode
-          scores; the test arm of this pair also uses eval-mode scores)
-Each has its own placebo arm (fixed node-row permutation of the same basis).
+Fused features, each combined with the model score by its own prequential
+logistic (fit on past snapshots only) so the arms are directly comparable:
+  spec   — cosine affinity in the exact low-K eigenbasis of the cumulative graph
+  plac   — the placebo: same eigenvectors, node rows permuted once (structure gone)
+  exists — 1 if the pair is already an edge of that cumulative graph (trivial baseline)
+  cn     — log1p(common neighbours) in that graph (trivial baseline)
+Plus a `val` arm for spec only: weights fit on the CURRENT snapshot's val-split
+edges (leakage-free without history — the recipe an in-model λ would copy).
 
-usage: python analysis/probes/proto_fusion.py [dataset] [config] [Cs] [seeds] [K]
+Every arm is also reported split by whether the positive is a REPEAT of an edge
+already in the cumulative graph or a genuinely NEW pair.
+
+`thin` keeps only that fraction of the cumulative edges when solving the
+eigenbasis — model and task untouched, so it isolates "does a sparser graph
+carry a weaker basis".
+
+usage: python analysis/probes/proto_fusion.py [dataset] [config] [Cs] [seeds] [K] [thin]
 """
 import os
 import sys
@@ -25,14 +35,16 @@ os.chdir(ROOT)
 
 import numpy as np
 import torch
+from scipy import sparse
 
 _a = sys.argv[1:]
 DATASET = _a[0] if len(_a) > 0 else "uci"
 CONFIG = _a[1] if len(_a) > 1 else f"config/{DATASET}_gru.yaml"
 CS = [int(c) for c in _a[2].split(",")] if len(_a) > 2 else [1, 3, 7, 9]
 SEEDS = [int(s) for s in _a[3].split(",")] if len(_a) > 3 else [1234, 1334, 1434]
-
 K_PE = int(_a[4]) if len(_a) > 4 else 50  # exact low-k eigenvectors (§10.7/§10.10 used 50)
+THIN = float(_a[5]) if len(_a) > 5 else 1.0  # fraction of cumulative edges kept for the basis
+
 WARM = 5         # snapshots of history before the prequential fit is used
 NEG_FIT = 20     # negatives per source kept from each past snapshot for fitting
 VAL_NEG = 50     # negatives per val positive for the val-fitted weight
@@ -55,8 +67,11 @@ from src.metrics.mrr import _sample_filtered_negatives, _rank_and_aggregate
 import main as M
 from sklearn.linear_model import LogisticRegression
 
-ARMS = ["model", "model_eval", "spec",
-        "preq_real", "preq_plac", "val_real", "val_plac"]
+FEATS = ["spec", "plac", "exists", "cn"]
+ARMS = (["model", "model_eval", "rep_frac", "model_rep", "model_new",
+         "val_real", "val_plac"]
+        + [f"alone_{k}" for k in FEATS]
+        + [f"preq_{k}{s}" for k in FEATS for s in ("", "_rep", "_new")])
 
 
 def und(ei):
@@ -72,15 +87,25 @@ snaps = datasets[DATASET](cfg)
 N, T = snaps[0].num_nodes, len(snaps)
 PERM = np.random.default_rng(42).permutation(N)
 
-print(f"{DATASET}: N={N} T={T}; precomputing exact low-{K_PE} bases...", flush=True)
-QN, QP = {}, {}
+print(f"{DATASET}: N={N} T={T}; precomputing exact low-{K_PE} bases (thin={THIN})...", flush=True)
+QN, QP, CUMKEY, ADJ = {}, {}, {}, {}
 cumset = set()
 t0 = time.time()
+thin_rng = np.random.default_rng(31337)
 for t in range(T - 1):
     cumset |= und(snaps[t].edge_index)
-    src_l = [a for a, b in cumset]
-    dst_l = [b for a, b in cumset]
-    e = torch.tensor([src_l + dst_l, dst_l + src_l], dtype=torch.long)
+    aa = np.array([a for a, _ in cumset], dtype=np.int64)
+    bb = np.array([b for _, b in cumset], dtype=np.int64)
+    CUMKEY[t] = np.sort(aa * N + bb)
+    A = sparse.coo_matrix((np.ones(2 * aa.size), (np.r_[aa, bb], np.r_[bb, aa])),
+                          shape=(N, N)).tocsr()
+    A.data[:] = 1.0
+    ADJ[t] = A
+    ia, ib = aa, bb
+    if THIN < 1.0:  # basis sees a sparsified graph; task and model unchanged
+        keep = thin_rng.random(aa.size) < THIN
+        ia, ib = aa[keep], bb[keep]
+    e = torch.tensor(np.stack([np.r_[ia, ib], np.r_[ib, ia]]), dtype=torch.long)
     g = Graph(x=torch.ones(N, 1), edge_index=e, node_ids=torch.arange(N))
     _, U = g.calc_eigs_exact_sym(K_PE)
     Q = U.numpy().astype(np.float32)
@@ -89,9 +114,9 @@ for t in range(T - 1):
 print(f"bases done ({time.time() - t0:.0f}s)", flush=True)
 
 CUR = {"t": None, "srv": None}
-HIST = []        # prequential store: (zm, z_spec, z_plac, y) from past snapshots
+HIST = []        # prequential store: dicts of per-pair features from past snapshots
 RUNREC = {}      # t -> {arm: mrr}
-LAM = []         # (t, lambda_preq, lambda_val) coefficient ratios
+LAM = []         # (t, lambda_preq_spec, lambda_val_spec)
 
 _orig_eval = ds_mod.DynamicServer._eval_mrr
 _orig_mrr = ds_mod.compute_mrr_from_z
@@ -119,6 +144,20 @@ def _eval_scores(model, z, snap, pairs_u, pairs_v, dev):
 
 def _fit(X, y):
     return LogisticRegression(max_iter=1000).fit(X, y)
+
+
+def _pair_features(t, uu, vv):
+    """The three graph features on the cumulative graph through t, plus the placebo."""
+    Qn, Qp, A = QN[t], QP[t], ADJ[t]
+    key = np.minimum(uu, vv).astype(np.int64) * N + np.maximum(uu, vv)
+    ck = CUMKEY[t]
+    idx = np.clip(np.searchsorted(ck, key), 0, max(len(ck) - 1, 0))
+    exists = (ck[idx] == key) if len(ck) else np.zeros(len(key), bool)
+    cn = np.asarray(A[uu].multiply(A[vv]).sum(axis=1)).ravel()
+    return {"spec": (Qn[uu] * Qn[vv]).sum(1).astype(np.float64),
+            "plac": (Qp[uu] * Qp[vv]).sum(1).astype(np.float64),
+            "exists": exists.astype(np.float64),
+            "cn": np.log1p(cn)}, exists
 
 
 def _patched_mrr(z, snap, K, method, dev, model):
@@ -165,36 +204,57 @@ def _fusion_readout(t, srv, z, model, snap, scores, u, unique_sources,
     m_tr = scores.detach().cpu().numpy().astype(np.float64)
     uu = all_u.cpu().numpy()
     vv = all_v.cpu().numpy()
-    Qn, Qp = QN[t], QP[t]
-    s_real = (Qn[uu] * Qn[vv]).sum(1).astype(np.float64)
-    s_plac = (Qp[uu] * Qp[vv]).sum(1).astype(np.float64)
+    feats, exists = _pair_features(t, uu, vv)
     y = np.zeros(len(m_tr))
     y[:n_pos] = 1.0
+    is_rep = exists[:n_pos]
+    u_np = u.cpu().numpy()
+    us_np = unique_sources.cpu().numpy()
 
     def rank(np_scores):
         s = torch.as_tensor(np.ascontiguousarray(np_scores, dtype=np.float32), device=dev)
         return _rank_and_aggregate(s, u, unique_sources, n_sources, K, method)
 
-    rec = {"model": rank(m_tr), "spec": rank(s_real)}
+    def rank_masked(np_scores, mask):
+        if method != "max" or not mask.any():
+            return float("nan")
+        pos = np_scores[:n_pos]
+        neg = np_scores[n_pos:].reshape(n_sources, K)
+        rr = []
+        for i, srcid in enumerate(us_np):
+            sel = (u_np == srcid) & mask
+            if not sel.any():
+                continue
+            rr.append(1.0 / ((neg[i] >= pos[sel].max()).sum() + 1))
+        return float(np.mean(rr)) if rr else float("nan")
 
-    # --- eval-mode model scores on the same pairs (baseline for the val arm) ---
+    rec = {"model": rank(m_tr), "rep_frac": float(is_rep.mean()),
+           "model_rep": rank_masked(m_tr, is_rep),
+           "model_new": rank_masked(m_tr, ~is_rep)}
+    for k in FEATS:
+        rec[f"alone_{k}"] = rank(feats[k])
+
     m_ev = _eval_scores(model, z, snap, all_u, all_v, dev).astype(np.float64)
     rec["model_eval"] = rank(m_ev)
 
-    zm_tr, zs_r, zs_p = zsc(m_tr), zsc(s_real), zsc(s_plac)
+    zm_tr = zsc(m_tr)
+    zf = {k: zsc(v) for k, v in feats.items()}
 
-    # --- prequential arm: weights fit on PAST snapshots only ---
+    # --- prequential arms: weights fit on PAST snapshots only, one per feature ---
     lam_preq = float("nan")
     if len(HIST) >= WARM:
-        Xr = np.vstack([np.column_stack([h[0], h[1]]) for h in HIST])
-        Xp = np.vstack([np.column_stack([h[0], h[2]]) for h in HIST])
-        yy = np.concatenate([h[3] for h in HIST])
-        cr, cp = _fit(Xr, yy), _fit(Xp, yy)
-        rec["preq_real"] = rank(cr.decision_function(np.column_stack([zm_tr, zs_r])))
-        rec["preq_plac"] = rank(cp.decision_function(np.column_stack([zm_tr, zs_p])))
-        lam_preq = float(cr.coef_[0][1] / (abs(cr.coef_[0][0]) + 1e-12))
+        yy = np.concatenate([h["y"] for h in HIST])
+        for k in FEATS:
+            X = np.vstack([np.column_stack([h["zm"], h[k]]) for h in HIST])
+            clf = _fit(X, yy)
+            f = clf.decision_function(np.column_stack([zm_tr, zf[k]]))
+            rec[f"preq_{k}"] = rank(f)
+            rec[f"preq_{k}_rep"] = rank_masked(f, is_rep)
+            rec[f"preq_{k}_new"] = rank_masked(f, ~is_rep)
+            if k == "spec":
+                lam_preq = float(clf.coef_[0][1] / (abs(clf.coef_[0][0]) + 1e-12))
 
-    # --- val arm: weights fit on the CURRENT snapshot's val edges ---
+    # --- val arm (spec + placebo): weights fit on the CURRENT snapshot's val edges ---
     lam_val = float("nan")
     pv = getattr(srv.global_snaps[t + 1], "pos_val", None)
     if pv is not None and pv.size(1) > 5:
@@ -211,26 +271,24 @@ def _fusion_readout(t, srv, z, model, snap, scores, u, unique_sources,
             torch.as_tensor(fu, dtype=torch.long, device=dev),
             torch.as_tensor(fv, dtype=torch.long, device=dev), dev,
         ).astype(np.float64)
-        sv_r = (Qn[fu] * Qn[fv]).sum(1).astype(np.float64)
-        sv_p = (Qp[fu] * Qp[fv]).sum(1).astype(np.float64)
+        vfeats, _ = _pair_features(t, fu, fv)
         zm_v = zsc(m_val)
-        cr = _fit(np.column_stack([zm_v, zsc(sv_r)]), fy)
-        cp = _fit(np.column_stack([zm_v, zsc(sv_p)]), fy)
         zm_ev = zsc(m_ev)
-        rec["val_real"] = rank(cr.decision_function(np.column_stack([zm_ev, zs_r])))
-        rec["val_plac"] = rank(cp.decision_function(np.column_stack([zm_ev, zs_p])))
-        lam_val = float(cr.coef_[0][1] / (abs(cr.coef_[0][0]) + 1e-12))
+        for k, arm in (("spec", "val_real"), ("plac", "val_plac")):
+            clf = _fit(np.column_stack([zm_v, zsc(vfeats[k])]), fy)
+            rec[arm] = rank(clf.decision_function(np.column_stack([zm_ev, zf[k]])))
+            if k == "spec":
+                lam_val = float(clf.coef_[0][1] / (abs(clf.coef_[0][0]) + 1e-12))
 
     LAM.append((t, lam_preq, lam_val))
     RUNREC[t] = rec
 
     # --- push this snapshot into the prequential history (subsampled negatives) ---
     rng = np.random.default_rng(60000 + t)
-    keep = np.arange(n_pos)
     n_neg = len(m_tr) - n_pos
     sub = rng.choice(n_neg, size=min(n_neg, NEG_FIT * n_sources), replace=False) + n_pos
-    idx = np.concatenate([keep, sub])
-    HIST.append((zm_tr[idx], zs_r[idx], zs_p[idx], y[idx]))
+    idx = np.concatenate([np.arange(n_pos), sub])
+    HIST.append({"zm": zm_tr[idx], "y": y[idx], **{k: zf[k][idx] for k in FEATS}})
 
 
 ds_mod.DynamicServer._eval_mrr = _eval_hook
@@ -247,7 +305,7 @@ for C in CS:
         t0 = time.time()
         out = M.run_once()
         ts_all = sorted(RUNREC)
-        ts_fuse = [t for t in ts_all if "preq_real" in RUNREC[t] and "val_real" in RUNREC[t]]
+        ts_fuse = [t for t in ts_all if "preq_spec" in RUNREC[t] and "val_real" in RUNREC[t]]
         chk = float(np.mean([RUNREC[t]["model"] for t in ts_all])) if ts_all else float("nan")
         print(f"C{C} seed {seed}: {len(ts_all)} snaps ({len(ts_fuse)} fused) "
               f"reported_mean_mrr={out['mean_mrr']:.4f} probe_model_mean={chk:.4f} "
@@ -256,6 +314,7 @@ for C in CS:
             continue
         for arm in ARMS:
             vals = [RUNREC[t][arm] for t in ts_fuse if arm in RUNREC[t]]
+            vals = [v for v in vals if not np.isnan(v)]
             if vals:
                 results.setdefault((C, arm), []).append(float(np.mean(vals)))
         lam_p = [l[1] for l in LAM if not np.isnan(l[1])]
@@ -272,6 +331,11 @@ def ms(C, k):
     return f"{st.mean(v):.4f}±{st.pstdev(v):.4f}" if v else "-"
 
 
+def mv(C, k):
+    v = results.get((C, k), [])
+    return f"{st.mean(v):.3f}" if v else "-"
+
+
 def dd(C, a, b):
     va, vb = results.get((C, a), []), results.get((C, b), [])
     if not va or not vb:
@@ -280,19 +344,31 @@ def dd(C, a, b):
     return f"{st.mean(d):+.4f}±{st.pstdev(d):.4f}"
 
 
-print(f"\n=== IN-PROTOCOL FUSION — {DATASET}, exact Q{K_PE}, "
-      f"{cfg['experimental']['rank_eval_multiplier']} "
-      f"negatives/source, mrr_method={cfg['metric']['mrr_method']}, test split, "
-      f"{len(SEEDS)} seeds ===")
-print(f"{'C':>2s} {'MRR model':>15s} {'Δ preq real':>17s} {'Δ preq plac':>17s} "
-      f"{'MRR model(eval)':>16s} {'Δ val real':>17s} {'Δ val plac':>17s} "
-      f"{'MRR spec':>15s} {'λ preq':>9s} {'λ val':>9s}")
+hdr = (f"\n=== IN-PROTOCOL FUSION — {DATASET}, exact Q{K_PE}, thin={THIN}, "
+       f"{cfg['experimental']['rank_eval_multiplier']} negatives/source, "
+       f"mrr_method={cfg['metric']['mrr_method']}, test split, {len(SEEDS)} seeds ===")
+print(hdr)
+print(f"{'C':>2s} {'MRR model':>15s} {'Δ preq spec':>17s} {'Δ preq PLACEBO':>17s} "
+      f"{'Δ preq exists':>17s} {'Δ preq cn':>17s} {'Δ val spec':>17s} {'Δ val plac':>17s} "
+      f"{'λ preq':>8s} {'λ val':>8s}")
 for C in CS:
     lp = results.get((C, "lam_preq"), [])
     lv = results.get((C, "lam_val"), [])
-    print(f"{C:>2d} {ms(C, 'model'):>15s} {dd(C, 'preq_real', 'model'):>17s} "
-          f"{dd(C, 'preq_plac', 'model'):>17s} {ms(C, 'model_eval'):>16s} "
-          f"{dd(C, 'val_real', 'model_eval'):>17s} {dd(C, 'val_plac', 'model_eval'):>17s} "
-          f"{ms(C, 'spec'):>15s} "
-          f"{(f'{st.mean(lp):+.2f}' if lp else '-'):>9s} "
-          f"{(f'{st.mean(lv):+.2f}' if lv else '-'):>9s}")
+    print(f"{C:>2d} {ms(C, 'model'):>15s} {dd(C, 'preq_spec', 'model'):>17s} "
+          f"{dd(C, 'preq_plac', 'model'):>17s} {dd(C, 'preq_exists', 'model'):>17s} "
+          f"{dd(C, 'preq_cn', 'model'):>17s} {dd(C, 'val_real', 'model_eval'):>17s} "
+          f"{dd(C, 'val_plac', 'model_eval'):>17s} "
+          f"{(f'{st.mean(lp):+.2f}' if lp else '-'):>8s} "
+          f"{(f'{st.mean(lv):+.2f}' if lv else '-'):>8s}")
+
+print("\n--- feature alone (no model), and the repeat/new split of the spec + exists arms ---")
+print(f"{'C':>2s} {'rep frac':>9s} | {'spec':>7s} {'plac':>7s} {'exists':>7s} {'cn':>7s} | "
+      f"{'model REP':>10s} {'Δ spec REP':>17s} {'Δ exists REP':>17s} | "
+      f"{'model NEW':>10s} {'Δ spec NEW':>17s} {'Δ exists NEW':>17s}")
+for C in CS:
+    print(f"{C:>2d} {mv(C, 'rep_frac'):>9s} | {mv(C, 'alone_spec'):>7s} {mv(C, 'alone_plac'):>7s} "
+          f"{mv(C, 'alone_exists'):>7s} {mv(C, 'alone_cn'):>7s} | "
+          f"{mv(C, 'model_rep'):>10s} {dd(C, 'preq_spec_rep', 'model_rep'):>17s} "
+          f"{dd(C, 'preq_exists_rep', 'model_rep'):>17s} | "
+          f"{mv(C, 'model_new'):>10s} {dd(C, 'preq_spec_new', 'model_new'):>17s} "
+          f"{dd(C, 'preq_exists_new', 'model_new'):>17s}")
