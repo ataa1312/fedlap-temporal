@@ -457,6 +457,17 @@ class Graph(Data):
         if m < 2:
             return torch.zeros(k), torch.zeros(n, k)
         Aa = A[act][:, act]
+        # Restrict further to the LARGEST connected component: on many-component
+        # graphs (reddit: hundreds of satellites) the zero-eigenvalue cluster
+        # exceeds the eigsh request, so every returned pair is a component
+        # indicator and the drop_tol filter empties the basis entirely.
+        # Satellite-component nodes get zero rows like isolated ones.
+        ncomp, labels = sp.sparse.csgraph.connected_components(Aa, directed=False)
+        if ncomp > 1:
+            giant = np.where(labels == np.bincount(labels).argmax())[0]
+            act = act[giant]
+            Aa = Aa[giant][:, giant]
+            m = act.size
         dis = 1.0 / np.sqrt(np.asarray(Aa.sum(axis=1)).ravel())
         Dis = sparse.diags(dis)
         Lsym = sparse.eye(m) - Dis @ Aa @ Dis
