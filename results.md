@@ -8,11 +8,13 @@ self-contained for a downstream paper-authoring agent. Last updated 2026-07-25.
 > every implementation-level rescue: fusion style (§10.4), basis quality + injection point (§10.6/7),
 > decoder inductive bias and GNN depth (§10.9), temporal-stability confounds (§10.2/8). Scoping
 > decisions (user, 2026-07-25): decoder/fusion axes CLOSED (concat established); the Laplace smodel
-> SIDELINED (never beat its placebo; sub-baseline under recompute). ONE question remains open —
-> §10.10: the exact basis is demonstrably informative (oracle 0.71 AUC) yet converts to ≤+0.008 MRR;
-> why does conversion stop at parity? Next step: the conditional-information probe, then (conditional
-> on headroom) SignNet x exact basis — the one untested encoder-basis cell. This section supersedes
-> §4.2's gauge mechanism and re-frames §8.
+> SIDELINED (never beat its placebo; sub-baseline under recompute). The decisive result is
+> §10.10: the exact basis's CONDITIONAL value given the trained model is +0.007 at C1 (redundant —
+> MP computes smoothing) but GROWS ~10x with sharding (+0.022/+0.044/+0.067 at C3/7/9), tracking the
+> measured fraction of message-passing edges FL severs (0.67/0.86/0.90). The federated mechanism is
+> confirmed; embedding-level implementations converted almost none of it; the probe's own score-level
+> fusion realizes it. LIVE DIRECTION: decode-time spectral score fusion; first verify with an
+> MRR-style readout + a bitcoin_otc probe. This supersedes §4.2's gauge mechanism and re-frames §8.
 
 > Status legend: **[confirmed]** = 3-seed means, stable; **[prelim]** = 1–2 seeds or
 > small dataset, directionally trusted; **[single]** = one seed, a data point only;
@@ -309,14 +311,18 @@ analytically / big-O; no distributed transport is implemented.)
   (§10.6); the exact solver fixes the basis but not the outcome (§10.7). **BasisNet** — predicted
   null, not scheduled (§10.5).
 
-### The one open spectral question (§10.10)
-Conversion, not content: the exact basis carries real, partly complementary signal (standalone
-0.71 AUC; 0.674 where Adamic-Adar is blind) yet converts to ≤ +0.008±0.008 MRR. Plan:
-1. **Conditional-information probe [NEXT, zero GPU]:** does exact-spectral affinity add anything
-   GIVEN the trained fmodel's embeddings z? If ~0, parity is a ceiling and the spectral program
-   ends with a complete mechanism; if >0, the failure is trainability.
-2. **SignNet x exact basis [conditional on 1]:** the single untested encoder-basis cell (every
-   SignNet run to date consumed the empty Arnoldi basis — see the §10.10 matrix).
+### The live spectral direction (§10.10, 2026-07-25) — federated ceiling confirmed, conversion gap real
+The conditional-information probe, extended to C{1,3,7,9} with per-snapshot cut-edge counts:
+the exact global basis's marginal value given the trained model is +0.007 at C1 (redundant, as
+MP≈smoothing) but rises to **+0.022 / +0.044 / +0.067** at C3/7/9, tracking the measured severed-MP
+fraction (0.67/0.86/0.90 ≈ 1−1/C). Mechanism confirmed; realized embedding-level gains (§10.7)
+captured almost none of it; the probe's own score-level fusion does. AGENDA, in order:
+1. **MRR-style readout of the probe** [zero GPU] — does the AUC ceiling survive the ranking metric?
+2. **bitcoin_otc probe replication** [local/cheap] — is the ceiling curve dataset-general?
+3. **Decode-time score-fusion implementation** [FedLap idiom: an edge-score smodel; then federated
+   sweeps with the placebo controls] — the conversion mechanism the probe validates.
+Sidelined as before: Laplace smodel, decoder/fusion/depth axes, SignNet x exact (superseded by the
+score-fusion direction).
 
 ### Recommended non-spectral agenda
 - **§9 x `ma` updater replication** — the headline is currently gru-only; ~54 runs would make the
@@ -1983,7 +1989,7 @@ separate) — the any-code capacity effect again, not structure; (3) side observ
 1–2 MP layers (feature L1 0.119±0.003 ≈ L8 0.113±0.012); the 8-layer Table-3 config is kept for
 parity only. The depth axis is CLOSED.
 
-### 10.10 What remains open — conversion, not content  **[the live question, 2026-07-25]**
+### 10.10 Conversion, not content — C1 answered, then REOPENED federated  **[the live result, 2026-07-25]**
 
 Program scoping (user, 2026-07-25): decoder + fusion axes closed; Laplace smodel sidelined. The one
 question the spectral data does NOT answer: **the exact basis is demonstrably informative, yet
@@ -2015,6 +2021,64 @@ feature-model's per-snapshot eval embeddings z; score t+1 candidates with (a) a 
 (b) z + exact-spectral affinity; compare AUC/MRR overall and on the AA-blind slice. Discriminates
 1 from 2/3 before any sweep. **SignNet x exact** (via a `spectral.solver` knob) runs only if the
 probe shows headroom — scoped to bitcoin_otc + uci, recompute, laplacian vs shuffled_fixed, C{3,7}.
+
+**RESOLVED (2026-07-25) — the probe was run, and the question is answered.** Two stages, uci C1,
+3 seeds, prequential (fit on past snapshots only), fixed candidates across seeds:
+- Stage 1 (probe readouts over captured eval-time z): spectral affinity adds +0.04–0.09 AUC over
+  z-feature probes — but those probes (0.73–0.79 AUC) are weaker than the model's own head (0.90),
+  so the delta conflates headroom with readout weakness.
+- Stage 2 (decisive — baseline = the MODEL'S OWN trained scores, captured via a decode hook at
+  every eval): model alone **0.9011±0.0007**; model + exact-spectral affinity (2-feature
+  prequential logistic) **0.9094±0.0010**; **Δ = +0.0083±0.0005** (per-seed +0.0077/+0.0083/
+  +0.0089); AA-blind slice Δ = +0.0070±0.0007. The tightest measurement in this file.
+
+**Verdict — hypothesis 1 confirmed in refined form: near-total marginal redundancy.** The exact
+basis's unconditional 0.71 AUC shrinks to **+0.008 conditional** on what the trained backbone
+already represents — and §10.7's input-PE realized **+0.008** MRR on uci. The pipeline did not
+fail to convert the spectral information; it converted essentially ALL of the conditionally
+available information, which is simply small. Parity+ε IS the ceiling, and the implementation
+saturates it. Consequences: (a) **SignNet x exact is no longer justified** — the probe bounds any
+encoder's possible gain at the same ~+0.008 (an encoder cannot exceed the conditional information
+of its input); (b) the spectral thread now ends affirmatively, with a measured
+information-accounting: content real (0.71) -> conditionally novel (+0.008) -> realized (+0.008).
+Scope caveats: uci C1, random negatives, cosine affinity over the exact low-50 basis; replicating
+the probe on bitcoin_otc (where f+pe sat BELOW its ceiling candidate) is the one cheap follow-up
+that could still teach something.
+
+**REOPENED BY THE FEDERATED EXTENSION (2026-07-25, same day) — the C1 verdict was an artifact of
+centralization.** User objection, correct: at C=1 message passing can compute everything the
+low-frequency eigenbasis encodes (MP ~ graph smoothing), so redundancy there is near-tautological;
+the paper's hypothesis was always that the GLOBAL basis substitutes for the cross-client message
+passing that sharding FORBIDS. The probe was extended to C{1,3,7,9} with, per snapshot, a count of
+the edges whose endpoints fall in different clients (= messages a centralized GNN would pass that
+FL cannot). uci, 3 seeds, identical global candidates across C, model-score baseline:
+
+| C | cut fraction | lost edges/snap | model alone | model+spec | Δ (conditional ceiling) | Δ AA-blind |
+|---|---|---|---|---|---|---|
+| 1 | 0.000 | 0 | 0.9027±0.0008 | 0.9098±0.0015 | +0.0071±0.0021 | +0.0066±0.0024 |
+| 3 | 0.665±0.006 | 464 | 0.8604±0.0040 | 0.8820±0.0034 | **+0.0216±0.0010** | +0.0231±0.0005 |
+| 7 | 0.856±0.002 | 594 | 0.7837±0.0116 | 0.8277±0.0095 | **+0.0440±0.0071** | +0.0464±0.0157 |
+| 9 | 0.895±0.004 | 620 | 0.7421±0.0328 | 0.8095±0.0089 | **+0.0674±0.0241** | +0.0697±0.0207 |
+
+Three findings:
+1. **The federated mechanism is CONFIRMED.** The conditional ceiling grows ~10x from C1 to C9,
+   monotone in the measured cut fraction (which itself matches the 1−1/C random-partition theory).
+   The global exact basis carries precisely the information the severed message-passing edges would
+   have provided — the paper's original premise, validated at the information level.
+2. **The federated conversion gap is REAL.** Realized f+pe gains (§10.7: uci C3 +0.015, C7 ~0)
+   sit far below the C3/C7 ceilings (+0.022/+0.044) — embedding-level injection fails to convert
+   exactly where the information matters most. The C1 "saturation" was the exception, not the rule.
+3. **The probe demonstrates a working converter.** Its own readout — a prequential 2-feature
+   logistic over [model score, spectral affinity], i.e. SCORE-LEVEL late fusion — realizes the
+   ceiling by construction: at C9 it recovers ~40% of the AUC that sharding destroyed
+   (0.742 -> 0.810 of the centralized 0.903). Every failed implementation fused at the input or
+   embedding level, where training can absorb or ignore the signal; fusing at the DECISION level
+   cannot be absorbed.
+
+Status: the spectral thread is REOPENED with a measured target curve, a confirmed mechanism, and a
+concrete implementation direction (decode-time score fusion, FedLap-idiomatic as an edge-score
+smodel). Caveats before celebrating: AUC readout on 1:1 random-negative candidates — the gain must
+survive (a) an MRR-style ranking readout and (b) other datasets (bitcoin_otc probe pending).
 
 **Program conclusion (implementation loop closed; see §10.10 for the precise residual).** Output-side fusion transported nothing (§10.2–10.4);
 the consumed basis carried nothing to transport (§10.6); and with BOTH repaired — an informative
