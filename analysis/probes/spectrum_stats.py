@@ -9,7 +9,13 @@ components) and the actual gaps of the operator the pipeline consumes —
 `calc_eigs_exact_sym`, i.e. after active-subgraph + largest-component
 truncation and the near-zero drop.
 
-usage: python analysis/probes/spectrum_stats.py [dataset ...]
+Report both the INTERNAL crowding of the requested window (which destabilises
+individual eigenvectors) and the BOUNDARY gap lambda_k -> lambda_{k+1} (which is
+what destabilises the k-dimensional invariant subspace as a whole). The two
+windows that matter here: k=50 (`spectral.pe_dim`, the input-PE + probe path)
+and k=300 (`spectral.spectral_len`, the f+s smodel / tracking path).
+
+usage: python analysis/probes/spectrum_stats.py [k] [dataset ...]
 """
 import os
 import sys
@@ -24,10 +30,13 @@ import torch
 from scipy import sparse
 from scipy.sparse.csgraph import connected_components
 
-K = 60
-
 DEFAULT = ["uci", "bitcoin_alpha", "bitcoin_otc", "as733", "reddit_body", "reddit_title"]
-TARGETS = sys.argv[1:] or DEFAULT
+_a = sys.argv[1:]
+if _a and _a[0].isdigit():
+    WIN, TARGETS = int(_a[0]), (_a[1:] or DEFAULT)
+else:
+    WIN, TARGETS = 50, (_a or DEFAULT)
+K = WIN + 10  # solve a few past the window so the boundary gap is measurable
 
 sys.argv = ["spectrum_stats", "-c", "config/uci_gru.yaml", "--set",
             "model.data_type=feature", "subgraph.num_subgraphs=1", "wandb.mode=disabled"]
@@ -48,8 +57,11 @@ def und(ei):
     return {(min(a, b), max(a, b)) for a, b in zip(e[0], e[1]) if a != b}
 
 
-print(f"{'dataset':>13s} {'t':>5s} {'|E|':>8s} {'iso':>6s} {'comp':>6s} {'giant':>7s} "
-      f"{'lam1':>7s} {'lam50':>7s} {'med gap':>9s} {'<1e-3':>6s} {'<1e-2':>6s} {'rel gap':>9s}")
+print(f"window k={WIN} (pe_dim=50 is the input-PE/probe path; spectral_len=300 is the "
+      f"f+s smodel / tracking path)")
+print(f"{'dataset':>13s} {'t':>5s} {'|E|':>8s} {'comp':>6s} {'giant':>7s} "
+      f"{'lam1':>7s} {'lam_k':>7s} {'med gap':>9s} {'<1e-3':>6s} {'<1e-2':>6s} "
+      f"{'rel gap':>9s} {'bnd gap':>9s} {'bnd/med':>8s}")
 for name in TARGETS:
     c = p.load_config(p.parse_args(["-c", f"config/{name}_gru.yaml", "--set",
                                     "model.data_type=feature",
@@ -76,9 +88,13 @@ for name in TARGETS:
         w, _ = g.calc_eigs_exact_sym(K)
         w = w.numpy()
         w = w[w > 0]  # drop the zero padding of tiny graphs
-        gaps = np.diff(w[:50])
-        span = w[min(49, len(w) - 1)] - w[0]
-        print(f"{name:>13s} {t:>5d} {len(cum):>8d} {iso:>6d} {ncomp:>6d} {giant:>7d} "
-              f"{w[0]:>7.4f} {w[min(49, len(w) - 1)]:>7.4f} {np.median(gaps):>9.2e} "
+        last = min(WIN, len(w)) - 1
+        gaps = np.diff(w[:last + 1])
+        span = w[last] - w[0]
+        bnd = (w[last + 1] - w[last]) if len(w) > last + 1 else float("nan")
+        med = np.median(gaps)
+        print(f"{name:>13s} {t:>5d} {len(cum):>8d} {ncomp:>6d} {giant:>7d} "
+              f"{w[0]:>7.4f} {w[last]:>7.4f} {med:>9.2e} "
               f"{int((gaps < 1e-3).sum()):>6d} {int((gaps < 1e-2).sum()):>6d} "
-              f"{np.median(gaps) / max(span, 1e-12):>9.2e}", flush=True)
+              f"{med / max(span, 1e-12):>9.2e} {bnd:>9.2e} {bnd / max(med, 1e-12):>8.2f}",
+              flush=True)
