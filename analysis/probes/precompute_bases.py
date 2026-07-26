@@ -77,9 +77,9 @@ for t in range(T - 1):
     _, U = g.calc_eigs_exact_sym(K_PE)
     Q = U.numpy().astype(np.float32)
     Qn = Q / np.maximum(np.linalg.norm(Q, axis=1, keepdims=True), 1e-12)
-    tmp = path.with_suffix(".tmp.npy")
+    tmp = path.with_suffix(f".{os.getpid()}.tmp.npy")  # PID-unique: hosts race on the same t
     np.save(tmp, Qn)
-    tmp.rename(path)
+    os.replace(tmp, path)
     done += 1
     print(f"t={t} |E|={len(cum)} {time.time() - ts:.1f}s (done {done})", flush=True)
 print(f"offset {OFFSET}: {done} bases in {time.time() - t0:.0f}s", flush=True)

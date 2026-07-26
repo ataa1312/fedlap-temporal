@@ -129,10 +129,13 @@ for t in range(T - 1):
         Qn = np.load(cached)
     else:
         Qn = solve_basis(N, sorted(cumset), K_PE, thin_rng, THIN)
-        if cached is not None:  # write atomically: other hosts read this dir
-            tmp = cached.with_suffix(".tmp.npy")
+        if cached is not None:
+            # PID-unique temp + os.replace: sibling C-jobs and other hosts solve
+            # the same t concurrently, so a shared temp name would race (the first
+            # rename wins and the rest hit FileNotFoundError).
+            tmp = cached.with_suffix(f".{os.getpid()}.tmp.npy")
             np.save(tmp, Qn)
-            tmp.rename(cached)
+            os.replace(tmp, cached)
     QN[t], QP[t] = Qn, Qn[PERM]
 print(f"bases done ({time.time() - t0:.0f}s)", flush=True)
 
