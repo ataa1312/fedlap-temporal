@@ -235,6 +235,11 @@ def _spectral() -> Registry:
                                             # shift-invert), 'chebyshev' (filtered subspace iteration:
                                             # exact-quality at 3-24x less wall-clock, warm-started
                                             # from the previous basis under update_mode=update)
+    s["es_features"] = "spec"               # data_type=f+es feature set: 'spec' (rotation-invariant
+                                            # spectral affinities), 'persist' (the 1-bit "pair already
+                                            # exists" control -- §10.11 scored it ABOVE spectral on
+                                            # every dataset), 'both' (does the spectrum add anything
+                                            # on top of explicit history access?)
     s["robust_sign"] = False                # eigvec sign canon: by largest-|component| entry (stable)
                                             # vs the near-zero column-sum (noisy -> flips across snaps)
     s["regularizer_coef"] = 0

@@ -686,6 +686,22 @@ class DynamicServer(Server):
             nid = cl.snaps[t].node_ids.cpu()
             cl.classifier.set_QD(U[nid].to(device), D.to(device))
 
+        # persistence control (data_type=f+es): serve the cumulative graph too, so
+        # the smodel can read "is this pair already an edge". Clients get their own
+        # induced subgraph, remapped to local ids in the same order as their Q rows.
+        if hasattr(self.classifier, "set_adj"):
+            n_glob = self.global_snaps[0].num_nodes
+            self.classifier.set_adj(self._cum_edges.to(device), n_glob)
+            for cl in self.clients:
+                nid = cl.snaps[t].node_ids.cpu()
+                keep_mask = torch.zeros(n_glob, dtype=torch.bool)
+                keep_mask[nid] = True
+                e = self._cum_edges
+                sel = keep_mask[e[0]] & keep_mask[e[1]]
+                remap = torch.full((n_glob,), -1, dtype=torch.long)
+                remap[nid] = torch.arange(nid.numel())
+                cl.classifier.set_adj(remap[e[:, sel]].to(device), int(nid.numel()))
+
     def _eval_mrr(self, t, mrr_k, mrr_method):
         zs, ids = [], []
         for cl in self.clients:

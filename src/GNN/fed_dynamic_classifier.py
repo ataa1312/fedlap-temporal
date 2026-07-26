@@ -259,17 +259,24 @@ class DynamicSInvariant:
     only sharpen it. The MLP over those few invariants is the learnable part,
     federated through state_dict like any FedLap smodel."""
 
-    def __init__(self, n_filters=4, hidden=None):
+    def __init__(self, n_filters=4, hidden=None, features=None):
         self.Q = None
         self.D = None
-        self.n_filters = n_filters
+        self.keys = None      # sorted pair keys of the cumulative graph (persistence)
+        self.n_nodes = None
+        self.features = features or config["spectral"]["es_features"]
+        if self.features not in ("spec", "persist", "both"):
+            raise ValueError(f"spectral.es_features must be spec|persist|both, got {self.features!r}")
+        self.n_filters = n_filters if self.features != "persist" else 0
+        n_spec = (self.n_filters + 2) if self.features != "persist" else 0
+        n_persist = 1 if self.features in ("persist", "both") else 0
         hidden = hidden or config["structure_model"]["DGCN_structure_layers_sizes"]
         # log-tau so tau stays positive; spread the initial scales over the
         # decades that matter for lambda in [0, 2]
         self.log_tau = nn.Parameter(
             torch.linspace(-2.0, 2.0, n_filters, device=device)
         )
-        dims = [n_filters + 2] + list(hidden) + [1]
+        dims = [n_spec + n_persist] + list(hidden) + [1]
         layers = []
         for a, b in zip(dims[:-1], dims[1:]):
             layers += [nn.Linear(a, b), nn.ReLU()]
@@ -283,6 +290,29 @@ class DynamicSInvariant:
         self.Q = Q
         self.D = D
 
+    def set_adj(self, edge_index, num_nodes):
+        """Serve the cumulative graph itself, for the PERSISTENCE control: a
+        1-bit 'this pair is already an edge' feature. §10.11 measured that
+        trivial feature ABOVE the spectral affinity on every dataset (as733
+        +0.50/+0.56 vs spectral's smaller margins), so any spectral claim has to
+        be made against it, not only against the shuffled placebo — the placebo
+        removes structure AND history together and cannot separate them."""
+        self.n_nodes = num_nodes
+        if edge_index is None or edge_index.numel() == 0:
+            self.keys = torch.empty(0, dtype=torch.long, device=device)
+            return
+        a = torch.minimum(edge_index[0], edge_index[1]).to(torch.long)
+        b = torch.maximum(edge_index[0], edge_index[1]).to(torch.long)
+        self.keys = torch.unique(a * num_nodes + b).to(device)
+
+    def _persistence(self, edge_label_index):
+        if self.keys is None or self.n_nodes is None:
+            return None
+        a = torch.minimum(edge_label_index[0], edge_label_index[1]).to(torch.long)
+        b = torch.maximum(edge_label_index[0], edge_label_index[1]).to(torch.long)
+        k = a * self.n_nodes + b
+        return torch.isin(k, self.keys).to(torch.float32).unsqueeze(-1)
+
     def get_SFV(self):
         return None
 
@@ -294,6 +324,9 @@ class DynamicSInvariant:
 
     def edge_score(self, edge_label_index):
         """Scalar per candidate pair, added to the decoder logit."""
+        if self.features == "persist":
+            ex = self._persistence(edge_label_index)
+            return None if ex is None else self.model(ex).squeeze(-1)
         if self.Q is None or self.D is None:
             return None
         u = self.Q[edge_label_index[0]]
@@ -314,8 +347,13 @@ class DynamicSInvariant:
         cos = prod.sum(-1, keepdim=True)                    # unfiltered affinity (the probe's)
         # leverage: ||U_u|| is sqrt of a projector diagonal, so it is invariant too
         lev = torch.log1p(nu * nv * float(self.Q.shape[0]))
-        feats = torch.cat([phi, cos, lev], dim=-1)
-        return self.model(feats).squeeze(-1)
+        feats = [phi, cos, lev]
+        if self.features == "both":
+            ex = self._persistence(edge_label_index)
+            if ex is None:
+                return None
+            feats.append(ex)
+        return self.model(torch.cat(feats, dim=-1)).squeeze(-1)
 
     # ---- FedLap smodel protocol ---- #
 
@@ -388,6 +426,9 @@ class FedDynamicEdgeScoreClassifier(DynamicClassifier):
 
     def set_QD(self, U, D):
         self.smodel.set_QD(U, D)
+
+    def set_adj(self, edge_index, num_nodes):
+        self.smodel.set_adj(edge_index, num_nodes)
 
     def get_SFV(self):
         return self.smodel.get_SFV()
