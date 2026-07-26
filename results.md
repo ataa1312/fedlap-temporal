@@ -12,9 +12,12 @@ self-contained for a downstream paper-authoring agent. Last updated 2026-07-25.
 > §10.10: the exact basis's CONDITIONAL value given the trained model is +0.007 at C1 (redundant —
 > MP computes smoothing) but GROWS ~10x with sharding (+0.022/+0.044/+0.067 at C3/7/9), tracking the
 > measured fraction of message-passing edges FL severs (0.67/0.86/0.90). The federated mechanism is
-> confirmed; embedding-level implementations converted almost none of it; the probe's own score-level
-> fusion realizes it. LIVE DIRECTION: decode-time spectral score fusion; first verify with an
-> MRR-style readout + a bitcoin_otc probe. This supersedes §4.2's gauge mechanism and re-frames §8.
+> confirmed, and REPLICATED on bitcoin_otc (+0.004/+0.020/+0.048/+0.087 at C1/3/7/9). Embedding-level
+> implementations converted almost none of it; decode-time score fusion does — inside the REAL eval
+> protocol it adds **+0.026–0.041 MRR at every C on uci** with null placebos, but is **null on
+> bitcoin_otc** (real ≈ placebo), the same dataset split as §10.7's input PE. LIVE DIRECTION: decide
+> whether uci or bitcoin_otc is the typical case (cheap breadth pass) BEFORE building the edge-score
+> smodel. This supersedes §4.2's gauge mechanism and re-frames §8.
 
 > Status legend: **[confirmed]** = 3-seed means, stable; **[prelim]** = 1–2 seeds or
 > small dataset, directionally trusted; **[single]** = one seed, a data point only;
@@ -317,10 +320,24 @@ the exact global basis's marginal value given the trained model is +0.007 at C1 
 MP≈smoothing) but rises to **+0.022 / +0.044 / +0.067** at C3/7/9, tracking the measured severed-MP
 fraction (0.67/0.86/0.90 ≈ 1−1/C). Mechanism confirmed; realized embedding-level gains (§10.7)
 captured almost none of it; the probe's own score-level fusion does. AGENDA, in order:
-1. **MRR-style readout of the probe** [zero GPU] — does the AUC ceiling survive the ranking metric?
-2. **bitcoin_otc probe replication** [local/cheap] — is the ceiling curve dataset-general?
-3. **Decode-time score-fusion implementation** [FedLap idiom: an edge-score smodel; then federated
-   sweeps with the placebo controls] — the conversion mechanism the probe validates.
+1. ~~MRR-style readout of the probe~~ **DONE** — +0.072–0.080 probe-MRR at every C, placebo null.
+   **Gate 1 also DONE**: inside the REAL eval protocol (1000-multiplier, test split,
+   `mrr_method=max`) the reported MRR moves **+0.026–0.041 at every C** with both leakage-free
+   weightings and null placebos (§10.10). One claim retracted: spectral affinity alone does NOT
+   beat the model in-protocol.
+2. ~~bitcoin_otc replication~~ **DONE, and it SPLITS** (§10.10): the conditional ceiling replicates
+   (+0.004/+0.020/+0.048/+0.087 at C1/3/7/9, same cut fractions), but the in-protocol fusion is
+   **null there — real ≈ placebo at every C**. Same dataset asymmetry as §10.7's input PE, so it
+   is the basis CONTENT on bitcoin_otc that is weak, not the injection point.
+3. ~~Breadth before build~~ **DONE for the cheap datasets** (§10.10): bitcoin_alpha null too, and
+   the null survives K ∈ {50…300} on both bitcoin graphs while uci STRENGTHENS with K (net +0.046).
+   The effect is dataset-conditional, and the condition is measurable in advance (spectral affinity
+   alone must rank future partners within reach of the model). as733 running; reddit not attempted.
+4. **Gate 3 — the edge-score smodel** [decision pending]: a `decode`-time term in the FedLap
+   subclass idiom, learnable λ, exact basis served through the existing `_spectral_step`/`set_QD`
+   path, placebo arm free via `spectral.basis_source`. Now framed as a conditional method shipped
+   with its diagnostic. The val-edge λ fit is the leakage-free recipe an in-model λ must reproduce;
+   `spectral.pe_dim` must be re-tuned (50 is undersized even on uci).
 Sidelined as before: Laplace smodel, decoder/fusion/depth axes, SignNet x exact (superseded by the
 score-fusion direction).
 
@@ -2075,12 +2092,323 @@ Three findings:
    embedding level, where training can absorb or ignore the signal; fusing at the DECISION level
    cannot be absorbed.
 
-Status: the spectral thread is REOPENED with a measured target curve, a confirmed mechanism, and a
-concrete implementation direction (decode-time score fusion, FedLap-idiomatic as an edge-score
-smodel). Caveats before celebrating: AUC readout on 1:1 random-negative candidates — the gain must
-survive (a) an MRR-style ranking readout and (b) other datasets (bitcoin_otc probe pending).
+**MRR-STYLE READOUT + PLACEBO CONTROL — both PASSED (2026-07-25, same day).** Each t+1 positive
+ranked against 200 corrupted-endpoint negatives (excluded: true t+1 edges); fusion = prequential
+logistic over [model score, spectral affinity]; placebo = the same fusion but with a FIXED
+node-row permutation of the same normalized eigenvectors (structure destroyed, numerics and drift
+identical), with its own independently fitted weights. uci, 3 seeds:
 
-**Program conclusion (implementation loop closed; see §10.10 for the precise residual).** Output-side fusion transported nothing (§10.2–10.4);
+| C | MRR model | Δ MRR real fusion | Δ MRR placebo fusion | MRR spec alone |
+|---|---|---|---|---|
+| 1 | 0.1835±0.0019 | **+0.0745±0.0032** | −0.0002±0.0001 | 0.1513 |
+| 3 | 0.1455±0.0152 | **+0.0799±0.0103** | +0.0002±0.0003 | 0.1513 |
+| 7 | 0.1258±0.0099 | **+0.0717±0.0059** | −0.0001±0.0004 | 0.1513 |
+| 9 | 0.1135±0.0046 | **+0.0727±0.0029** | −0.0006±0.0013 | 0.1513 |
+
+Reads:
+1. **The fusion gain survives the ranking metric and beats its placebo by construction-grade
+   margins**: +0.072–0.080 probe-MRR at every C (~40–70% relative), placebo pinned at zero
+   (the prequential fit learns to ignore the useless feature — the honest null behavior).
+2. **Two separable effects confirmed**: the C-growing AUC ceiling (cross-shard information; §10.10
+   table above) and a C-INDEPENDENT top-rank disambiguation effect — spectral affinity resolves
+   which of the model's plausible top candidates is the true partner, worth little in
+   threshold-averaged AUC at C1 (+0.009) but a lot in MRR (+0.075). This also retro-explains
+   §10.9: the concat-MLP head underuses pair affinity at the top of the ranking, and embedding-level
+   injection (§10.7, +0.008) converted almost none of what score-level fusion reaches.
+3. **Raw spectral affinity ALONE (MRR 0.151) out-ranks the entire trained federated model at C≥7**
+   (0.126/0.114) — the single most striking number in the file: at high sharding, a training-free
+   eigenvector cosine beats the full federated ROLAND pipeline on the ranking metric.
+4. Caveats that remain before this is a paper claim: (a) probe-MRR (200 corrupted-endpoint
+   negatives) is not the codebase's reported protocol (1000-multiplier, test-split positives,
+   `mrr_method=max`) — the fusion must be validated INSIDE the real eval; (b) uci only so far;
+   (c) fusion weights are prequential-fit — an in-model equivalent (per-snapshot validation-fitted
+   λ, or a learned scalar) must reproduce them without leakage.
+
+**GATE 1 — THE FUSION INSIDE THE REAL EVAL PROTOCOL: PASSED (2026-07-25).** The probe-MRR above
+uses 200 corrupted-endpoint negatives; the reported metric does not. `analysis/probes/proto_fusion.py`
+replaces `compute_mrr_from_z` in the eval path with a copy that is identical in RNG consumption and
+return value — verified per run: the probe's own model mean equals the run's reported `mean_mrr` to
+4 decimals on all 12 runs — and additionally ranks the SAME candidate set with fused scores. So the
+readout below IS the codebase's protocol: `rank_eval_multiplier=1000` negatives per source,
+**test-split** positives of t+1, `mrr_method=max`, per-source aggregation, global stitched z.
+
+Two leakage-free weightings, each with its own independently fitted placebo arm (`shuffled_fixed`:
+one fixed node-row permutation of the same normalized exact low-50 eigenvectors):
+- **preq** — logistic over [model score, spectral affinity] fit on PAST snapshots only (features
+  z-scored per snapshot); applied to the reported (train-mode) scores.
+- **val** — logistic fit on the CURRENT snapshot's **val-split** edges + 50 sampled negatives each,
+  scored in eval mode; applied to eval-mode test scores. This is the one an in-model λ can copy.
+
+uci, gru, feature model, C{1,3,7,9} x 3 seeds; means over the 22 of 27 snapshots where both
+weightings are defined (5-snapshot prequential warm-up), the model column on the same window:
+
+| C | MRR model | Δ preq real | Δ preq placebo | Δ val real | Δ val placebo | MRR spec alone | λ val |
+|---|---|---|---|---|---|---|---|
+| 1 | 0.1292±0.0171 | **+0.0326±0.0124** | −0.0044±0.0014 | **+0.0307±0.0161** | −0.0073±0.0032 | 0.0760±0.0018 | +0.76 |
+| 3 | 0.0960±0.0098 | **+0.0406±0.0009** | −0.0017±0.0019 | **+0.0357±0.0043** | −0.0054±0.0043 | 0.0718±0.0029 | +1.12 |
+| 7 | 0.0801±0.0167 | **+0.0385±0.0145** | −0.0021±0.0013 | **+0.0257±0.0186** | −0.0063±0.0044 | 0.0688±0.0049 | +1.82 |
+| 9 | 0.0751±0.0103 | **+0.0331±0.0043** | +0.0002±0.0015 | **+0.0255±0.0083** | −0.0049±0.0024 | 0.0693±0.0010 | +2.55 |
+
+Reads:
+1. **The reported metric moves.** +0.026–0.041 MRR (+25–53% relative) at every C, under both
+   leakage-free weightings, while both placebos sit at −0.007..+0.000. The finding survives the
+   protocol change; the effect is smaller than probe-MRR's +0.072–0.080 but the same phenomenon.
+2. **The val-fitted weight nearly matches the prequential one** (−0.005..−0.013 vs preq), so the
+   in-model version needs no history: one snapshot's val edges suffice to set λ.
+3. **λ grows with sharding** (+0.76 → +2.55 from C1 to C9): the fit leans harder on spectral
+   affinity exactly as federation severs more message-passing edges — the same direction as the
+   conditional-ceiling curve, now visible in the fitted weights.
+4. **The realized MRR gain is C-INDEPENDENT** (+0.033/+0.041/+0.039/+0.033), consistent with the
+   top-rank-disambiguation effect rather than the C-growing cross-shard AUC ceiling. As a fraction
+   of what sharding costs (C1→C9 model loses 0.054) it recovers 61% at C9 and 78% at C7 — but it
+   also gains the same amount at C1, so this is a decoder-level gain, not a federated repair.
+   The federated argument rests on the AUC ceiling table, not on this row.
+5. **CORRECTION to the probe-MRR reading (§10.10 point 3): spectral affinity alone does NOT
+   out-rank the trained model in-protocol** — 0.069–0.076 vs the model's 0.075–0.129; at C9 it is
+   close (0.069 vs 0.075) but still below. That claim was an artifact of the 200-negative
+   corrupted-endpoint probe and must not be carried into the paper.
+
+Remaining caveats: uci only (bitcoin_otc replication is gate 2); the fusion is applied at the eval
+readout, not learned inside the model (gate 3); λ is fitted per snapshot on val edges, which an
+edge-score smodel would have to reproduce.
+
+**GATE 2 — bitcoin_otc: the MECHANISM replicates, the CONVERSION does not (2026-07-25).** Both
+probes re-run on bitcoin_otc (261 snapshots, 5881 nodes, gru, feature model, C{1,3,7,9} x 3 seeds,
+sim13; ~50 s/run — the earlier 35 min/run estimate was for in-model f+pe runs, not these).
+
+_Conditional-information ceiling (`cond_probe3.py`), model-score baseline, exact Q50:_
+
+| C | cut fraction | lost edges/snap | model alone | model+spec | Δ (ceiling) | Δ AA-blind |
+|---|---|---|---|---|---|---|
+| 1 | 0.000 | 0 | 0.9499±0.0004 | 0.9536±0.0004 | +0.0037±0.0002 | +0.0055±0.0000 |
+| 3 | 0.665±0.001 | 61.4 | 0.8767±0.0351 | 0.8963±0.0187 | +0.0197±0.0192 | +0.0107±0.0033 |
+| 7 | 0.856±0.003 | 78.8 | 0.7594±0.1127 | 0.8077±0.0206 | +0.0483±0.0922 | +0.0306±0.0535 |
+| 9 | 0.891±0.002 | 81.7 | 0.6765±0.1005 | 0.7635±0.0317 | +0.0870±0.0708 | +0.0443±0.0349 |
+
+_In-protocol fusion (`proto_fusion.py`), same protocol as gate 1, 182 of 261 snapshots in window:_
+
+| C | MRR model | Δ preq real | Δ preq placebo | Δ val real | Δ val placebo | MRR spec alone | λ preq | λ val |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 0.1939±0.0009 | −0.0022±0.0025 | −0.0011±0.0003 | −0.0211±0.0025 | −0.0203±0.0043 | 0.0450±0.0036 | −0.02 | +0.44 |
+| 3 | 0.1504±0.0068 | −0.0024±0.0039 | −0.0060±0.0013 | −0.0172±0.0021 | −0.0228±0.0027 | 0.0436±0.0017 | −0.04 | +0.90 |
+| 7 | 0.1280±0.0039 | −0.0091±0.0064 | −0.0002±0.0022 | −0.0146±0.0039 | −0.0174±0.0007 | 0.0444±0.0025 | +1.20 | +4.54 |
+| 9 | 0.1055±0.0087 | −0.0123±0.0020 | −0.0134±0.0062 | −0.0087±0.0053 | −0.0198±0.0046 | 0.0432±0.0025 | +3.56 | +7.34 |
+
+Reads:
+1. **The federated ceiling replicates on a second dataset**: +0.004 / +0.020 / +0.048 / +0.087 AUC
+   against uci's +0.007 / +0.022 / +0.044 / +0.067, on independently measured cut fractions that
+   again match 1−1/C. The mechanism claim (the global basis carries what severed cross-client
+   message passing would compute) is no longer uci-only. Caveat: at C7/C9 the seed spread is as
+   large as the effect (model-alone AUC itself swings ±0.11 at C7, n=3) — directionally confirmed,
+   not tightly measured.
+2. **The conversion does NOT replicate.** In-protocol fusion is null-to-negative at every C, and
+   crucially **real ≈ placebo** (differences ≤0.011, both signs) — the honest reading of the
+   negative Δs is that the refit slightly miscalibrates the model score, identically with and
+   without real structure. No spectral gain exists here to convert.
+3. **λ still climbs with sharding** (−0.02 → +3.56 preq; +0.44 → +7.34 val) without buying any MRR:
+   the fit reaches for spectral affinity as more edges are severed, but on bitcoin_otc that
+   affinity carries no ranking-relevant structure — spec alone is 0.043–0.045 versus uci's
+   0.069–0.076 against a *stronger* model (0.194 vs 0.129 at C1).
+4. **This is the §10.7 dataset split again, now at the decision level** (input PE: uci +0.008,
+   bitcoin_otc −0.011). The asymmetry therefore belongs to the SIGNAL — bitcoin_otc's exact
+   low-50 basis is weak for future-link ranking — not to the injection point. Score-level fusion
+   fixes the *conversion* problem, not the *content* problem.
+
+**BREADTH + BASIS-SIZE SENSITIVITY (2026-07-25, sim13).** Two competing readings of the uci /
+bitcoin_otc split had to be separated before building anything: (a) the basis is too SMALL on the
+bigger graphs — K=50 was chosen for uci's 1899 nodes, i.e. K/N ≈ 2.6%, versus 0.85% on
+bitcoin_otc; (b) the fusion only helps where the BACKBONE is weak (uci's model is the weakest in
+the file). `proto_fusion.py` on bitcoin_alpha and on K ∈ {50, 100, 200(, 300)}, all C{1,3,7,9} x
+3 seeds. Columns: Δ = mean over C of the prequential fusion delta, net = real − placebo:
+
+| dataset | N | K | Δ real (mean over C) | Δ placebo | **net** | MRR spec alone | model MRR (C1) |
+|---|---|---|---|---|---|---|---|
+| uci | 1899 | 50 | +0.036 | −0.002 | **+0.038** | 0.070 | 0.129 |
+| uci | 1899 | 100 | +0.050 | +0.004 | **+0.046** | 0.091 | 0.119 |
+| uci | 1899 | 200 | +0.050 | +0.004 | **+0.046** | 0.104 | 0.132 |
+| bitcoin_otc | 5881 | 50 | −0.007 | −0.005 | −0.001 | 0.044 | 0.194 |
+| bitcoin_otc | 5881 | 100 | −0.010 | −0.006 | −0.004 | 0.044 | 0.192 |
+| bitcoin_otc | 5881 | 200 | −0.013 | −0.005 | −0.008 | 0.044 | 0.191 |
+| bitcoin_otc | 5881 | 300 | −0.010 | −0.006 | −0.004 | 0.042 | 0.193 |
+| bitcoin_alpha | 3783 | 50 | +0.004 | −0.003 | +0.007 | 0.039 | 0.166 |
+| bitcoin_alpha | 3783 | 150 | −0.008 | −0.004 | −0.004 | 0.037 | 0.165 |
+| as733 | 7716 | 50 | _running (4 jobs, C1/3/7/9 x 3 seeds, ~1 h per run)_ | | | | |
+
+1. **Hypothesis (a) is refuted for bitcoin, and confirmed for uci.** On uci a bigger basis carries
+   strictly more signal — spectral affinity alone climbs 0.070 → 0.091 → 0.104 and the net fusion
+   gain grows +0.038 → +0.046 (at K=200, C9 it is +0.060±0.008 on a 0.060±0.005 model, i.e. the
+   MRR doubles). On both bitcoin graphs spectral affinity alone is FLAT in K (0.044/0.044/0.044/
+   0.042 at K=50/100/200/300, and 0.039/0.037) — a 6x bigger basis adds nothing, so K=50 never was
+   the binding constraint there. §10.10's per-C uci table (K=50) therefore UNDERSTATES the effect; K should scale with the
+   graph, and 50 was undersized even for uci.
+2. **Hypothesis (b) is refuted.** bitcoin_alpha's backbone is as weak as uci's at high sharding
+   (0.089–0.098 at C7/C9 vs uci's 0.075–0.088) and the fusion still gains nothing there. What
+   separates the datasets is the CONTENT of the basis: spectral affinity ranks future partners on
+   uci (0.070–0.104, within reach of the model's own 0.06–0.13) and barely at all on the bitcoin
+   graphs (0.037–0.045 against a 0.17–0.19 model).
+3. Reading: this is a **communication-graph vs rating-graph** distinction, not a size, capacity or
+   basis-resolution one. Who messages whom next week is community-structured, so low-frequency
+   eigenvectors predict it; who rates whom next is not.
+4. Bookkeeping caveat: the model column moves by up to 0.019 between batches of the SAME condition
+   (uci C9: 0.075 / 0.079 / 0.060 across the K batches, 3-seed means each). Only the within-run
+   deltas are trustworthy; never compare model columns across batches.
+
+**THE PERSISTENCE CONTROL — the uci gain is EDGE MEMORY, not spectral structure (2026-07-25,
+supersedes the gate-1 interpretation).** Prompted by the user's question ("could the bitcoin
+datasets just be much sparser?"), the datasets' basic statistics were measured — and the decisive
+difference is not density but **edge RECURRENCE**:
+
+| dataset | avg degree (cum.) | median degree | share of next-snapshot edges that ALREADY exist |
+|---|---|---|---|
+| uci | 14–15 | 6 | **0.52–0.56** |
+| bitcoin_otc | 5.5–7.3 | 2 | 0.10–0.20 |
+| bitcoin_alpha | 5.4–7.5 | 2 | 0.07–0.10 |
+
+Cosine affinity in a low-frequency eigenbasis is an excellent detector of pairs that are ALREADY
+connected in the graph the basis was built from. On uci half the test positives are exactly that;
+on the bitcoin graphs almost none are. So `proto_fusion.py` gained two controls: (i) the same
+prequential fusion with a **trivial 1-bit `exists` feature** (is the pair already an edge of the
+cumulative union?) and with **`cn`** (log common neighbours), and (ii) every arm reported split by
+REPEAT vs genuinely NEW positives. uci, exact Q100, 3 seeds:
+
+| C | MRR model | Δ preq spec | Δ preq placebo | **Δ preq exists** | Δ preq cn |
+|---|---|---|---|---|---|
+| 1 | 0.1279±0.0043 | +0.0519±0.0108 | +0.0050±0.0059 | **+0.1740±0.0137** | −0.0456±0.0033 |
+| 3 | 0.0844±0.0131 | +0.0655±0.0109 | +0.0022±0.0031 | **+0.1719±0.0071** | −0.0191±0.0017 |
+| 7 | 0.0850±0.0130 | +0.0456±0.0243 | +0.0012±0.0018 | **+0.1543±0.0244** | −0.0214±0.0070 |
+| 9 | 0.0735±0.0121 | +0.0475±0.0187 | +0.0029±0.0019 | **+0.1446±0.0190** | −0.0162±0.0047 |
+
+| C | repeat frac | model REP | Δ spec REP | Δ exists REP | model NEW | Δ spec NEW | Δ exists NEW |
+|---|---|---|---|---|---|---|---|
+| 1 | 0.488 | 0.167 | +0.124±0.014 | +0.340±0.019 | 0.072 | −0.037±0.005 | −0.039±0.003 |
+| 3 | 0.488 | 0.109 | +0.137±0.006 | +0.329±0.005 | 0.048 | −0.022±0.010 | −0.025±0.010 |
+| 7 | 0.488 | 0.102 | +0.113±0.032 | +0.307±0.028 | 0.061 | −0.038±0.015 | −0.039±0.015 |
+| 9 | 0.488 | 0.088 | +0.108±0.023 | +0.287±0.027 | 0.048 | −0.024±0.004 | −0.027±0.004 |
+
+1. **A 1-bit lookup beats the eigenbasis by ~3x at every C** (+0.145..+0.174 vs +0.046..+0.066).
+   Whatever the spectral feature contributes, a trivially cheaper feature contributes more.
+2. **The entire gain lives on REPEAT positives** (+0.11..+0.14 spec, +0.29..+0.34 exists). On
+   genuinely NEW pairs BOTH arms are NEGATIVE (−0.02..−0.04): the fused score is worse than the
+   model alone at ranking pairs that have never interacted.
+3. Therefore the spectral affinity is acting as a **noisy proxy for "these two are already
+   connected"**, i.e. graph MEMORY, not community structure predicting the future. That explains
+   the dataset split exactly (uci 49% repeats vs bitcoin 7–20%) — and it explains why K helped on
+   uci (a bigger basis resolves existing edges more sharply) but never on bitcoin.
+4. **The placebo control was necessary but not sufficient.** `shuffled_fixed` excludes "any
+   feature with the same numerics"; it cannot distinguish structure from trivial memory. Any
+   future spectral claim in this project must ALSO beat the `exists` baseline, and must be
+   reported split by repeat/new.
+**DENSITY, TESTED CAUSALLY (`thin`).** The sparsity question was then answered directly rather than
+by correlation: the eigenbasis is solved on a randomly THINNED copy of the cumulative graph while
+the model, the task and the `exists` feature keep the full graph. uci, K=100, 3 seeds:
+
+| thin | avg degree | Δ preq spec (C1) | Δ preq spec (C7) | spec alone | λ preq (C1) | Δ preq exists (C1) |
+|---|---|---|---|---|---|---|
+| 1.00 | ~14.6 | +0.0519±0.0108 | +0.0456±0.0243 | 0.099 | +0.60 | +0.1740±0.0137 |
+| 0.50 | ~7.3 | +0.0283±0.0101 | +0.0366±0.0128 | 0.073 | +0.35 | +0.1656±0.0147 |
+| 0.33 | ~4.8 | +0.0056±0.0059 | +0.0186±0.0162 | 0.058 | +0.29 | +0.1622±0.0123 |
+
+**Sparsity is causally sufficient to destroy the effect.** Thinned to bitcoin-like density
+(0.33 → avg degree 4.8 vs bitcoin's 5.5–7.3), uci's spectral gain collapses from +0.052 to
++0.006 — i.e. to bitcoin's null — with the fitted λ falling 0.60 → 0.29. The `exists` arm is
+untouched by thinning (it reads the full graph), which confirms the manipulation hit only the
+basis. The repeat-split shows the same dose-response (Δ spec on REPEAT positives: +0.124 → +0.087
+→ +0.039), tying the two findings together: **the low-frequency eigenbasis stores a smoothed
+memory of the edges it was built from, and a sparse graph leaves too little of that memory in the
+low-frequency subspace.** Bitcoin loses twice over — a sparser basis AND far fewer repeat test
+edges to spend it on.
+
+5. **What the fused features actually inject is HISTORY, and this reframes all of §10.** Snapshots
+   are disjoint calendar windows (`_temporal.py::split_by_calendar` slices `g_all` by period), so
+   the backbone's message passing at time t sees ONLY window t's edges — everything older survives
+   solely in the compressed GRU state. The spectral basis, by contrast, has always been solved on
+   the CUMULATIVE union up to t (`_spectral_step`), and so has `exists`. The fused arms therefore
+   carry the full edge history EXPLICITLY, which the recurrent state only summarises. Two
+   consequences: (a) the honest statement of the backbone finding is not "it ignores persistence
+   it already has" but "an explicit 1-bit history lookup retains what its recurrent state loses,
+   worth +0.15 MRR"; (b) **the `shuffled_fixed` placebo could never have caught this** — permuting
+   node rows destroys history and structure together, so every placebo-validated spectral result
+   in §10 was validated against a control that removed BOTH. Separating them needs a positive
+   baseline that keeps history and discards structure, which is exactly what `exists` is.
+6. Federated reading: at C>1 the global basis injects history AND cross-client edges the client
+   never sees. The conditional-AUC ceiling grows with C (the cross-client part), while the MRR
+   gain is C-independent (the history part) — the two components the earlier §10.10 tables saw
+   separately, now with a mechanism for each.
+
+**bitcoin_otc under the same controls — the mechanism is IDENTICAL, only the opportunity differs
+(2026-07-25).** Same probe, exact Q100, 3 seeds; repeat fraction 0.081:
+
+| C | MRR model | Δ preq spec | Δ preq exists | model REP | Δ spec REP | Δ exists REP | model NEW | Δ spec NEW | Δ exists NEW |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 0.1913±0.0035 | −0.0036±0.0016 | −0.0075±0.0022 | 0.221 | +0.133±0.020 | +0.356±0.013 | 0.186 | −0.016±0.004 | −0.041±0.003 |
+| 3 | 0.1517±0.0066 | −0.0079±0.0049 | −0.0027±0.0032 | 0.180 | +0.173±0.028 | +0.428±0.024 | 0.148 | −0.025±0.004 | −0.043±0.003 |
+| 7 | 0.1279±0.0082 | −0.0162±0.0057 | +0.0066±0.0036 | 0.162 | +0.169±0.009 | +0.428±0.015 | 0.123 | −0.033±0.006 | −0.034±0.001 |
+| 9 | 0.0962±0.0186 | −0.0121±0.0081 | +0.0071±0.0064 | 0.150 | +0.147±0.018 | +0.421±0.023 | 0.091 | −0.027±0.009 | −0.032±0.009 |
+
+**On the repeat subset bitcoin_otc gains as much as uci — MORE, in fact** (+0.15..+0.17 spec,
++0.36..+0.43 exists). Its overall null is not a different mechanism; it is the same mechanism with
+almost nothing to act on (8% repeats vs uci's 49%), and the small penalty the fusion imposes on the
+92% new pairs (−0.02..−0.04) cancels it. This closes the account:
+
+> **Decision-level fusion — spectral or trivial — re-ranks pairs that ALREADY have an edge, and
+> slightly damages pairs that do not. The overall gain is set by how many of a dataset's future
+> edges are recurrences, not by any property of the spectrum.**
+
+**The resulting predictive model, and its PRE-REGISTERED test.** Both controls point at one
+account: `gain(spectral) ≈ f(repeat rate x basis density)` and `gain(exists) ≈ f(repeat rate)`.
+Measured statistics for the remaining datasets (CPU-only, no training):
+
+| dataset | N | avg degree | median degree | repeat fraction |
+|---|---|---|---|---|
+| uci | 1899 | 14.6 | 6 | 0.49 |
+| bitcoin_otc | 5881 | 7.3 | 2 | 0.10–0.20 |
+| bitcoin_alpha | 3783 | 7.5 | 2 | 0.07–0.10 |
+| as733 | 7716 | 5.6 | 2 | **0.997** |
+| reddit_body | 35776 | 6.9 | 1 | 0.52 |
+| reddit_title | 54075 | 8.1 | 1 | 0.58 |
+
+Predictions stated BEFORE the runs: **as733** — near-total recurrence but a sparse basis, so a
+very large `exists` gain and only a small spectral one; **bitcoin_otc** — low recurrence, so a
+small `exists` gain; **reddit_*** — uci-like recurrence on a sparser graph, so a large `exists`
+gain and a modest spectral one.
+
+**as733 RESULT — recurrence dominates; the "sparse basis ⇒ small spectral gain" half of the
+prediction was WRONG (2026-07-26).** as733 C9, 3 seeds, exact Q50 (this run predates the `exists`
+arm, so it carries the spectral/placebo columns only):
+
+| C | MRR model | Δ preq spec | Δ preq placebo | MRR spec alone | λ preq | λ val |
+|---|---|---|---|---|---|---|
+| 9 | 0.2761±0.0073 | **+0.2903±0.0051** | −0.0013±0.0024 | **0.4173±0.0018** | +1.79 | +3.23 |
+
+The fusion **more than doubles** the reported MRR (0.276 → 0.566) with the placebo at zero, and
+spectral affinity ALONE (0.417) out-ranks the trained federated model (0.276) by a wide margin.
+On a graph where 99.7% of tomorrow's edges already exist, "score pairs by their proximity in the
+eigenbasis of today's cumulative graph" is close to the optimal strategy — which is precisely the
+memory account, at its maximum. What the prediction got wrong is that sparsity would blunt it:
+as733 is as sparse as bitcoin (avg degree 5.6) yet shows the largest gain in the file, so
+recurrence dominates density rather than the two multiplying. The persistence baseline is
+therefore the outstanding question for as733 — `runs/run_gate2g.sh` re-runs C1 and C9 with the
+`exists`/`cn` arms; the account predicts `exists` ≥ `spec` there too.
+(Ops note: the first 4-way as733 launch OOMed the 4080 — as733's GPU peak grows with the
+cumulative graph. C9 survived and completed; the C1/C7 retries then OOMed against it. Cap as733
+at 2 concurrent jobs. Each run is ~40 min.)
+
+Status: the mechanism is confirmed and twice-replicated; decode-time score fusion is
+placebo-validated, survives the real eval protocol, and STRENGTHENS with basis size — **on uci**
+(net +0.046 at K=100/200, up to a doubled MRR at C9) — while both bitcoin graphs are null at every
+K tested. The effect is therefore **dataset-conditional**, and, usefully, its precondition is
+measurable BEFORE building anything: spectral affinity alone must rank future partners within
+reach of the trained model (uci 0.070–0.104 vs bitcoin 0.037–0.045). That reframes gate 3 (the
+edge-score smodel + federated sweeps with placebo arms) as a **conditional method plus its own
+go/no-go diagnostic**, not a universal one. Outstanding: the as733 cell (running); reddit_* (not
+attempted — 35k nodes makes the exact basis expensive); and, if gate 3 proceeds, `spectral.pe_dim`
+must be re-tuned per dataset since 50 is undersized.
+
+**Program conclusion — SUPERSEDED on the fusion axis (2026-07-25).** Written before gates 1–2; it
+remains correct for EMBEDDING-level injection (§10.2–10.7) and for the bitcoin/rating graphs at any
+K, but "not a reliable lever" is now too strong for uci, where DECISION-level fusion adds up to
++0.06 MRR in-protocol against a null placebo. Read it as the verdict on the implementations tried
+before score fusion. Original text: Output-side fusion transported nothing (§10.2–10.4);
 the consumed basis carried nothing to transport (§10.6); and with BOTH repaired — an informative
 exact basis, injected at the input, un-throttleable — the structural gain is small-and-real on the
 one dataset where the oracle predicted it, absent or negative elsewhere. Spectral graph structure is
@@ -2089,6 +2417,200 @@ content overlaps what the recurrent message-passing backbone already captures, a
 complementary niche (§10.6 point 2) is too small to survive federated noise. The paper's positive
 result remains §9 (federation's resilience); the spectral thread closes as a controls-validated
 negative with a fully measured causal chain.
+
+### 10.11 The uniform probe matrix — the recurrence law, and the one place structure survives  **[2026-07-26]**
+
+Everything above was assembled from probes of different vintages. This is the whole matrix re-run
+under ONE probe version (`proto_fusion.py` with the `exists`/`cn` baselines, the repeat/new split
+and the shared basis cache), C{1,3,7,9} x 3 seeds, distributed over seven cluster hosts.
+K=100 for uci/bitcoin_*, K=50 for as733/reddit_* (cost). Δ = prequential fusion minus model, on
+the reported protocol. `net` = real − placebo. Per-cell mean±std over 3 seeds is in the logs; the
+ranges below span C1→C9.
+
+| dataset | repeat frac | Δ spec (overall) | Δ **exists** (overall) | Δ spec on REPEATS | Δ spec on **NEW** | Δ exists on NEW | placebo |
+|---|---|---|---|---|---|---|---|
+| uci | 0.488 | +0.040…+0.063 | **+0.152…+0.168** | +0.10…+0.13 | **−0.022…−0.042** | −0.024…−0.044 | ~0 |
+| bitcoin_alpha | 0.084 | −0.011…−0.000 | −0.009…+0.010 | +0.14…+0.18 | −0.015…−0.026 | −0.029…−0.044 | ~0 |
+| bitcoin_otc | 0.081 | −0.019…−0.006 | −0.008…+0.005 | +0.15…+0.18 | −0.020…−0.034 | −0.035…−0.044 | ~0 |
+| reddit_body | 0.551 | +0.085…+0.124 | **+0.187…+0.276** | +0.14…+0.20 | **+0.022…+0.034** | −0.025…−0.032 | ~0.000 |
+| reddit_title | 0.604 | +0.038…+0.042 | **+0.192…+0.212** | +0.067…+0.070 | **+0.005…+0.007** | −0.036…−0.037 | ~−0.0007 |
+| as733 (C1, C9) | 0.952 | +0.294…+0.297 | **+0.499…+0.562** | +0.257…+0.292 | **+0.368…+0.746** | −0.012…−0.017 | −0.002…−0.010 |
+
+**1. The recurrence law.** The per-subset effects are nearly dataset-independent: every dataset
+gains a lot on REPEAT positives (spec +0.10..+0.20, exists +0.30..+0.52) and the overall number is
+just that gain diluted by the repeat fraction. Order the datasets by recurrence and the overall
+`exists` gain follows monotonically (0.08 → ~0.00, 0.49 → +0.16, 0.55 → +0.23). Nothing spectral
+is required to explain any overall number.
+
+**2. reddit_body is the one genuine exception, and it is exactly where the federated theory said
+to look.** On **genuinely NEW pairs** — pairs that have never interacted, where the `exists`
+feature is useless by construction and indeed HURTS (−0.025..−0.032) — the spectral term is
+**positive (+0.022 → +0.034), grows monotonically with sharding C1→C9, and its placebo is
+−0.0001±0.0002**, i.e. exactly zero at three-seed precision. This is the first evidence in the
+whole program that the eigenbasis predicts links it has not already seen, it beats the trivial
+baseline where the trivial baseline cannot follow, and its growth with C matches the
+conditional-ceiling mechanism (§10.10): the more message passing federation severs, the more the
+global basis is worth. The effect is small in absolute terms (~+0.03 MRR on a 0.26–0.40 model)
+but it is clean, monotone and placebo-null. **reddit_title (complete, C1/3/7/9) replicates the
+SIGN but not the growth**: NEW-pair spec = +0.0071 / +0.0050 / +0.0070 / +0.0061 (±0.0006–0.0015),
+placebo ~−0.0008, `exists` −0.036…−0.037 on the same subset. So on a second large communication
+graph the spectral term is again the only feature that helps on unseen pairs — but the magnitude
+is **1/5 of reddit_body's and it is FLAT in C, not growing**. Honest statement of the claim:
+*the NEW-pair spectral gain replicates (2/2 large communication graphs, placebo-null, beats both
+trivial baselines there); its growth with sharding does not (1/2)*. Anything written about
+"federation makes the basis more valuable" currently rests on reddit_body alone.
+
+**2b. as733 turns the exception into the headline.** With 95% recurrence its overall numbers are
+dominated by `exists` (+0.50…+0.56) as the law predicts — but on the 5% of positives that are
+genuinely NEW, spectral fusion adds **+0.37 at C1 and +0.75 at C9** against a model that scores
+0.038/0.065 there, i.e. a ~10x improvement, while `exists` is NEGATIVE (−0.012/−0.017) and the
+placebo is ~0. Spectral affinity ALONE (0.418) also out-ranks the trained model (0.269–0.338)
+in-protocol — the claim retracted for uci is simply true here. And the gain nearly DOUBLES from
+C1 to C9, the federated mechanism at full strength.
+
+Ordering the NEW-pair effect across all six datasets gives a clean, interpretable gradient:
+as733 (+0.37…+0.75) > reddit_body (+0.022…+0.034) > reddit_title (+0.005…+0.007) >
+uci (−0.02…−0.04) ≈ bitcoin_alpha ≈ bitcoin_otc (−0.015…−0.034). That is exactly the order of
+how much a graph's future is determined by its topology: AS peering (routing hierarchy) >
+subreddit hyperlinks > social messaging > trust ratings. **The spectral basis predicts new links
+where new links are structurally determined, and not otherwise** — and on the two datasets where
+it works at all, the gain grows with sharding.
+
+**3. Common neighbours (`cn`) is strong on reddit and weak elsewhere** (cn alone: 0.353 on
+reddit_body vs 0.024 on uci), and on reddit it beats spectral affinity alone (0.353 vs 0.247) —
+so on that dataset the honest baseline set for any structural claim is `exists` AND `cn`, not the
+placebo alone.
+
+**Consequence for gate 3.** An edge-score smodel is now justified on a specific, falsifiable
+claim: *on large communication graphs, a decode-time spectral term improves NEW-pair ranking, and
+the improvement grows with federation.* It must be evaluated on the NEW subset, against `exists`
+and `cn`, on reddit-scale data — not on overall MRR, which recurrence dominates.
+
+_Status: as733 (repeat 0.997) and reddit_title (0.575) still running; both will sharpen the law
+and, for reddit_title, test whether the NEW-pair effect replicates on the second large
+communication graph._
+
+### 10.12 The spectrum is clustered, not degenerate — and a Chebyshev filter solves it  **[2026-07-26]**
+
+**Diagnosis.** `analysis/probes/spectrum_stats.py [k] [datasets...]` measures the operator the
+pipeline actually consumes (after the active-subgraph + largest-component truncation in
+`Graph._active_lsym`). Two windows matter: **k=50** = `spectral.pe_dim`, the input-PE and probe
+path; **k=300** = `spectral.spectral_len`, the **f+s smodel / tracking path** (§3–§8).
+
+| dataset | window | λ₁ → λ_k | median gap | gaps<1e-3 | boundary gap λ_k→λ_{k+1} | boundary ÷ median |
+|---|---|---|---|---|---|---|
+| uci | 50 | 0.132 → 0.527 | 3.7e-3 | 3/50 | 4.3e-3 | 1.16 |
+| uci | 300 | 0.132 → 0.759 | 9.2e-4 | 165/300 | 4.8e-4 | 0.53 |
+| bitcoin_otc | 50 | 0.040 → 0.276 | 2.2e-3 | 8/50 | 1.9e-3 | 0.85 |
+| bitcoin_otc | 300 | 0.040 → 0.480 | 7.4e-4 | 192/300 | 1.5e-4 | 0.22 |
+| as733 | 300 | 0.022 → 0.422 | 7.4e-4 | 190/300 | 3.6e-4 | 0.49 |
+| reddit_body | 300 | 0.018 → 0.221 | 3.3e-4 | 237/300 | 1.2e-4 | 0.36 |
+| reddit_title | 300 | 0.017 → 0.197 | 2.6e-4 | 248/300 | 8.0e-4 | 3.04 |
+
+Findings: (a) **structural degeneracy is real but already handled** — mid-run graphs have up to
+**16,188 components** (reddit_body t=88) whose exact-zero eigenpairs would consume the entire
+solver request; the truncation drops them (by the end of a run only 7–1065 remain). (b) After
+truncation there is **exactly one zero eigenvalue and no gap below 1e-4** — the low spectrum is
+**clustered, not degenerate**. (c) Crowding is universal (~1% relative spacing on every dataset)
+and **3–4x worse in the k=300 tracking window** than at k=50. (d) The **boundary gap is not
+protective**: at k=300 it is 0.1–0.5x the typical internal gap on five of six datasets, so the
+300-dim subspace itself is not separated from what sits above the cut — `spectral_len=300` slices
+through the densest part of the spectrum. Practical consequence: eigenvector-level identification
+is ill-posed here (perturbation ÷ gap ≈ 1 for one snapshot's worth of new edges), which is what
+the Procrustes step has been compensating for.
+
+**The fix.** `Graph.calc_eigs_chebyshev` (same return contract as `calc_eigs_exact_sym`):
+Jackson-damped Chebyshev expansion of an ideal low-pass over L_sym's range [0,2], applied to a
+block by the three-term recurrence (one sparse matvec per degree, no dense matrix, no
+factorisation), then QR + Rayleigh–Ritz. A filter never has to separate eigenvalues — it weights
+by frequency — so clustering is irrelevant to it. `X0` warm-starts the block from the previous
+snapshot's basis, making it a drop-in for the existing tracker.
+
+_Validated against the exact solver on the same snapshots (`analysis/probes/cheb_validate.py`);
+subspace overlap = ‖U_exactᵀ U‖²_F / k, recon AUC = the §10.6 oracle probe:_
+
+| dataset | k | solver | seconds | subspace | max Δλ | recon AUC |
+|---|---|---|---|---|---|---|
+| uci | 50 | exact / arnoldi / **cheb-40** | 0.4 / 0.8 / **0.05** | 1.00 / 0.55 / **0.95** | — | 0.85 / **0.45** / 0.91 |
+| uci | 300 | exact / arnoldi / **cheb-40** | 0.4 / 0.8 / **0.4** | 1.00 / **0.27** / **1.00** | 5.7e-5 | 0.96 / **0.51** / **0.96** |
+| reddit_body | 50 (t=88) | exact / arnoldi / **cheb-40** | 14.9 / 13.9 / **1.1** | 1.00 / 0.62 / **1.00** | 4.0e-7 | 0.93 / 0.77 / **0.93** |
+| reddit_body | 50 (t=175) | exact / arnoldi / **cheb-40** | 58.5 / 16.3 / **2.4** | 1.00 / 0.58 / **1.00** | 4.8e-7 | 0.84 / 0.62 / **0.84** |
+
+1. **Chebyshev reproduces the exact basis** — overlap 1.000, eigenvalues to ~1e-7 — at **13–24x
+   less wall-clock** on reddit, and it needs no matrix factorisation (the dominant cost).
+2. **The Arnoldi estimate captures 27% of the k=300 subspace on uci** (58–62% at k=50 on reddit),
+   with reconstruction AUC 0.45–0.51 at k=300. Every §3–§8 tracking result consumed that.
+   The tracker has never seen the subspace it was built to track.
+3. **Cutoff rule (measured, counter-intuitive): pin the cutoff AT or just below λ_k.** Raising it
+   collapses the result — uci overlap 1.00 → 0.48 → 0.07 at 1.0x / 1.3x / 2.0x λ_k — because a
+   dense spectrum puts far more than k modes under a raised cutoff and the block cannot span them.
+   Buy accuracy with `oversample` (default 64) and `n_iter` (default 3), never with cutoff.
+   Defaults reproduce the exact basis on every case tested here.
+
+### 10.12b Tracking quality — the subspace is stable, the eigenvectors are not  **[2026-07-26]**
+
+`analysis/probes/track_quality.py` measures, between consecutive snapshots and against the exact
+solver as ground truth: subspace drift `overlap(span U_t, span U_{t+1})`, vector drift
+`mean_i |<u_i(t), u_i(t+1)>|`, the fraction of the movement Procrustes can remove
+(‖aligned‖/‖raw‖ Frobenius), and whether a warm-started Chebyshev solve lands on the exact
+subspace. uci, k=50, every second snapshot:
+
+| t | Δ edges | subspace drift | vector drift | Procrustes residual | warm cheb vs exact | cold cheb vs exact | arnoldi vs exact |
+|---|---|---|---|---|---|---|---|
+| 8 | 810 | 0.849 | 0.291 | 0.378 | 1.000 | 1.000 | 0.576 |
+| 12 | 313 | 0.937 | 0.159 | 0.227 | 1.000 | 1.000 | 0.566 |
+| 16 | 187 | 0.972 | 0.846 | 0.196 | 1.000 | 1.000 | 0.549 |
+| 20 | 115 | 0.989 | 0.813 | 0.110 | 1.000 | 1.000 | 0.540 |
+| 26 | 90 | 0.967 | 0.452 | 0.186 | 1.000 | 1.000 | 0.560 |
+
+1. **The subspace is stable (0.93–0.99 once the graph settles) while individual eigenvectors are
+   not (mean |cos| 0.08–0.85, typically 0.2–0.5 ≈ 60–78° of rotation).** The §10.12 gap prediction
+   confirmed directly: crowding makes per-vector identity meaningless between snapshots, and
+   leaves the span intact. Tracking is therefore well-founded — but only at the SUBSPACE level.
+2. **Procrustes is doing real work, not papering over a bug**: aligning the new basis to the old
+   removes 62–89% of the apparent movement (residual 0.11–0.38), i.e. most of the "churn" that
+   §3/§4.2 attributed to instability is pure gauge rotation. This also explains `keep > recompute`
+   mechanically: a frozen basis has no gauge motion to remove.
+3. **Warm-started Chebyshev is free accuracy**: starting from the previous basis with the previous
+   λ_k as cutoff lands on the exact subspace (overlap 1.000 at every step) 3–4x faster than a cold
+   exact solve — and cold Chebyshev matches it too, so warm-starting costs nothing in quality.
+4. **Arnoldi holds at ~0.55 overlap throughout** — the tracking path has been carrying half a
+   subspace at every snapshot, consistently, not just occasionally.
+
+### 10.12c The three regimes on a correct basis — better input, same ceiling  **[2026-07-26]**
+
+`spectral.solver` (`arnoldi` | `exact` | `chebyshev`) now selects how the smodel's basis is built;
+under `update_mode=update` the chebyshev path warm-starts from the previous basis with the previous
+λ_k as cutoff (i.e. it *is* the tracker, done as filtered subspace iteration). uci, C3, f+s, gru,
+3 seeds:
+
+| solver | keep | update | recompute |
+|---|---|---|---|
+| arnoldi (historical) | 0.0756±0.0055 | 0.0783±0.0140 | 0.0670±0.0117 |
+| **chebyshev** | **0.0879±0.0076** | **0.0867±0.0048** | 0.0729±0.0095 |
+| feature baseline | 0.0892±0.0049 | | |
+
+1. **Chebyshev beats Arnoldi in all three regimes** (+0.012 keep, +0.008 update, +0.006 recompute).
+   Direction is consistent, but only `keep` clears the 0.005–0.007 noise floor at n=3.
+2. **`keep > update > recompute` SURVIVES an exact-quality basis** — so that ordering was never an
+   artifact of the empty Arnoldi estimate. It is the gauge effect measured in §10.12b: recompute
+   re-draws the frame every step, `keep` has no frame motion at all.
+3. **The ceiling does not move: the best spectral run (0.0879) still does not beat feature-only
+   (0.0892).** Fixing the basis does not lift the smodel path above the bare backbone. This is
+   §10.2's rank collapse restated — a readout that discards its input does not improve when the
+   input improves. The binding constraint is the READOUT, not the basis.
+4. Scope: uci C3 only, and uci is the dataset where NEW-pair spectral affinity is NEGATIVE
+   (§10.11). as733 / reddit_body are where a better basis has something to be better at.
+
+Consequence, and the direction taken next: everything that worked tonight used a
+**rotation-invariant** readout (row inner products = projector entries), and everything that failed
+fed raw eigenvector coordinates into a per-coordinate MLP. §10.12 explains why — the coordinates
+are not identifiable at ~1e-3 gaps, only the subspace is. So the next smodel consumes invariants.
+
+**DONE: `spectral.solver=chebyshev` is wired into `get_spectral_features`/`_spectral_step`**
+with `X0` = previous basis and `cutoff` = previous λ_k, then run the one cell the program has never
+tested: **the tracking mechanism on a non-empty basis**. §10.11's NEW-pair gradient (as733 +0.37…
++0.75, reddit_body +0.02…+0.03) says as733 and reddit_body are where it should be tried.
 
 ---
 
@@ -2117,6 +2639,18 @@ negative with a fully measured causal chain.
   `depth-abl`). Commits: `680688a` (wandb group_suffix/extra_tags + f+pe group parts), `ee9fbf4`
   (exact solver restricted to the largest connected component — many-component graphs like reddit
   otherwise return an all-zero basis; caught in pre-launch validation, no runs affected).
+- §10.10 probes (`analysis/probes/`, all zero-GPU, runnable locally): `cond_probe3.py` (federated
+  conditional ceiling + cut-edge counting), `cond_probe5.py` (probe-MRR + placebo),
+  `proto_fusion.py` (gate 1: fusion inside the real eval protocol). All three take
+  `[dataset] [config] [Cs] [seeds]` positionally, resolve the repo root from `__file__`, and print
+  a mean±std table; e.g. `python analysis/probes/proto_fusion.py uci config/uci_gru.yaml 1,3,7,9
+  1234,1334,1434` (12 uci runs, ~5 min on the Mac).
+- Gate-2 logs: `/nas/lnt/stud/ge27yuv/runs/gate2_btcotc` (8 probe logs + `progress.txt`, runner
+  `runs/run_gate2.sh`, sim13, 2026-07-25). Gate 1 (uci) ran locally on the Mac, ~5 min total.
+- Breadth + K-sensitivity logs: `/nas/lnt/stud/ge27yuv/runs/gate2b_breadth` (runners
+  `runs/run_gate2b.sh` bitcoin_alpha + uci/bitcoin_otc K sweep, `run_gate2c.sh` the larger-K
+  bitcoin cells, `run_gate2d.sh` as733 parallel by C). Each log ends in its own mean±std table;
+  `progress.txt` records completion + rc per job.
 - Analysis tooling: `analysis/compile_results.py` (RESULT-line harvest -> mean±std + coverage);
   master CSV of the control program: `runs/master_results.csv` (661 runs, 217 conditions,
   216/217 seed-complete as of 2026-07-25).
