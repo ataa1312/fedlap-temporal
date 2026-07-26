@@ -74,6 +74,11 @@ ARMS = (["model", "model_eval", "rep_frac", "model_rep", "model_new",
         + [f"preq_{k}{s}" for k in FEATS for s in ("", "_rep", "_new")])
 
 
+CACHE = os.environ.get("PROTO_BASIS_CACHE")  # dir of per-snapshot row-normalised bases
+if CACHE:
+    Path(CACHE).mkdir(parents=True, exist_ok=True)
+
+
 def und(ei):
     e = ei.cpu().numpy()
     return {(min(a, b), max(a, b)) for a, b in zip(e[0], e[1]) if a != b}
@@ -81,6 +86,24 @@ def und(ei):
 
 def zsc(a):
     return (a - a.mean()) / (a.std() + 1e-12)
+
+
+def basis_path(dataset, k, thin, t):
+    return Path(CACHE) / f"{dataset}_K{k}_thin{thin}_t{t}.npy"
+
+
+def solve_basis(N, edges, k, rng=None, thin=1.0):
+    """Row-normalised exact low-k eigenvector rows of the cumulative graph."""
+    a = np.array([x for x, _ in edges], dtype=np.int64)
+    b = np.array([y for _, y in edges], dtype=np.int64)
+    if thin < 1.0:
+        keep = rng.random(a.size) < thin
+        a, b = a[keep], b[keep]
+    e = torch.tensor(np.stack([np.r_[a, b], np.r_[b, a]]), dtype=torch.long)
+    g = Graph(x=torch.ones(N, 1), edge_index=e, node_ids=torch.arange(N))
+    _, U = g.calc_eigs_exact_sym(k)
+    Q = U.numpy().astype(np.float32)
+    return Q / np.maximum(np.linalg.norm(Q, axis=1, keepdims=True), 1e-12)
 
 
 snaps = datasets[DATASET](cfg)
@@ -101,15 +124,15 @@ for t in range(T - 1):
                           shape=(N, N)).tocsr()
     A.data[:] = 1.0
     ADJ[t] = A
-    ia, ib = aa, bb
-    if THIN < 1.0:  # basis sees a sparsified graph; task and model unchanged
-        keep = thin_rng.random(aa.size) < THIN
-        ia, ib = aa[keep], bb[keep]
-    e = torch.tensor(np.stack([np.r_[ia, ib], np.r_[ib, ia]]), dtype=torch.long)
-    g = Graph(x=torch.ones(N, 1), edge_index=e, node_ids=torch.arange(N))
-    _, U = g.calc_eigs_exact_sym(K_PE)
-    Q = U.numpy().astype(np.float32)
-    Qn = Q / np.maximum(np.linalg.norm(Q, axis=1, keepdims=True), 1e-12)
+    cached = basis_path(DATASET, K_PE, THIN, t) if CACHE else None
+    if cached is not None and cached.exists():
+        Qn = np.load(cached)
+    else:
+        Qn = solve_basis(N, sorted(cumset), K_PE, thin_rng, THIN)
+        if cached is not None:  # write atomically: other hosts read this dir
+            tmp = cached.with_suffix(".tmp.npy")
+            np.save(tmp, Qn)
+            tmp.rename(cached)
     QN[t], QP[t] = Qn, Qn[PERM]
 print(f"bases done ({time.time() - t0:.0f}s)", flush=True)
 
