@@ -23,7 +23,7 @@ _AGGREGATIONS = {"fedavg"}
 _WEIGHTINGS = {"node_count", "uniform"}
 _SPECTRAL_SMODELS = {"SpectralLaplace", "LanczosLaplace", "SpectralDGCN", "LanczosDGCN", "SignNet"}
 _FUSIONS = {"add", "concat"}
-_DATA_TYPES = {"feature", "f+s", "structure", "f+pe"}
+_DATA_TYPES = {"feature", "f+s", "structure", "f+pe", "f+es"}
 _UPDATE_MODES = {"keep", "update", "recompute"}
 _BASIS_SOURCES = {"laplacian", "random", "shuffled", "random_fixed", "shuffled_fixed"}
 _SFV_SHARES = {"local", "avg"}
@@ -105,17 +105,24 @@ def assert_cfg(config: Registry) -> None:
     _require_in(model["fusion"], _FUSIONS, "model.fusion")
     _require_in(federated["sfv_share"], _SFV_SHARES, "federated.sfv_share")
 
-    if model["data_type"] in {"structure", "f+s", "f+pe"}:
+    if model["data_type"] in {"structure", "f+s", "f+pe", "f+es"}:
         if spectral["update_mode"] is None:
             raise ValueError(
-                "spectral.update_mode is None — for data_type=f+s/structure/f+pe choose it "
+                "spectral.update_mode is None — for data_type=f+s/structure/f+pe/f+es choose it "
                 "explicitly, e.g. --set spectral.update_mode=update (or keep / recompute)"
             )
         _require_in(spectral["update_mode"], _UPDATE_MODES, "spectral.update_mode")
         _require_in(spectral["basis_source"], _BASIS_SOURCES, "spectral.basis_source")
-        if model["data_type"] == "f+pe" and spectral["pe_dim"] <= 0:
+        if model["data_type"] in {"f+pe", "f+es"} and spectral["pe_dim"] <= 0:
             raise ValueError(
-                f"spectral.pe_dim must be >0 for data_type=f+pe, got {spectral['pe_dim']!r}"
+                f"spectral.pe_dim must be >0 for data_type={model['data_type']}, got {spectral['pe_dim']!r}"
+            )
+        if model["data_type"] == "f+es" and spectral["solver"] == "arnoldi":
+            # the Krylov estimate overlaps the true low subspace by only ~0.27-0.62
+            # (results.md §10.12); an invariant readout over it reads noise
+            raise ValueError(
+                "data_type=f+es needs spectral.solver='chebyshev' or 'exact' — the arnoldi "
+                "estimate does not resolve the clustered low spectrum (results.md §10.12)"
             )
         if model["smodel_type"] in _SPECTRAL_SMODELS and spectral["spectral_len"] <= 0:
             raise ValueError(

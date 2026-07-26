@@ -2,6 +2,7 @@ from src import *
 from src.client import Client
 from src.GNN.dynamic_classifier import DynamicClassifier
 from src.GNN.fed_dynamic_classifier import (
+    FedDynamicEdgeScoreClassifier,
     FedDynamicPEClassifier,
     make_fed_dynamic_classifier,
 )
@@ -43,6 +44,8 @@ class DynamicClient(Client):
             self.classifier = DynamicClassifier(self.snaps[0])
         elif data_type == "f+pe":
             self.classifier = FedDynamicPEClassifier(self.snaps[0])
+        elif data_type == "f+es":
+            self.classifier = FedDynamicEdgeScoreClassifier(self.snaps[0])
         elif data_type == "f+s":
             SFV = kwargs.get("SFV")
             if SFV is None:

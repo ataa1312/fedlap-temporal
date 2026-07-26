@@ -237,6 +237,211 @@ class DynamicSSignNet(Classifier):
         self.bn.zero_grad(set_to_none=set_to_none)
 
 
+class DynamicSInvariant:
+    """Spectral structure model whose output is an EDGE score built from
+    ROTATION-INVARIANT features of the eigenbasis.
+
+    Why invariants (results.md §10.12/§10.12b): the low spectrum of these graphs
+    is clustered (~1e-3 gaps), so individual eigenvectors are not identifiable —
+    between snapshots they rotate 50-80 degrees while the SUBSPACE stays fixed
+    (overlap 0.96-1.00). A per-coordinate MLP over rows of U therefore reads a
+    quantity the data does not determine, which is what the Laplace smodel did.
+    Every readout that worked was instead a function of the projector:
+
+        phi_j(u, v) = sum_i f_j(lambda_i) U_ui U_vi  =  [U f_j(Lambda) U^T]_uv
+
+    which is invariant to U -> UR for any rotation R within an eigenspace, and
+    only O(|f_j(lambda_i) - f_j(lambda_j)|) sensitive to mixing between two
+    nearly-equal eigenvalues — so a SMOOTH f is stable exactly where the basis
+    is ambiguous. Filters are heat kernels exp(-tau_j lambda) with tau learnable
+    (plus the unfiltered projector entry and its cosine form), so the fixed
+    affinity used in the probes is the tau -> 0 special case and training can
+    only sharpen it. The MLP over those few invariants is the learnable part,
+    federated through state_dict like any FedLap smodel."""
+
+    def __init__(self, n_filters=4, hidden=None):
+        self.Q = None
+        self.D = None
+        self.n_filters = n_filters
+        hidden = hidden or config["structure_model"]["DGCN_structure_layers_sizes"]
+        # log-tau so tau stays positive; spread the initial scales over the
+        # decades that matter for lambda in [0, 2]
+        self.log_tau = nn.Parameter(
+            torch.linspace(-2.0, 2.0, n_filters, device=device)
+        )
+        dims = [n_filters + 2] + list(hidden) + [1]
+        layers = []
+        for a, b in zip(dims[:-1], dims[1:]):
+            layers += [nn.Linear(a, b), nn.ReLU()]
+        self.model = nn.Sequential(*layers[:-1]).to(device)
+        # zero-init the last layer: the edge-score term starts at exactly 0, so
+        # training begins at the feature-only baseline and earns any deviation
+        nn.init.zeros_(self.model[-1].weight)
+        nn.init.zeros_(self.model[-1].bias)
+
+    def set_QD(self, Q, D):
+        self.Q = Q
+        self.D = D
+
+    def get_SFV(self):
+        return None
+
+    def get_D(self):
+        return self.D
+
+    def intrinsic_regularizer(self):
+        return torch.zeros((), device=device)
+
+    def edge_score(self, edge_label_index):
+        """Scalar per candidate pair, added to the decoder logit."""
+        if self.Q is None or self.D is None:
+            return None
+        u = self.Q[edge_label_index[0]]
+        v = self.Q[edge_label_index[1]]
+        # Row-normalise first: eigenvector entries are O(1/sqrt(N)), so raw
+        # projector entries are O(1/N) (~1e-4 here) and would reach the MLP as
+        # dead inputs. Normalising makes every filter an O(1) cosine-style
+        # affinity and makes the unfiltered feature exactly the quantity the
+        # probes measured (§10.11), so training starts from a known-good signal.
+        nu = u.norm(dim=-1, keepdim=True)
+        nv = v.norm(dim=-1, keepdim=True)
+        un, vn = u / (nu + 1e-12), v / (nv + 1e-12)
+        prod = un * vn                                      # (P, k)
+        lam = self.D.to(prod.dtype).unsqueeze(0)            # (1, k)
+        taus = torch.exp(self.log_tau).unsqueeze(1)         # (J, 1)
+        gains = torch.exp(-taus * lam)                      # (J, k)
+        phi = prod @ gains.t()                              # (P, J) heat-kernel affinities
+        cos = prod.sum(-1, keepdim=True)                    # unfiltered affinity (the probe's)
+        # leverage: ||U_u|| is sqrt of a projector diagonal, so it is invariant too
+        lev = torch.log1p(nu * nv * float(self.Q.shape[0]))
+        feats = torch.cat([phi, cos, lev], dim=-1)
+        return self.model(feats).squeeze(-1)
+
+    # ---- FedLap smodel protocol ---- #
+
+    def state_dict(self):
+        return {"model": self.model.state_dict(), "log_tau": self.log_tau.detach().clone()}
+
+    def load_state_dict(self, weights):
+        if "model" in weights:
+            self.model.load_state_dict(weights["model"])
+        if "log_tau" in weights:
+            with torch.no_grad():
+                self.log_tau.copy_(weights["log_tau"])
+
+    def parameters(self):
+        return list(self.model.parameters()) + [self.log_tau]
+
+    def get_grads(self, just_SFV=False):
+        return {"model": [p.grad for p in self.parameters()]}
+
+    def set_grads(self, grads):
+        if "model" in grads:
+            for p, g in zip(self.parameters(), grads["model"]):
+                p.grad = g
+
+    def train(self, mode: bool = True):
+        self.model.train(mode)
+
+    def eval(self):
+        self.model.eval()
+
+    def zero_grad(self, set_to_none=False):
+        self.model.zero_grad(set_to_none=set_to_none)
+        if self.log_tau.grad is not None:
+            self.log_tau.grad = None if set_to_none else torch.zeros_like(self.log_tau)
+
+
+class FedDynamicEdgeScoreClassifier(DynamicClassifier):
+    """fmodel + an smodel that contributes at the DECISION level
+    (model.data_type=f+es): the spectral term is added to the decoder logit
+    rather than to the node embedding.
+
+    §10.11 measured why: embedding-level injection is absorbed by training,
+    while decode-time fusion of a spectral affinity moves the reported MRR
+    (+0.37..+0.75 on as733's new pairs, +0.02..+0.03 on reddit_body, both
+    growing with sharding, placebo null). This is that fusion made learnable and
+    federated, with the invariant features of DynamicSInvariant as its input."""
+
+    def __init__(self, fgraph):
+        self.smodel = None
+        super().__init__(fgraph)
+        self.smodel = DynamicSInvariant()
+
+    def _edge_term(self, g, pred):
+        if self.smodel is None:
+            return pred
+        s = self.smodel.edge_score(g.edge_label_index)
+        return pred if s is None else pred + s
+
+    def decode(self, z=None, data=_UNSET):
+        g = self.graph if data is _UNSET else data
+        pred, label = super().decode(z, data)
+        return self._edge_term(g, pred), label
+
+    def forward(self, data=_UNSET, hs=_UNSET):
+        g = self.graph if data is _UNSET else data
+        pred, label, new_hs = super().forward(data, hs)
+        return self._edge_term(g, pred), label, new_hs
+
+    # ---- spectral delegation + federated protocol (FedMixin surface) ---- #
+
+    def set_QD(self, U, D):
+        self.smodel.set_QD(U, D)
+
+    def get_SFV(self):
+        return self.smodel.get_SFV()
+
+    def get_D(self):
+        return self.smodel.get_D()
+
+    def intrinsic_regularizer(self):
+        return self.smodel.intrinsic_regularizer()
+
+    def state_dict(self):
+        weights = super().state_dict()
+        if self.smodel is not None:
+            weights["smodel"] = self.smodel.state_dict()
+        return weights
+
+    def load_state_dict(self, weights):
+        super().load_state_dict(weights)
+        if self.smodel is not None and "smodel" in weights:
+            self.smodel.load_state_dict(weights["smodel"])
+
+    def get_grads(self, just_SFV=False):
+        grads = super().get_grads(just_SFV)
+        if self.smodel is not None:
+            grads["smodel"] = self.smodel.get_grads(just_SFV)
+        return grads
+
+    def set_grads(self, grads):
+        super().set_grads(grads)
+        if self.smodel is not None and "smodel" in grads:
+            self.smodel.set_grads(grads["smodel"])
+
+    def parameters(self):
+        params = super().parameters()
+        if self.smodel is not None:
+            params += self.smodel.parameters()
+        return params
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        if self.smodel is not None:
+            self.smodel.train(mode)
+
+    def eval(self):
+        super().eval()
+        if self.smodel is not None:
+            self.smodel.eval()
+
+    def zero_grad(self, set_to_none=False):
+        super().zero_grad(set_to_none)
+        if self.smodel is not None:
+            self.smodel.zero_grad(set_to_none=set_to_none)
+
+
 class FedDynamicPEClassifier(DynamicClassifier):
     """Input-side spectral positional encoding (model.data_type=f+pe): the
     server-computed exact low-k eigenbasis slice is CONCATENATED to the node

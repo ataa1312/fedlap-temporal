@@ -10,6 +10,7 @@ from src.utils.graph import Graph
 from src.dynamic_client import DynamicClient
 from src.GNN.dynamic_classifier import DynamicClassifier
 from src.GNN.fed_dynamic_classifier import (
+    FedDynamicEdgeScoreClassifier,
     FedDynamicPEClassifier,
     make_fed_dynamic_classifier,
 )
@@ -146,6 +147,9 @@ class DynamicServer(Server):
         elif data_type == "f+pe":
             # input-side exact-eigenvector PE; nothing spectral to share (no SFV)
             self.classifier = FedDynamicPEClassifier(self.graph)
+        elif data_type == "f+es":
+            # decision-level spectral term over rotation-invariant features
+            self.classifier = FedDynamicEdgeScoreClassifier(self.graph)
         elif data_type == "f+s":
             # learnable W created ONCE on the server and shared so every owner
             # starts from the same init (GNNServer.initialize -> share["SFV"];
@@ -222,7 +226,7 @@ class DynamicServer(Server):
         )
         dt = config["model"]["data_type"] if data_type is None else data_type
         smt = config["model"]["smodel_type"] if smodel_type is None else smodel_type
-        use_spectral = dt in ("structure", "f+s", "f+pe")
+        use_spectral = dt in ("structure", "f+s", "f+pe", "f+es")
         self._first_spectral = self._prev_spectral = None  # runs are independent (fresh W, fresh Bernoulli draws)
         self._cum_edges = None
         rounds = config["model"]["iterations"] if epochs is None else epochs
@@ -563,7 +567,7 @@ class DynamicServer(Server):
         num_spectral_features = None
         solver = config["spectral"]["solver"]
 
-        if smodel_type in ["SpectralLaplace", "LanczosLaplace", "SignNet", "ExactPE"]:
+        if smodel_type in ["SpectralLaplace", "LanczosLaplace", "SignNet", "ExactPE", "Invariant"]:
             if (
                 spectral_update_mode == "keep"
                 and prev_U is not None
@@ -654,10 +658,16 @@ class DynamicServer(Server):
         mode = config["spectral"]["update_mode"]
         if mode == "update" and random.random() < config["spectral"]["recompute_prob"]:
             mode = "recompute"  # Bernoulli basis refresh: fresh Lanczos, new Q
-        is_pe = config["model"]["data_type"] == "f+pe"
+        dt = config["model"]["data_type"]
+        is_pe = dt == "f+pe"
         if is_pe:
             smodel_type = "ExactPE"
-        k = config["spectral"]["pe_dim"] if is_pe else config["spectral"]["spectral_len"]
+        elif dt == "f+es":
+            # invariant edge-score readout: same low-k exact/filtered basis as the
+            # probes that measured the effect, and no input scaling (the features
+            # are products of rows, so a global scale is absorbed by the MLP)
+            smodel_type = "Invariant"
+        k = config["spectral"]["pe_dim"] if dt in ("f+pe", "f+es") else config["spectral"]["spectral_len"]
         prev = self.get_previous_UD(mode, t)
         first = self._first_spectral or SpectralFeatures(U=None, D=None, Q=None)
         share, _ = self.get_spectral_features(
