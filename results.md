@@ -2612,6 +2612,41 @@ with `X0` = previous basis and `cutoff` = previous λ_k, then run the one cell t
 tested: **the tracking mechanism on a non-empty basis**. §10.11's NEW-pair gradient (as733 +0.37…
 +0.75, reddit_body +0.02…+0.03) says as733 and reddit_body are where it should be tried.
 
+### 10.13 The invariant edge-score smodel (`data_type=f+es`) — built, and null on uci  **[2026-07-26]**
+
+The design the evidence pointed to: contribute at the DECISION level (§10.11: decode-time fusion
+moves the metric where embedding-level injection does not) using ROTATION-INVARIANT features
+(§10.12b: individual eigenvectors rotate 50–80° between snapshots while the subspace is fixed, so
+per-coordinate readouts consume an undetermined quantity).
+
+`DynamicSInvariant` + `FedDynamicEdgeScoreClassifier` (`src/GNN/fed_dynamic_classifier.py`),
+FedLap's fmodel/smodel composition, selected by `model.data_type=f+es`. Features per candidate
+pair, all functions of the projector `U f(Λ) Uᵀ` and therefore invariant to `U → UR`:
+heat-kernel affinities `Σ_i exp(−τ_j λ_i) û_ui û_vi` with **learnable** `τ_j`, the unfiltered
+affinity (exactly the probe's feature, the τ→0 case), and a leverage term `‖U_u‖‖U_v‖`. A small
+MLP maps them to a scalar added to the decoder logit; its last layer is zero-initialised so the
+run starts exactly at the feature-only baseline. `assert_cfg` rejects `solver=arnoldi` here — an
+invariant readout over a 0.27–0.62-overlap basis reads noise.
+
+uci, keep, chebyshev solver, 3 seeds, with the stability-matched placebo:
+
+| C | f+es laplacian | f+es shuffled_fixed | feature | real − placebo |
+|---|---|---|---|---|
+| 3 | 0.0857±0.0050 | **0.0919±0.0066** | 0.0787±0.0059 | **−0.006** |
+| 9 | 0.0703±0.0091 | 0.0664±0.0093 | 0.0783±0.0054 | +0.004 |
+
+**Null on uci: the placebo matches or beats the real basis, and at C9 both sit below the bare
+backbone.** A diagnostic rules out the obvious failure mode — the edge term is genuinely learned
+(|mean| 0.000 at init → 0.23 mid-run → 0.14 at the end, std up to 0.36), so this is not a dead
+gradient or a wiring fault; SGD moves the weight and the structure still buys nothing here.
+
+Consistent with §10.11: uci's NEW-pair spectral effect is NEGATIVE, and its probe gain came from
+recurrence, which the backbone already handles. The datasets where the basis demonstrably predicts
+unseen links — as733 (+0.37…+0.75 on new pairs, growing with C) and reddit_body (+0.02…+0.03) —
+are where this model must be judged; that run needs the cluster and has not been done.
+Also note (batch-effect caveat, §10.11 point 4): `feature C3` reads 0.0787±0.0059 in this batch and
+0.0892±0.0049 in §10.12c's — identical condition, 3-seed means. Compare only within a batch.
+
 ---
 
 ## 11. Provenance & reproduction
