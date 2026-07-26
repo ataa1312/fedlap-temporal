@@ -28,6 +28,47 @@ from torch_geometric.transforms import RandomLinkSplit
 dataset_name = config["dataset"]["name"]
 
 
+def _cheb_lowpass_coeffs(cutoff, degree, jackson=True):
+    """Chebyshev coefficients of the ideal low-pass h(lambda) = 1 for
+    lambda <= cutoff, 0 above, over L_sym's eigenvalue range [0, 2].
+
+    Chebyshev polynomials live on [-1, 1], so lambda is shifted by -1. With
+    lambda = 1 + cos(theta) the coefficients of a step have a closed form
+    (c_0 = 1 - theta_a/pi, c_j = -2 sin(j theta_a) / (pi j)). The Jackson
+    kernel damps them, trading a slightly wider transition band for the removal
+    of the Gibbs ringing that would otherwise let high-frequency modes leak
+    through with negative gain."""
+    a = float(np.clip(cutoff - 1.0, -1.0, 1.0))
+    theta = np.arccos(a)
+    j = np.arange(degree + 1)
+    c = np.empty(degree + 1)
+    c[0] = 1.0 - theta / np.pi
+    c[1:] = -2.0 * np.sin(j[1:] * theta) / (np.pi * j[1:])
+    if jackson:
+        N = degree + 1
+        alpha = np.pi / (N + 1)
+        c = c * (
+            ((N - j + 1) * np.cos(j * alpha) + np.sin(j * alpha) / np.tan(alpha)) / (N + 1)
+        )
+    return c
+
+
+def _cheb_filter(Lsym, X, coef):
+    """Evaluate sum_j coef[j] T_j(L_sym - I) applied to the block X via the
+    three-term recurrence T_{j+1} = 2 (L-I) T_j - T_{j-1}: one sparse matvec
+    per degree, two blocks of memory, and the filter matrix is never formed."""
+    T0 = X
+    Y = coef[0] * T0
+    if len(coef) > 1:
+        T1 = Lsym @ X - X
+        Y = Y + coef[1] * T1
+        for c in coef[2:]:
+            T2 = 2.0 * (Lsym @ T1 - T1) - T0
+            Y = Y + c * T2
+            T0, T1 = T1, T2
+    return Y
+
+
 class AGraph(Data):
     def __init__(
         self,
@@ -428,6 +469,38 @@ class Graph(Data):
 
         return next_D, next_U, prev_Q
 
+    def _active_lsym(self):
+        """L_sym = I - D^-1/2 A D^-1/2 restricted to the largest connected
+        component of the ACTIVE subgraph, with the global node indices it
+        covers. Isolated nodes and satellite components contribute only
+        exact-zero eigenpairs (component indicators): on early cumulative
+        graphs they stall ARPACK, and on many-component graphs (reddit: up to
+        16k components mid-run) they crowd out every informative pair. Both
+        solvers drop them here and zero-pad the missing rows afterwards.
+        Returns (None, None) when fewer than two active nodes remain."""
+        n = self.num_nodes
+        e = self.edge_index.cpu().numpy()
+        A = sparse.coo_matrix(
+            (np.ones(e.shape[1]), (e[0], e[1])), shape=(n, n)
+        ).tocsr()
+        A = ((A + A.T) > 0).astype(np.float64)
+        A.setdiag(0)
+        A.eliminate_zeros()
+        deg = np.asarray(A.sum(axis=1)).ravel()
+        act = np.where(deg > 0)[0]
+        if act.size < 2:
+            return None, None
+        Aa = A[act][:, act]
+        ncomp, labels = sp.sparse.csgraph.connected_components(Aa, directed=False)
+        if ncomp > 1:
+            giant = np.where(labels == np.bincount(labels).argmax())[0]
+            act = act[giant]
+            Aa = Aa[giant][:, giant]
+        m = act.size
+        dis = 1.0 / np.sqrt(np.asarray(Aa.sum(axis=1)).ravel())
+        Dis = sparse.diags(dis)
+        return sparse.eye(m) - Dis @ Aa @ Dis, act
+
     def calc_eigs_exact_sym(self, k, drop_tol=1e-8, dense_max=3000):
         """Exact k lowest NONTRIVIAL eigenpairs of the symmetric normalized
         Laplacian L_sym = I - D^-1/2 A D^-1/2 over this graph's undirected
@@ -440,37 +513,10 @@ class Graph(Data):
         Sign is canonicalized by each eigenvector's largest-|entry| element.
         Dense eigh below dense_max nodes, sparse shift-invert eigsh above."""
         n = self.num_nodes
-        e = self.edge_index.cpu().numpy()
-        A = sparse.coo_matrix(
-            (np.ones(e.shape[1]), (e[0], e[1])), shape=(n, n)
-        ).tocsr()
-        A = ((A + A.T) > 0).astype(np.float64)
-        A.setdiag(0)
-        A.eliminate_zeros()
-        deg = np.asarray(A.sum(axis=1)).ravel()
-        # Solve on the ACTIVE subgraph only: isolated nodes contribute a huge
-        # exact-eigenvalue cluster that stalls ARPACK on early cumulative graphs
-        # (most nodes unseen yet), and they carry no structure anyway — their PE
-        # rows are zero. Early graphs thereby fall into the dense path.
-        act = np.where(deg > 0)[0]
-        m = act.size
-        if m < 2:
+        Lsym, act = self._active_lsym()
+        if Lsym is None:
             return torch.zeros(k), torch.zeros(n, k)
-        Aa = A[act][:, act]
-        # Restrict further to the LARGEST connected component: on many-component
-        # graphs (reddit: hundreds of satellites) the zero-eigenvalue cluster
-        # exceeds the eigsh request, so every returned pair is a component
-        # indicator and the drop_tol filter empties the basis entirely.
-        # Satellite-component nodes get zero rows like isolated ones.
-        ncomp, labels = sp.sparse.csgraph.connected_components(Aa, directed=False)
-        if ncomp > 1:
-            giant = np.where(labels == np.bincount(labels).argmax())[0]
-            act = act[giant]
-            Aa = Aa[giant][:, giant]
-            m = act.size
-        dis = 1.0 / np.sqrt(np.asarray(Aa.sum(axis=1)).ravel())
-        Dis = sparse.diags(dis)
-        Lsym = sparse.eye(m) - Dis @ Aa @ Dis
+        m = act.size
 
         if m <= dense_max:
             w, V = np.linalg.eigh(Lsym.toarray())
@@ -492,6 +538,80 @@ class Graph(Data):
         keep = w > drop_tol
         w, V = w[keep][:k], V[:, keep][:, :k]
         if V.shape[1] < k:  # early/tiny graphs: fewer informative pairs than k
+            pad = k - V.shape[1]
+            V = np.hstack([V, np.zeros((m, pad))])
+            w = np.concatenate([w, np.zeros(pad)])
+        ii = np.abs(V).argmax(axis=0)
+        ss = np.sign(V[ii, np.arange(V.shape[1])])
+        ss[ss == 0] = 1.0
+        V = V * ss
+        Vfull = np.zeros((n, k))
+        Vfull[act] = V
+        return (
+            torch.tensor(w, dtype=torch.float32),
+            torch.tensor(Vfull, dtype=torch.float32),
+        )
+
+    def calc_eigs_chebyshev(
+        self, k, cutoff=None, degree=40, oversample=64, n_iter=3,
+        X0=None, drop_tol=1e-8, seed=0,
+    ):
+        """k lowest eigenpairs by CHEBYSHEV-FILTERED SUBSPACE ITERATION.
+
+        Motivation (measured, results.md §10.12): after the active/giant-
+        component truncation the low spectrum of these graphs is not degenerate
+        but heavily CLUSTERED — median gaps ~1e-3 with ~1% relative spacing on
+        every dataset. Krylov methods must separate eigenvalues to converge, so
+        the Arnoldi estimate returns blends (its basis reconstructs its own
+        graph at AUC 0.53). A polynomial filter never separates anything: it
+        multiplies each eigen-coordinate by p(lambda), so applying it to a block
+        of vectors suppresses the high-frequency content and leaves a block
+        spanning the low-frequency subspace, however crowded that subspace is.
+
+        p is the Jackson-damped Chebyshev expansion of the ideal low-pass
+        (1 below `cutoff`, 0 above) on L_sym's range [0, 2]; the three-term
+        recurrence evaluates it with one sparse matvec per degree and no dense
+        matrix ever formed. `X0` warm-starts the block with the previous
+        snapshot's basis, which is what makes this a drop-in for the tracker.
+        Returns the same (eigenvalues, zero-padded eigenvectors) contract as
+        calc_eigs_exact_sym.
+
+        `cutoff` must sit AT or just BELOW lambda_k (pass the previous
+        snapshot's k-th eigenvalue when tracking; 0.9x is a safe factor).
+        Raising it is counter-productive on these graphs: the spectrum is dense,
+        so a higher cutoff admits far more than k modes and a block of width
+        k+oversample can no longer span them — measured subspace overlap on uci
+        falls 1.00 -> 0.48 -> 0.07 as the cutoff goes 1.0x -> 1.3x -> 2.0x
+        lambda_k. Buy accuracy with `oversample`/`n_iter`, never with cutoff."""
+        n = self.num_nodes
+        Lsym, act = self._active_lsym()
+        if Lsym is None:
+            return torch.zeros(k), torch.zeros(n, k)
+        m = act.size
+        b = int(min(m - 1, k + oversample))
+        rng = np.random.default_rng(seed)
+        if X0 is not None:
+            X = np.asarray(X0, dtype=np.float64)[act]
+            if X.shape[1] < b:
+                X = np.hstack([X, rng.standard_normal((m, b - X.shape[1]))])
+            else:
+                X = X[:, :b]
+            if not np.isfinite(X).all() or np.linalg.norm(X) == 0:
+                X = rng.standard_normal((m, b))
+        else:
+            X = rng.standard_normal((m, b))
+
+        coef = _cheb_lowpass_coeffs(0.5 if cutoff is None else float(cutoff), degree)
+        for _ in range(max(1, n_iter)):
+            X = _cheb_filter(Lsym, X, coef)
+            X, _ = np.linalg.qr(X)
+        # Rayleigh-Ritz: diagonalise L_sym restricted to the filtered subspace
+        B = X.T @ (Lsym @ X)
+        w, W = np.linalg.eigh(0.5 * (B + B.T))
+        V = X @ W
+        keep = w > drop_tol
+        w, V = w[keep][:k], V[:, keep][:, :k]
+        if V.shape[1] < k:
             pad = k - V.shape[1]
             V = np.hstack([V, np.zeros((m, pad))])
             w = np.concatenate([w, np.zeros(pad)])
