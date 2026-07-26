@@ -172,18 +172,50 @@ def _fit(X, y):
     return LogisticRegression(max_iter=1000).fit(X, y)
 
 
+def _ppr_scores(t, uu, vv, alpha=0.85, iters=15):
+    """Personalised PageRank affinity, computed per SOURCE (candidates share
+    sources in this protocol) by power iteration on GPU. This is the
+    eigendecomposition-free proximity baseline: same smoothing role as the
+    spectral affinity, O(E) per iteration, no degenerate-spectrum problem, and
+    it has local/distributed approximations that fit the federated setting."""
+    A = ADJ[t]
+    deg = np.asarray(A.sum(axis=1)).ravel()
+    inv = np.where(deg > 0, 1.0 / np.maximum(deg, 1e-12), 0.0)
+    coo = A.tocoo()
+    idx = torch.as_tensor(np.stack([coo.row, coo.col]), dtype=torch.long, device=device)
+    # column-normalised P^T: entry (v,u) = 1/deg(u) -> X <- alpha * P^T X + (1-a) E
+    val = torch.as_tensor(inv[coo.row] * coo.data, dtype=torch.float32, device=device)
+    Pt = torch.sparse_coo_tensor(idx.flip(0), val, (N, N)).coalesce()
+    src = np.unique(uu)
+    col = {int(s): i for i, s in enumerate(src)}
+    E = torch.zeros((N, len(src)), device=device)
+    E[torch.as_tensor(src, dtype=torch.long, device=device),
+      torch.arange(len(src), device=device)] = 1.0
+    X = E.clone()
+    for _ in range(iters):
+        X = alpha * torch.sparse.mm(Pt, X) + (1 - alpha) * E
+    cols = torch.as_tensor([col[int(s)] for s in uu], dtype=torch.long, device=device)
+    rows = torch.as_tensor(vv, dtype=torch.long, device=device)
+    out = X[rows, cols].detach().cpu().numpy().astype(np.float64)
+    del X, E, Pt
+    return np.log1p(out * N)  # scale-free-ish; log for a sane linear feature
+
+
 def _pair_features(t, uu, vv):
-    """The three graph features on the cumulative graph through t, plus the placebo."""
+    """Graph features on the cumulative graph through t, plus the placebo."""
     Qn, Qp, A = QN[t], QP[t], ADJ[t]
     key = np.minimum(uu, vv).astype(np.int64) * N + np.maximum(uu, vv)
     ck = CUMKEY[t]
     idx = np.clip(np.searchsorted(ck, key), 0, max(len(ck) - 1, 0))
     exists = (ck[idx] == key) if len(ck) else np.zeros(len(key), bool)
     cn = np.asarray(A[uu].multiply(A[vv]).sum(axis=1)).ravel()
-    return {"spec": (Qn[uu] * Qn[vv]).sum(1).astype(np.float64),
-            "plac": (Qp[uu] * Qp[vv]).sum(1).astype(np.float64),
-            "exists": exists.astype(np.float64),
-            "cn": np.log1p(cn)}, exists
+    feats = {"spec": (Qn[uu] * Qn[vv]).sum(1).astype(np.float64),
+             "plac": (Qp[uu] * Qp[vv]).sum(1).astype(np.float64),
+             "exists": exists.astype(np.float64),
+             "cn": np.log1p(cn)}
+    if "ppr" in FEATS:
+        feats["ppr"] = _ppr_scores(t, uu, vv)
+    return feats, exists
 
 
 def _patched_mrr(z, snap, K, method, dev, model):
