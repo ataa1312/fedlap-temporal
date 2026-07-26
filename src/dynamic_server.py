@@ -44,6 +44,20 @@ def _to_cpu_sf(U, D, Q) -> SpectralFeatures:
     )
 
 
+def _cheb_cutoff(prev_D, safety=0.9):
+    """Low-pass cutoff for the filtered solver: the previous snapshot's
+    lambda_k, pulled down by `safety`. It must sit AT or just below lambda_k —
+    a higher cutoff admits far more than k modes on these dense spectra and the
+    block can no longer span them (results.md §10.12). None on the first
+    snapshot, where the solver falls back to its own default."""
+    if prev_D is None:
+        return None
+    d = prev_D[prev_D > 0] if hasattr(prev_D, "__getitem__") else None
+    if d is None or len(d) == 0:
+        return None
+    return safety * float(d.max())
+
+
 def _get_sfv(clf):
     """The learnable SFV W (smodel.graph.x) — a leaf param that is NOT in the
     state_dict when federated.sfv_share='local', so checkpoints capture it here."""
@@ -547,6 +561,7 @@ class DynamicServer(Server):
         prev_U, prev_D, prev_Q = prev_spectrals.U, prev_spectrals.D, prev_spectrals.Q
         share = {}
         num_spectral_features = None
+        solver = config["spectral"]["solver"]
 
         if smodel_type in ["SpectralLaplace", "LanczosLaplace", "SignNet", "ExactPE"]:
             if (
@@ -562,14 +577,31 @@ class DynamicServer(Server):
                 and prev_D is not None
             ):
                 LOGGER.info("Updating spectral features...")
-                D, U, Q = graph.update_eigpairs(prev_Q)
+                if solver == "chebyshev":
+                    # tracking, done as filtered subspace iteration: the previous
+                    # basis warm-starts the block and the previous lambda_k sets
+                    # the cutoff. Lands on the exact subspace (overlap 1.000,
+                    # results.md §10.12b) where update_eigpairs inherits whatever
+                    # the Krylov estimate produced.
+                    D, U = graph.calc_eigs_chebyshev(
+                        spectral_len, cutoff=_cheb_cutoff(prev_D), X0=prev_U
+                    )
+                    Q = U
+                    U, Q = self._substitute_basis(U, Q, ss_idx)
+                else:
+                    D, U, Q = graph.update_eigpairs(prev_Q)
             else:
                 LOGGER.info("Computing spectral features...")
-                if smodel_type == "ExactPE":
+                if smodel_type == "ExactPE" or solver == "exact":
                     # input-PE path: exact low-k sym-Laplacian eigenpairs — the
                     # Krylov estimate is near-uninformative at the clustered low
                     # end (results.md §10.6), which is the whole signal here.
                     D, U = graph.calc_eigs_exact_sym(spectral_len)
+                    Q = U
+                elif solver == "chebyshev":
+                    D, U = graph.calc_eigs_chebyshev(
+                        spectral_len, cutoff=_cheb_cutoff(prev_D)
+                    )
                     Q = U
                 else:
                     D, U, Q = graph.calc_eignvalues(

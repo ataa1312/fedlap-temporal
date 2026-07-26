@@ -229,6 +229,12 @@ def _spectral() -> Registry:
                                             # structure controls) -- see _substitute_basis
     s["pe_dim"] = 50                        # data_type=f+pe: k lowest exact sym-Laplacian eigvecs
                                             # concatenated to node features at the INPUT (LapPE)
+    s["solver"] = "arnoldi"                 # how the smodel's basis is computed: 'arnoldi' (Krylov
+                                            # estimate, the historical path -- ~0.27-0.62 subspace
+                                            # overlap with the truth), 'exact' (sym-Laplacian eigh /
+                                            # shift-invert), 'chebyshev' (filtered subspace iteration:
+                                            # exact-quality at 3-24x less wall-clock, warm-started
+                                            # from the previous basis under update_mode=update)
     s["robust_sign"] = False                # eigvec sign canon: by largest-|component| entry (stable)
                                             # vs the near-zero column-sum (noisy -> flips across snaps)
     s["regularizer_coef"] = 0
