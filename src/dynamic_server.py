@@ -689,6 +689,10 @@ class DynamicServer(Server):
         # persistence control (data_type=f+es): serve the cumulative graph too, so
         # the smodel can read "is this pair already an edge". Clients get their own
         # induced subgraph, remapped to local ids in the same order as their Q rows.
+        if hasattr(self.classifier, "set_scale"):
+            self.classifier.set_scale(self.global_snaps[0].num_nodes)
+            for cl in self.clients:
+                cl.classifier.set_scale(self.global_snaps[0].num_nodes)
         if hasattr(self.classifier, "set_adj"):
             n_glob = self.global_snaps[0].num_nodes
             self.classifier.set_adj(self._cum_edges.to(device), n_glob)

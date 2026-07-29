@@ -264,6 +264,7 @@ class DynamicSInvariant:
         self.D = None
         self.keys = None      # sorted pair keys of the cumulative graph (persistence)
         self.n_nodes = None
+        self.n_scale = None   # GLOBAL node count; see set_scale
         self.features = features or config["spectral"]["es_features"]
         if self.features not in ("spec", "persist", "both"):
             raise ValueError(f"spectral.es_features must be spec|persist|both, got {self.features!r}")
@@ -289,6 +290,16 @@ class DynamicSInvariant:
     def set_QD(self, Q, D):
         self.Q = Q
         self.D = D
+
+    def set_scale(self, n_global):
+        """Global node count, served identically to server and clients.
+
+        The leverage feature is scaled by a node count. Using the SERVED block's
+        row count instead makes the same pair yield different features on the
+        server (all N rows) and on a client (its own rows only), while the MLP
+        that consumes them is FedAvg-averaged across both -- a train/serve
+        inconsistency. The scale must therefore come from the server."""
+        self.n_scale = float(n_global)
 
     def set_adj(self, edge_index, num_nodes):
         """Serve the cumulative graph itself, for the PERSISTENCE control: a
@@ -346,7 +357,8 @@ class DynamicSInvariant:
         phi = prod @ gains.t()                              # (P, J) heat-kernel affinities
         cos = prod.sum(-1, keepdim=True)                    # unfiltered affinity (the probe's)
         # leverage: ||U_u|| is sqrt of a projector diagonal, so it is invariant too
-        lev = torch.log1p(nu * nv * float(self.Q.shape[0]))
+        scale = self.n_scale if self.n_scale else float(self.Q.shape[0])
+        lev = torch.log1p(nu * nv * scale)
         feats = [phi, cos, lev]
         if self.features == "both":
             ex = self._persistence(edge_label_index)
@@ -429,6 +441,9 @@ class FedDynamicEdgeScoreClassifier(DynamicClassifier):
 
     def set_adj(self, edge_index, num_nodes):
         self.smodel.set_adj(edge_index, num_nodes)
+
+    def set_scale(self, n_global):
+        self.smodel.set_scale(n_global)
 
     def get_SFV(self):
         return self.smodel.get_SFV()
