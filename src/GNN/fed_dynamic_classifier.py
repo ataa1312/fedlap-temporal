@@ -268,8 +268,18 @@ class DynamicSInvariant:
         self.features = features or config["spectral"]["es_features"]
         if self.features not in ("spec", "persist", "both"):
             raise ValueError(f"spectral.es_features must be spec|persist|both, got {self.features!r}")
-        self.n_filters = n_filters if self.features != "persist" else 0
-        n_spec = (self.n_filters + 2) if self.features != "persist" else 0
+        # attribution ablation: which of the three invariant blocks reach the MLP
+        self.parts = tuple(p for p in config["spectral"]["es_spec_parts"].split("+") if p)
+        unknown = set(self.parts) - {"phi", "cos", "lev"}
+        if unknown or not self.parts:
+            raise ValueError(
+                f"spectral.es_spec_parts must be a '+'-joined non-empty subset of phi|cos|lev, "
+                f"got {config['spectral']['es_spec_parts']!r}"
+            )
+        self.n_filters = n_filters if self.features != "persist" and "phi" in self.parts else 0
+        n_spec = 0 if self.features == "persist" else (
+            self.n_filters + ("cos" in self.parts) + ("lev" in self.parts)
+        )
         n_persist = 1 if self.features in ("persist", "both") else 0
         hidden = hidden or config["structure_model"]["DGCN_structure_layers_sizes"]
         # log-tau so tau stays positive; spread the initial scales over the
@@ -351,15 +361,18 @@ class DynamicSInvariant:
         nv = v.norm(dim=-1, keepdim=True)
         un, vn = u / (nu + 1e-12), v / (nv + 1e-12)
         prod = un * vn                                      # (P, k)
-        lam = self.D.to(prod.dtype).unsqueeze(0)            # (1, k)
-        taus = torch.exp(self.log_tau).unsqueeze(1)         # (J, 1)
-        gains = torch.exp(-taus * lam)                      # (J, k)
-        phi = prod @ gains.t()                              # (P, J) heat-kernel affinities
-        cos = prod.sum(-1, keepdim=True)                    # unfiltered affinity (the probe's)
-        # leverage: ||U_u|| is sqrt of a projector diagonal, so it is invariant too
-        scale = self.n_scale if self.n_scale else float(self.Q.shape[0])
-        lev = torch.log1p(nu * nv * scale)
-        feats = [phi, cos, lev]
+        feats = []
+        if "phi" in self.parts:
+            lam = self.D.to(prod.dtype).unsqueeze(0)        # (1, k)
+            taus = torch.exp(self.log_tau).unsqueeze(1)     # (J, 1)
+            gains = torch.exp(-taus * lam)                  # (J, k)
+            feats.append(prod @ gains.t())                  # (P, J) heat-kernel affinities
+        if "cos" in self.parts:
+            feats.append(prod.sum(-1, keepdim=True))        # unfiltered affinity (the probe's)
+        if "lev" in self.parts:
+            # leverage: ||U_u|| is sqrt of a projector diagonal, so it is invariant too
+            scale = self.n_scale if self.n_scale else float(self.Q.shape[0])
+            feats.append(torch.log1p(nu * nv * scale))
         if self.features == "both":
             ex = self._persistence(edge_label_index)
             if ex is None:

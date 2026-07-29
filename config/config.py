@@ -240,6 +240,12 @@ def _spectral() -> Registry:
                                             # exists" control -- §10.11 scored it ABOVE spectral on
                                             # every dataset), 'both' (does the spectrum add anything
                                             # on top of explicit history access?)
+    s["es_spec_parts"] = "phi+cos+lev"      # ATTRIBUTION ABLATION over the 'spec' feature block:
+                                            # '+'-joined subset of 'phi' (learnable heat-kernel
+                                            # affinities), 'cos' (the unfiltered affinity the probes
+                                            # measured) and 'lev' (the leverage term). The default is
+                                            # all three; single-part arms say which one carries the
+                                            # gain. Ignored when es_features='persist'
     s["robust_sign"] = False                # eigvec sign canon: by largest-|component| entry (stable)
                                             # vs the near-zero column-sum (noisy -> flips across snaps)
     s["regularizer_coef"] = 0
