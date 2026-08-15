@@ -17,6 +17,7 @@ _EMBED_UPDATE_METHODS = {"moving_average", "masked_gru", "gru"}
 _META_METHODS = {"none", "moving_average", "online_mean"}
 _TRAIN_MODES = {"live_update"}
 _MRR_METHODS = {"min", "max", "mean"}
+_MRR_FILTERS = {"split", "snapshot", "both"}
 _EVAL_SCOPES = {"auto", "local", "global"}
 _WANDB_MODES = {"online", "offline", "disabled"}
 _AGGREGATIONS = {"fedavg"}
@@ -53,6 +54,8 @@ def assert_cfg(config: Registry) -> None:
     _require_in(optim["scheduler"], _SCHEDULERS, "optim.scheduler")
     _require_in(train["mode"], _TRAIN_MODES, "train.mode")
     _require_in(metric["mrr_method"], _MRR_METHODS, "metric.mrr_method")
+    if "mrr_filter" in metric:
+        _require_in(metric["mrr_filter"], _MRR_FILTERS, "metric.mrr_filter")
     _require_in(
         gnn["embed_update_method"], _EMBED_UPDATE_METHODS, "gnn.embed_update_method"
     )
@@ -70,6 +73,13 @@ def assert_cfg(config: Registry) -> None:
     if not (isinstance(es, bool) or (isinstance(es, int) and es > 0)):
         raise ValueError(
             f"train.early_stopping must be bool or positive int, got {es!r}"
+        )
+
+    exp = config["experimental"]
+    if "deterministic" in exp and not isinstance(exp["deterministic"], bool):
+        raise ValueError(
+            "experimental.deterministic must be a bool (true = "
+            f"torch.use_deterministic_algorithms at startup), got {exp['deterministic']!r}"
         )
 
     # ----- hard checks (federated / spectral) ----- #

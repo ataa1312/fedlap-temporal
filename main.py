@@ -157,10 +157,16 @@ def run_once() -> dict:
         FL=config["federated"]["fl"], log_cb=_wandb_snapshot_logger(wb)
     )
     mm = results.get("mean_metrics") or {}
+    # metric.mrr_filter='both' adds the strict-filter MRR; report it beside the
+    # headline so the paired delta is readable straight off the run log.
+    paired = ""
+    if mm.get("mrr_snapshot") is not None:
+        paired = (f" mrr_snapshot={mm['mrr_snapshot']}"
+                  f" mrr_delta={mm['mrr_snapshot'] - results['mean_mrr']}")
     LOGGER.info(
         f"RESULT dataset={name} clients={n_clients} fl={config['federated']['fl']} "
         f"eval={config['metric']['eval_scope']} seed={config['seed']} "
-        f"mean_mrr={results['mean_mrr']} std={results['std_mrr']} "
+        f"mean_mrr={results['mean_mrr']} std={results['std_mrr']}{paired} "
         f"auc={mm.get('roc_auc')} ap={mm.get('ap')} f1={mm.get('f1')} mcc={mm.get('mcc')} "
         f"snapshots={len(results['mrr_history'])}"
     )
@@ -184,6 +190,15 @@ def main() -> None:
     overlay_config(config, data)
     Parser.apply_overrides(config, args.overrides)
     assert_cfg(config)
+
+    # Process-global, so set it once here — before _seed(), the dataset load and
+    # the partition, i.e. before anything consumes randomness. No warn_only: an
+    # op without a deterministic kernel should fail loudly, not silently drift.
+    exp = config["experimental"]
+    deterministic = bool(exp["deterministic"]) if "deterministic" in exp else False
+    if deterministic:
+        torch.use_deterministic_algorithms(True)
+    LOGGER.info(f"deterministic={deterministic}")
 
     base_seed = config["seed"]
     for i in range(args.repeat):

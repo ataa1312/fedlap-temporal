@@ -58,6 +58,7 @@ def _sample_filtered_negatives(
     N: int,
     K: int,
     device: str,
+    extra_forbidden: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Sample K negative targets per source, excluding the source's true
     positives (roland's ``gen_negative_edges`` + ``edge_index_difference``).
@@ -65,11 +66,20 @@ def _sample_filtered_negatives(
     A sampled ``(u, v')`` that is actually a positive edge would score high and
     inflate the rank of the source's best positive, depressing MRR. Resample
     such collisions (bounded rounds; with N >> K this converges immediately).
+
+    ``extra_forbidden``: optional [2, E] edge set unioned into the forbidden
+    keys (metric.mrr_filter='snapshot' passes the WHOLE target snapshot, so its
+    train/val positives stop being eligible negatives). Resampling is unchanged,
+    so exactly K negatives are still returned and the two filters stay
+    comparable on pool size.
     """
     n_sources = unique_sources.size(0)
     v_neg = torch.randint(0, N, (n_sources, K), device=device)
     src_col = unique_sources.to(torch.long).unsqueeze(1)
     pos_key = pos_u.to(torch.long) * N + pos_v.to(torch.long)
+    if extra_forbidden is not None and extra_forbidden.numel() > 0:
+        e = extra_forbidden.to(device=pos_key.device, dtype=torch.long)
+        pos_key = torch.cat([pos_key, e[0] * N + e[1]])
     for _ in range(8):
         collide = torch.isin(src_col * N + v_neg, pos_key)
         n_collide = int(collide.sum())
@@ -77,6 +87,22 @@ def _sample_filtered_negatives(
             break
         v_neg[collide] = torch.randint(0, N, (n_collide,), device=device)
     return v_neg
+
+
+TARGET_EDGES_ATTR = "target_edge_index"
+
+
+def _extra_forbidden(snap: Data, mrr_filter: str) -> torch.Tensor | None:
+    """Target-snapshot edge set for strict filtering, or None for the default.
+
+    The eval batch is a clone of TODAY's snapshot, so ``snap.edge_index`` is
+    today's message-passing edges -- filtering against it would forbid the wrong
+    graph. The target edges must therefore be attached explicitly; when they are
+    absent we fall back to the split filter rather than guess.
+    """
+    if mrr_filter == "split":
+        return None
+    return getattr(snap, TARGET_EDGES_ATTR, None)
 
 
 @torch.no_grad()
@@ -88,6 +114,7 @@ def compute_mrr(
     method: str,
     is_recurrent: bool,
     device: str,
+    mrr_filter: str = "split",
 ) -> float:
     """Per-source MRR following roland's convention.
 
@@ -119,7 +146,9 @@ def compute_mrr(
 
     unique_sources = torch.unique(u)
     n_sources = unique_sources.size(0)
-    v_neg = _sample_filtered_negatives(unique_sources, u, v_pos, N, K, device)
+    v_neg = _sample_filtered_negatives(
+        unique_sources, u, v_pos, N, K, device, _extra_forbidden(snap, mrr_filter)
+    )
 
     src_repeated = unique_sources.unsqueeze(1).expand(-1, K).flatten()
     v_neg_flat = v_neg.flatten()
@@ -147,6 +176,7 @@ def compute_mrr_from_z(
     method: str,
     device: str,
     model: nn.Module,
+    mrr_filter: str = "split",
 ) -> float:
     """Same as :func:`compute_mrr` but takes precomputed embeddings ``z``.
 
@@ -165,7 +195,9 @@ def compute_mrr_from_z(
 
     unique_sources = torch.unique(u)
     n_sources = unique_sources.size(0)
-    v_neg = _sample_filtered_negatives(unique_sources, u, v_pos, N, K, device)
+    v_neg = _sample_filtered_negatives(
+        unique_sources, u, v_pos, N, K, device, _extra_forbidden(snap, mrr_filter)
+    )
 
     src_repeated = unique_sources.unsqueeze(1).expand(-1, K).flatten()
     v_neg_flat = v_neg.flatten()

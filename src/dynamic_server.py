@@ -24,6 +24,7 @@ from src.train.federated_orchestrator import (
     _step_eval_with_mrr_pair,
     _stitch_global_z,
     _clone_state,
+    _mrr_filter_mode,
 )
 from registries import losses
 
@@ -427,6 +428,12 @@ class DynamicServer(Server):
         sf = ds["snapshot_freq"]
         if isinstance(sf, str) and sf.endswith("s") and sf[:-1].isdigit():
             parts.append(f"freq-{sf}")
+        # Deterministic runs converge to a different fixed point, so they must not
+        # share a checkpoint with non-deterministic ones. Appended ONLY when on, so
+        # existing identities stay byte-identical and old checkpoints still load.
+        exp = config["experimental"]
+        if "deterministic" in exp and exp["deterministic"]:
+            parts.append("det")
         parts.append(f"s{config['seed']}")
         return "_".join(parts)
 
@@ -726,7 +733,11 @@ class DynamicServer(Server):
         )
         # MRR first, in the server classifier's current mode (unchanged from
         # before metrics were added — keeps the headline reproducible).
-        mrr = compute_mrr_from_z(gz, eval_snap, mrr_k, mrr_method, device, self.classifier)
+        mrr_filter = _mrr_filter_mode()
+        mrr = compute_mrr_from_z(
+            gz, eval_snap, mrr_k, mrr_method, device, self.classifier,
+            "snapshot" if mrr_filter == "snapshot" else "split",
+        )
         # Metrics in eval mode (clean BN/dropout, like the local path); restore
         # after so training mode/RNG is untouched. Eval-mode decode is
         # deterministic, so the run stays bit-identical to the MRR-only baseline.
@@ -743,6 +754,12 @@ class DynamicServer(Server):
                 h_auc, h_ap = compute_hard_auc_ap_from_z(gz, eval_snap, 1, device, self.classifier)
                 metrics["roc_auc"], metrics["ap"] = h_auc, h_ap
         self.classifier.train(was_training)
+        if mrr_filter == "both":
+            # paired: same model state, same snapshot, same seed — only the
+            # forbidden set differs, so the delta is the filter and nothing else.
+            metrics["mrr_snapshot"] = compute_mrr_from_z(
+                gz, eval_snap, mrr_k, mrr_method, device, self.classifier, "snapshot"
+            )
         return mrr, metrics
 
     def _eval_mrr_local(self, t, loss_fn, mrr_k, mrr_method):

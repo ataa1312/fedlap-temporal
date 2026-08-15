@@ -97,6 +97,12 @@ def _step_train_pair(
     return loss.item(), new_hs
 
 
+def _mrr_filter_mode() -> str:
+    """metric.mrr_filter, tolerant of configs predating the key."""
+    m = config["metric"]
+    return m["mrr_filter"] if "mrr_filter" in m else "split"
+
+
 @torch.no_grad()
 def _step_eval_with_mrr_pair(
     model: nn.Module,
@@ -126,8 +132,16 @@ def _step_eval_with_mrr_pair(
 
     pred, label = model.decode(z, snap_prep)
     loss = loss_fn(pred, label.float()).item()
-    mrr = compute_mrr_from_z(z, snap_prep, mrr_k, mrr_method, device, model)
+    mode = _mrr_filter_mode()
+    mrr = compute_mrr_from_z(
+        z, snap_prep, mrr_k, mrr_method, device, model,
+        "snapshot" if mode == "snapshot" else "split",
+    )
     metrics = binary_classification_metrics(pred, label)
+    if mode == "both":
+        metrics["mrr_snapshot"] = compute_mrr_from_z(
+            z, snap_prep, mrr_k, mrr_method, device, model, "snapshot"
+        )
     return loss, mrr, metrics
 
 
@@ -264,6 +278,10 @@ def _attach_future_link_pred_labels(
             torch.zeros(neg.size(1), device=pos.device),
         ]
     )
+    # snap is a clone of TODAY, so snap.edge_index is today's message-passing
+    # edges. metric.mrr_filter='snapshot' needs TOMORROW's full edge set, which
+    # is otherwise unreachable from the metric — carry it explicitly.
+    snap.target_edge_index = snap_tomorrow.edge_index
     return snap
 
 

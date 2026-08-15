@@ -162,6 +162,20 @@ def _experimental() -> Registry:
     e["rank_eval_multiplier"] = 1000
     e["restrict_training_set"] = -1
     e["eval_seed"] = None
+    e["deterministic"] = False              # CPU-ONLY IN PRACTICE -- UNVERIFIED ON CUDA: nothing
+                                            # sets CUBLAS_WORKSPACE_CONFIG, so on a GPU host this
+                                            # is expected to raise at the first addmm (and CUDA
+                                            # scatter may raise after that). Measure on an approved
+                                            # host before enabling for a cluster run.
+                                            # torch.use_deterministic_algorithms(True) at startup.
+                                            # Off by default: same seed reruns vary ~±0.008 MRR
+                                            # (results.md §12b), enabling it makes them bit-exact
+                                            # at full thread count for ~14% wall-clock. BUT it
+                                            # converges to a DIFFERENT fixed point than the
+                                            # non-deterministic path (different summation order),
+                                            # so numbers produced with it on are NOT comparable to
+                                            # the existing tables. Flip it deliberately, not
+                                            # incidentally.
     return e
 
 
@@ -181,6 +195,15 @@ def _metric() -> Registry:
     m["hard_neg"] = "random"                # discrimination negatives for auc/ap: 'random'
                                             # (deepsnap ~1:1, saturates ~0.96) or 'degree'
                                             # (degree-weighted hard, de-saturates auc/ap)
+    m["mrr_filter"] = "split"               # what MRR negatives are forbidden from hitting:
+                                            # 'split'    = the evaluated split's positives only
+                                            #              (ROLAND-faithful, train_utils.py:230-235)
+                                            # 'snapshot' = also every edge of the target snapshot,
+                                            #              so its train/val positives stop being
+                                            #              eligible negatives. Resamples to keep K.
+                                            # 'both'     = report each; headline stays 'split'.
+                                            # The classification metrics already forbid the whole
+                                            # target snapshot -- this knob measures that asymmetry.
     return m
 
 
