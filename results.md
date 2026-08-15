@@ -1,9 +1,25 @@
 # FedLap-ROLAND — Federated Temporal Spectral Link Prediction: Results & Analysis
 
 Living record of experimental results and their interpretation, written to be
-self-contained for a downstream paper-authoring agent. Last updated 2026-07-25.
+self-contained for a downstream paper-authoring agent. Last updated 2026-07-29.
 
-> **START HERE — program state (2026-07-25).** The paper's positive result is §9 (federation's
+> **START HERE — program state (2026-07-29).** Two results carry the paper. (1) §9: federation's
+> resilience grows with fragmentation. (2) §10.13–§10.15: a decision-level spectral term over
+> rotation-invariant features (`data_type=f+es`), fed by a Chebyshev-filtered solver serving a
+> *current* basis, beats the feature-only backbone with null placebos — uci +0.025…+0.047,
+> reddit_body +0.053/+0.079, as733 +0.305/+0.374. **§10.15 is the live section**: the first batch
+> after the `6ef42a2` leverage-scale fix, and it supersedes §10.13/§10.14's absolute numbers.
+> **What §10.15 settles:** the term is NULL on both bitcoin graphs (−0.020…−0.000 vs feature),
+> the two datasets with 8% edge recurrence — so the in-model gain is monotone in recurrence with
+> no exception, and the honest framing is *a compact encoding of recurrence*, not a structural
+> signal a history lookup misses. It also corrects a reporting habit: `real − placebo` overstates
+> the effect wherever the placebo damages the model (it does on bitcoin), so **real − feature is
+> the column that decides whether the method earns its place**. Still open: the in-model
+> repeat/new split (would test the framing directly; touches the eval path, needs sign-off) and
+> §10.11's offline NEW-pair probe, the one piece of evidence pointing the other way.
+> The paragraph below is the 2026-07-25 state, kept because §10.1–§10.12 are read through it.
+
+> **(2026-07-25).** The paper's positive result is §9 (federation's
 > resilience grows with fragmentation). The spectral investigation (§10) has refuted, with controls,
 > every implementation-level rescue: fusion style (§10.4), basis quality + injection point (§10.6/7),
 > decoder inductive bias and GNN depth (§10.9), temporal-stability confounds (§10.2/8). Scoping
@@ -314,7 +330,41 @@ analytically / big-O; no distributed transport is implemented.)
   (§10.6); the exact solver fixes the basis but not the outcome (§10.7). **BasisNet** — predicted
   null, not scheduled (§10.5).
 
-### The live spectral direction (§10.10, 2026-07-25) — federated ceiling confirmed, conversion gap real
+### THE LIVE DIRECTION (2026-07-29) — the method works, and it is recurrence
+Gate 3 was built (§10.13), swept (§10.14), re-measured after the leverage fix (§10.15) and
+attributed (§10.16). Current state, and what is left:
+
+**Established.** `data_type=f+es` — a decode-time scalar over rotation-invariant features of a
+Chebyshev-solved, *current* basis — beats the feature-only backbone with null placebos on uci
+(+0.025…+0.047), reddit_body (+0.053/+0.079) and as733 (+0.305/+0.374). Both `update` and
+`recompute` give the same result; `keep` is the null arm.
+
+**The limit, now measured (§10.15).** It is NULL on both bitcoin graphs (−0.020…+0.002 vs feature),
+whose edge recurrence is 0.08. The in-model gain is monotone in recurrence across all five datasets
+with no exception, so the defensible claim is *a compact encoding of recurrence*, not structural
+information a history lookup misses. A 1-bit `persist` feature still outscores the spectral term
+wherever recurrence is high.
+
+**The mechanism, now attributed (§10.16).** The unfiltered affinity `Σ_i û_ui û_vi` carries all of
+it; the learnable heat-kernel bank matches but never exceeds it; the leverage term is inert. The
+method reduces to one scalar per pair — which is also the only variant that is EXACTLY gauge-
+invariant.
+
+**Open, in order.**
+1. **as733/reddit_body attribution** — §10.16 is uci-only; the as733 C9 replication is running
+   (`runs/abl_parts`, sim07+sim08). Do not generalise the attribution before it lands.
+2. **The in-model repeat/new split** — the one experiment that could overturn the recurrence
+   framing, because §10.11's offline probe found a large placebo-null NEW-pair gain on as733
+   (+0.37…+0.75) that the recurrence story does not predict. Touches the eval path; needs sign-off.
+3. **`spectral.pe_dim` is 50 for every f+es run to date** and §5's older note that 50 is undersized
+   still stands; the offline K-sweep showed uci strengthening to K=200–300. The positives may be
+   understated. (This does NOT rescue bitcoin — the K-sweep already covered K∈{50…300} there.)
+4. **reddit_body has not been re-run post-`6ef42a2`**, so any table mixing it with §10.15 rows
+   crosses batches. Needed before docs/spectral_method.tex's results table can be refreshed.
+5. Provenance gap: run logs do not record the resolved spectral config (solver/pe_dim); verified
+   this session only from runner sources + live `ps`. Worth logging at startup.
+
+### Superseded — the 2026-07-25 spectral direction (kept for the §10.1–§10.12 reading path)
 The conditional-information probe, extended to C{1,3,7,9} with per-snapshot cut-edge counts:
 the exact global basis's marginal value given the trained model is +0.007 at C1 (redundant, as
 MP≈smoothing) but rises to **+0.022 / +0.044 / +0.067** at C3/7/9, tracking the measured severed-MP
@@ -2635,17 +2685,474 @@ uci, keep, chebyshev solver, 3 seeds, with the stability-matched placebo:
 | 3 | 0.0857±0.0050 | **0.0919±0.0066** | 0.0787±0.0059 | **−0.006** |
 | 9 | 0.0703±0.0091 | 0.0664±0.0093 | 0.0783±0.0054 | +0.004 |
 
-**Null on uci: the placebo matches or beats the real basis, and at C9 both sit below the bare
-backbone.** A diagnostic rules out the obvious failure mode — the edge term is genuinely learned
-(|mean| 0.000 at init → 0.23 mid-run → 0.14 at the end, std up to 0.36), so this is not a dead
-gradient or a wiring fault; SGD moves the weight and the structure still buys nothing here.
+**Null on uci UNDER `keep` — and that was a flaw in the test, not the model (see below).** The
+edge term is genuinely learned (|mean| 0.000 at init → 0.23 mid-run → 0.14 at the end, std up to
+0.36), so a dead gradient was ruled out.
+
+**THE FIX AND THE RESULT: `update_mode=update` — the first in-model spectral win in this program
+(2026-07-26).** `keep` freezes the basis solved at t=0; on uci that is a nearly-empty early graph.
+Every probe that measured the effect used the CURRENT cumulative basis at each t, so the faithful
+in-model setting is `update` (warm-started Chebyshev = the tracker, which §10.12b shows lands on
+the same subspace as a fresh exact solve). Re-run that way, uci, 3 seeds, in-batch baselines:
+
+| C | feature | **f+es laplacian** | placebo `shuffled_fixed` | placebo `random_fixed` | real − placebo | real − feature |
+|---|---|---|---|---|---|---|
+| 1 | 0.1110±0.0080 | **0.1506±0.0168** | 0.1142±0.0011 | — | **+0.036** | +0.040 (+36%) |
+| 3 | 0.0844±0.0026 | **0.1358±0.0066** | 0.0828±0.0105 | 0.0851±0.0142 | **+0.053** | +0.051 (+61%) |
+| 9 | 0.0776±0.0056 | **0.1058±0.0123** | 0.0692±0.0097 | — | **+0.037** | +0.028 (+36%) |
+
+1. **Both placebos sit at the feature baseline** (0.069–0.114 vs feature 0.078–0.111) while the
+   real basis is 0.106–0.151. The gain is STRUCTURAL, not capacity — the failure mode that
+   explained away §8's SignNet parity and §10.9's L=1 effect does not apply.
+2. **No per-seed overlap at any C** (e.g. C3: real [0.128, 0.144, 0.135] vs placebo
+   [0.069, 0.094, 0.086]), against a 0.005–0.007 noise floor.
+3. Gains are +28…+51 MRR points absolute, +36…+61% relative, largest at C3; not monotone in C.
+4. This is the combination the whole §10 arc pointed to and had never been run together:
+   **decision-level contribution + rotation-invariant features + a basis that is both correct
+   (Chebyshev, §10.12) and current (tracked, `update`)**. Each ingredient alone was null:
+   embedding-level (§10.2–10.7), per-coordinate readout (§10.13 `keep` row above and §10.2's rank
+   collapse), Arnoldi basis (§10.12), frozen basis (the `keep` rows).
+5. **`recompute` reproduces `update` exactly — the regime ordering has collapsed** (uci, same
+   batch): real 0.1475/0.1315/0.1035 and placebo 0.1079/0.0818/0.0696 at C1/C3/C9, i.e. within
+   0.002–0.003 of the `update` rows above, with the same +0.034…+0.050 margins. This is the
+   §10.12b prediction realised end-to-end: a warm-started filtered solve and a fresh one land on
+   the same subspace, and an invariant readout cannot tell them apart. Consequences —
+   (a) `keep > update > recompute` (§3/§4.2/§10.12c) was an artifact of a gauge-sensitive readout
+   over a poorly-resolved basis; with the gauge removed by construction the ordering **inverts**
+   (`keep` is now the null arm, because it serves an outdated basis, while both current-basis
+   regimes win); (b) the choice is now purely economic — `update` costs 3–25x less wall-clock
+   (§10.12) for the same result, so tracking earns its keep as an efficiency mechanism rather than
+   a stability one.
+6. **THE SWEEPS LANDED (2026-07-27/28) — see §10.14 for the full matrix.** The uci result
+   replicates on reddit_body and as733, and the persistence control there reverses the reading.
+   Mechanism is still NOT attributed: the §10.11 probe found uci's NEW-pair
+   spectral delta NEGATIVE, so the in-model gain is not simply the probe's effect — candidates are
+   the learnable heat-kernel filters, the leverage feature, or backbone co-adaptation (the model
+   can shift its own scores knowing the spectral term exists, which a post-hoc probe cannot).
+   A `recompute` vs `update` comparison and a per-feature ablation are the next diagnostics.
 
 Consistent with §10.11: uci's NEW-pair spectral effect is NEGATIVE, and its probe gain came from
 recurrence, which the backbone already handles. The datasets where the basis demonstrably predicts
 unseen links — as733 (+0.37…+0.75 on new pairs, growing with C) and reddit_body (+0.02…+0.03) —
-are where this model must be judged; that run needs the cluster and has not been done.
+are where this model must be judged. **Those runs are now DONE — §10.14.**
 Also note (batch-effect caveat, §10.11 point 4): `feature C3` reads 0.0787±0.0059 in this batch and
 0.0892±0.0049 in §10.12c's — identical condition, 3-seed means. Compare only within a batch.
+
+### 10.14 The f+es sweep matrix — replication, and the persistence reversal  **[2026-07-27/28]**
+
+28 cells, 3 seeds each, `f+es` + `solver=chebyshev` unless stated, run across sim07–sim15.
+**Primary logs: `/nas/lnt/stud/ge27yuv/runs/es_sweep/*.log`** (runners `runs/run_es{,2,3}.sh`,
+`run_after.sh`); harvest with `grep "RESULT.*mean_mrr" <dir>/*.log`. uci rows are local
+(§10.13 batch). Every value below is a 3-seed mean±population-std taken from those logs.
+
+_Spectral arm (`es_features=spec`), `update_mode=update` unless the row says recompute:_
+
+| dataset | C | feature | real (update) | real (recompute) | placebo (update) | placebo (recompute) |
+|---|---|---|---|---|---|---|
+| reddit_body | 1 | 0.3927±0.0029 | **0.4452±0.0056** | 0.4440±0.0057 | 0.3931±0.0057 | 0.3933±0.0032 |
+| reddit_body | 9 | 0.2678±0.0058 | **0.3469±0.0070** | 0.3408±0.0078 | 0.2659±0.0060 | 0.2595±0.0094 |
+| as733 | 1 | 0.3345±0.0016 | **0.6398±0.0009** | 0.6402±0.0009 | 0.3361±0.0010 | 0.3326±0.0010 |
+| as733 | 9 | 0.2491±0.0204 | **0.6228±0.0021** | 0.6225±0.0018 | 0.2651±0.0037 | 0.2607±0.0054 |
+
+1. The uci result replicates on both: real beats placebo by +0.052/+0.081 (reddit_body) and
+   +0.304/+0.358 (as733); placebos sit on the feature baseline; no per-seed overlap.
+2. `recompute` reproduces `update` on both datasets (≤0.006), as §10.12b predicts.
+3. Margin grows C1→C9 on reddit_body (+0.052→+0.081) and as733 (+0.304→+0.358). **On uci it does
+   NOT** (+0.040/+0.051/+0.028 at C1/C3/C9, §10.13) — so this is 2 of 3, not a law.
+
+_Persistence control (`es_features=persist`, the 1-bit "pair already exists" feature) and the
+combination (`both`):_
+
+| dataset | C | spectral | **persist** | both (real) | both (placebo) |
+|---|---|---|---|---|---|
+| uci | 3 | 0.1358±0.0066 | **0.2184±0.0099** | 0.2245±0.0063 | 0.2150±0.0139 |
+| uci | 9 | 0.1058±0.0123 | **0.1852±0.0103** | 0.1869±0.0090 | 0.1611±0.0133 |
+| reddit_body | 1 | 0.4452±0.0056 | **0.5567±0.0042** | — | — |
+| reddit_body | 9 | 0.3469±0.0070 | **0.4644±0.0039** | 0.4485±0.0094 | 0.4488±0.0109 |
+| as733 | 1 | 0.6398±0.0009 | **0.8750±0.0001** | — | — |
+| as733 | 9 | 0.6228±0.0021 | **0.8546±0.0044** | 0.8652±0.0016 | 0.8584±0.0006 |
+
+4. **A 1-bit lookup beats the entire spectral apparatus on every dataset and every C measured**
+   (+0.08 uci, +0.11 reddit_body, +0.23 as733).
+5. **Given persistence, the spectrum adds +0.011 (as733 C9) and −0.016 (reddit_body C9).** Both
+   exceed the 0.005–0.007 noise floor and have OPPOSITE signs: the honest statement is "helps
+   slightly on one, hurts slightly on the other", not "nothing".
+6. `both`(real) vs `both`(placebo) is +0.007 (as733) and −0.000 (reddit_body) — but note the
+   reddit_body `both` arms both fall BELOW persist-alone, i.e. adding spectral features (real or
+   scrambled) to persistence costs ~0.016 there.
+7. Caveat carried from §10.13: the uci rows come from a different batch than §10.12c's; identical
+   conditions have differed by 0.010 across batches. Compare only within a batch.
+
+### 10.15 The v2 sweep — first batch after the leverage-scale fix, and the bitcoin test  **[COMPLETE, 2026-07-29]**
+
+**This section supersedes §10.13/§10.14's absolute numbers.** All of those were produced before
+commit `6ef42a2`, which fixed a train/serve inconsistency in the `f+es` smodel: the leverage
+feature `log1p(‖U_u‖‖U_v‖ · N)` took `N` from the *served block's* row count, so the server (all N
+rows) and each client (its own rows only) computed a DIFFERENT feature for the same pair, while
+the MLP consuming it is FedAvg-averaged across both. The fix serves the global node count to
+server and clients alike. C1 is essentially unaffected (one client, whose block is the whole
+graph); every C>1 cell is re-measured here.
+
+**Primary logs: `/nas/lnt/stud/ge27yuv/runs/v2_sweep/*.log`** (runners `runs/run_v2.sh` +
+`runs/run_list.sh`, `progress.txt` records rc + host per job); harvest with
+`grep "RESULT.*mean_mrr" <dir>/*.log`. Launched 2026-07-29 02:43 across sim07–sim10, sim12,
+sim14, sim15. Every value is a 3-seed (1234/1334/1434) mean ± population std unless flagged.
+`f+es` + `solver=chebyshev` + `update_mode=update` unless the row says otherwise.
+
+_uci — COMPLETE, C{1,3,7,9}:_
+
+| C | feature | **spec (real)** | placebo `shuffled_fixed` | real − placebo | real − feature |
+|---|---|---|---|---|---|
+| 1 | 0.1202±0.0017 | **0.1578±0.0059** | 0.1143±0.0042 | **+0.044** | +0.038 (+31%) |
+| 3 | 0.0891±0.0119 | **0.1356±0.0060** | 0.0860±0.0133 | **+0.050** | +0.047 (+52%) |
+| 7 | 0.0767±0.0080 | **0.1170±0.0016** | 0.0633±0.0028 | **+0.054** | +0.040 (+53%) |
+| 9 | 0.0718±0.0129 | **0.0967±0.0138** | 0.0682±0.0138 | **+0.029** | +0.025 (+35%) |
+
+1. **The headline survives the fix.** Real beats both its placebo and the feature baseline at every
+   C, placebos sit on the feature baseline (0.063–0.114 vs feature 0.072–0.120), and the margin is
+   the same size as §10.13's (+0.036/+0.053/+0.037 there). C7 is new and fits the pattern.
+2. Still **not monotone in C** (+0.044/+0.050/+0.054/+0.029): C7 is now the largest margin and C9
+   the smallest, so §10.14's "margin grows with sharding" remains 2 of 3 datasets, not a law.
+3. `recompute` reproduces `update`: 0.1392±0.0066 vs 0.1356±0.0060 (C3) and 0.1063±0.0118 vs
+   0.0967±0.0138 (C9) — within one std, as §10.12b predicts.
+4. **Persistence still dominates on uci**: 0.2281±0.0110 (C3) and 0.1906±0.0081 (C9) against
+   spectral's 0.1356 / 0.0967, i.e. the 1-bit lookup is worth ~+0.094 more than the entire
+   spectral apparatus. The §10.14 caveat is unchanged on this dataset.
+
+_bitcoin — the low-recurrence test (8% edge recurrence). ALL FOUR CELLS COMPLETE:_
+
+| dataset | C | feature | **spec (real)** | placebo | persist | real − placebo | **real − feature** |
+|---|---|---|---|---|---|---|---|
+| bitcoin_alpha | 1 | 0.1675±0.0045 | 0.1748±0.0032 | 0.1593±0.0028 | 0.1603±0.0079 | +0.016 | **+0.007** |
+| bitcoin_alpha | 9 | 0.0982±0.0032 | 0.0785±0.0204 | 0.0676±0.0154 | 0.0911±0.0045 | +0.011 | **−0.020** |
+| bitcoin_otc | 1 | 0.2017±0.0034 | 0.2040±0.0034 | 0.1957±0.0147 | 0.1971±0.0069 | +0.008 | **+0.002** |
+| bitcoin_otc | 9 | 0.1066±0.0176 | 0.1064±0.0048 | 0.0837±0.0137 | 0.1031±0.0059 | +0.023 | **−0.000** |
+
+5. **The spectral term is NULL on bitcoin.** Against the baseline that decides whether it earns its
+   place — feature-only — the four cells read +0.007, −0.020, +0.002, −0.000. The largest positive
+   (alpha C1, +0.007) is at the 0.005–0.007 noise floor, ~1.6 pooled std, and does not replicate at
+   C9 on the same graph or at either C on bitcoin_otc; the one value clearly outside the floor is
+   negative and is a seed artifact (point 5b). Stated conservatively: **no bitcoin cell is a
+   convincing win, and the cell-to-cell scatter (−0.020…+0.007) is the size of the effect itself.**
+   Contrast uci, where the gain is +0.025…+0.047 at all four C, an order of magnitude larger and
+   consistent in sign — and reddit_body (+0.053/+0.079) and as733 (+0.306/+0.360).
+5b. **The alpha C9 −0.020 is one collapsed seed, and the placebo collapses with it** — so read it
+   as null, not as harm. Per-seed MRR at that cell: feature `[0.0942, 0.1020, 0.0985]` and persist
+   `[0.0962, 0.0853, 0.0918]` are both tight, while spec `[0.0500, 0.0888, 0.0967]` and placebo
+   `[0.0491, 0.0867, 0.0669]` both collapse on seed 1234. The failure therefore belongs to the
+   spectral feature BLOCK (real and scrambled alike) destabilising the edge-score MLP on this
+   dataset, not to spectral structure — `persist`, which routes through the same smodel with a
+   1-bit input, is unaffected. Dropping seed 1234 leaves spec 0.0928 vs feature 0.1002, i.e. still
+   −0.007. Conclusion unchanged, magnitude overstated.
+6. **A methodological correction that matters for every earlier claim: `real − placebo` overstates
+   the effect wherever the placebo damages the model.** On bitcoin the `shuffled_fixed` arm sits
+   0.010–0.031 BELOW the feature baseline, so bitcoin_otc C9's headline-looking "+0.023 over
+   placebo" is entirely the placebo's own damage — the real arm is exactly at baseline (0.1064 vs
+   0.1066). The two controls answer different questions and both are needed: the placebo answers
+   *structure or capacity?*, the feature baseline answers *does it help at all?*. §10.13/§10.14
+   led with real−placebo; the real−feature column should lead from here on. (uci is unaffected:
+   its placebo sits within 0.003–0.013 of baseline and real−feature is positive at every C.)
+7. **Persistence is also null-to-negative on bitcoin** (−0.007 alpha C9, −0.004 otc C9, −0.005
+   otc C1) — exactly what 8% recurrence predicts, and the control working as designed.
+8. **The one counter-signal, stated so it is not lost: AUC on bitcoin_otc C1.** There the real arm
+   reads 0.9615±0.0007 against feature 0.9477±0.0051 and placebo 0.9533±0.0034 — non-overlapping
+   ranges, so a genuine +0.014 over the baseline and +0.008 over the placebo. It does not survive
+   contact with the rest: otc C9 is +0.008 AUC with fully overlapping stds, and alpha C9 is −0.058.
+   MRR is the reported metric of this program and it is flat in all three cells. Read as one cell
+   of AUC-only movement, not as a rescue.
+9. **Third independent replication of the bitcoin split.** Spectral information has now failed on
+   these two graphs through three different injection mechanisms: input-level LapPE (§10.7),
+   decode-time probe fusion (§10.10 gate 2, "real ≈ placebo at every C"), and now the in-model
+   edge-score smodel. The dataset dependence is a property of the data, not of any one design.
+
+**What this decides (the question posed for this session).** The spectral term does NOT do
+something a history lookup cannot: on the two datasets where persistence has almost nothing to
+offer, the spectral term has nothing to offer either. Ordering the in-model gain over feature-only
+by the dataset's recurrence rate gives a monotone relationship with no exception:
+
+| dataset | recurrence | in-model `f+es` gain over feature |
+|---|---|---|
+| bitcoin_{alpha,otc} | 0.08 | −0.020 … +0.007 (4 cells, scatter ≈ effect size) |
+| uci | 0.49 | +0.025 … +0.047 (4 cells, all positive) |
+| reddit_body | 0.55 | +0.053 / +0.079 (§10.14, pre-fix batch) |
+| as733 | 0.95 | +0.306 / +0.360 |
+
+So the honest framing is the second of the two the session set out: **the method is a compact
+encoding of recurrence**, not a structural signal that a lookup misses. This is consistent with
+§10.11's probe, which found the overall spectral gain to be the REPEAT-subset gain diluted by the
+repeat fraction. It does not retract §10.15/§10.14's positive result — the gains over the backbone
+are real, controlled and large — but it fixes what may be claimed for them. The one piece of
+evidence still pointing the other way is §10.11's NEW-pair measurement (as733 +0.37…+0.75,
+reddit_body +0.022…+0.034, placebo ~0), which is an offline probe, not the in-model metric; the
+in-model repeat/new split that would settle it is deferred pending sign-off (it touches the eval
+path).
+
+_as733 — COMPLETE:_
+
+| C | feature | **spec (real)** | placebo | persist | real − placebo | **real − feature** |
+|---|---|---|---|---|---|---|
+| 1 | 0.3351±0.0004 | **0.6407±0.0003** | 0.3358±0.0006 | — | +0.305 | **+0.306 (+91%)** |
+| 9 | 0.2680±0.0078 | **0.6283±0.0016** | 0.2724±0.0037 | 0.8572±0.0058 | +0.356 | **+0.360 (+134%)** |
+
+10. as733 replicates §10.14 to within noise (C1 spec 0.6407 vs 0.6398; C9 spec 0.6283 vs 0.6228),
+    placebos sit exactly on the feature baseline, and the margin still grows C1→C9. Persistence
+    still beats it there (0.8572 vs 0.6283).
+11. _Operational note._ The originally-launched C9 cells (`spec`, `shuffled_fixed`, `persist`) all
+    died `rc=1` with CUDA OOM on sim15, whose 48 GB GPU was already holding 45.7 GB across two
+    processes belonging to another user. Relaunched on sim12 (verified idle) and completed clean.
+    The C1/C9 `feature` baselines were absent from the original job list and were added on sim10 —
+    without them no as733 gain-vs-feature could have been stated. **as733 costs ~11 min/seed on the
+    Chebyshev path**, not the ~40 min recorded in MEMORY.md, which predates that solver.
+
+_Method note carried forward:_ compare only within this batch. uci `feature` C3 reads 0.0891 here,
+0.0844 in §10.13's batch and 0.0892 in §10.12c's — a 0.005 spread on an identical condition.
+
+### 10.16 Attribution — the plain affinity carries it; the filters and leverage are inert  **[confirmed on uci C{1,3,9} + as733 C9, 2026-07-29]**
+
+The experiment §10.13 point 6 and the method doc both flagged as the one that would attribute the
+mechanism. `spectral.es_spec_parts` (commit `984bcb7`) selects which of the three invariant blocks
+inside `DynamicSInvariant` reach the MLP: `phi` (the J=4 **learnable** heat-kernel affinities
+`Σ_i exp(−τ_j λ_i) û_ui û_vi`), `cos` (the **unfiltered** affinity `Σ_i û_ui û_vi` — exactly the
+quantity §10.11's probe measured), and `lev` (the leverage term `log1p(‖U_u‖‖U_v‖·N)`). Default
+`phi+cos+lev` reproduces the previous behaviour exactly (same feature order and width).
+
+**Logs: `/nas/lnt/stud/ge27yuv/runs/abl_parts/*.log`** (runners `runs/run_abl.sh`,
+`runs/run_abl_uci.sh`, `progress.txt` has rc + host), sim13, 2026-07-29 03:12. uci, `f+es`,
+`solver=chebyshev`, `update_mode=update`, 3 seeds. Each arm is run against its OWN
+`shuffled_fixed` placebo, and the `feature`/`persist` baselines are re-run **inside this batch** so
+every comparison is within-batch.
+
+_uci C1 — COMPLETE (in-batch feature = 0.1185±0.0044, persist = 0.2677±0.0127):_
+
+| parts | real | placebo | real − placebo | real − feature |
+|---|---|---|---|---|
+| `phi` | 0.1556±0.0098 | 0.1174±0.0061 | +0.038 | +0.037 |
+| **`cos`** | **0.1603±0.0055** | 0.1128±0.0035 | **+0.048** | **+0.042** |
+| `lev` | 0.1116±0.0138 | 0.1120±0.0077 | **−0.000** | −0.007 |
+| `phi+cos+lev` | 0.1472±0.0020 | 0.1067±0.0116 | +0.041 | +0.029 |
+
+_uci C3 — COMPLETE (in-batch feature = 0.0881±0.0173; persist 0.2296 at n=1, still running):_
+
+| parts | real | placebo | real − placebo | real − feature |
+|---|---|---|---|---|
+| `phi` | 0.1302±0.0048 | 0.0868±0.0141 | +0.043 | +0.042 |
+| `cos` | 0.1288±0.0019 | 0.0869±0.0240 | +0.042 | +0.041 |
+| `lev` | 0.0831±0.0121 | 0.0845±0.0176 | **−0.001** | −0.005 |
+| `phi+cos+lev` | 0.1352±0.0033 | 0.0796±0.0156 | +0.056 | +0.047 |
+
+1. **The leverage term is inert.** Real minus its own placebo is −0.000 (C1) and −0.001 (C3), and
+   at C1 it sits 0.007 BELOW the feature baseline. It carries no signal at either C. Note the
+   irony: commit `6ef42a2` — the fix that this whole v2 batch was run to re-measure — corrected the
+   node scale of *this* feature. That is why the v2 uci numbers land on top of §10.13's
+   (C3 0.1356 vs 0.1358): the fix repaired a train/serve inconsistency in a term that contributes
+   nothing. The fix was still correct; it simply could not move the metric.
+2. **The unfiltered affinity carries the entire effect.** `cos` alone is the best single arm at C1
+   (+0.042 over feature, +0.048 over its placebo) and matches `phi` at C3.
+3. **The learnable heat-kernel filters add nothing over it.** `phi` ≈ `cos` at both C (0.1556 vs
+   0.1603 at C1; 0.1302 vs 0.1288 at C3), all within the noise floor. This is the expected
+   outcome rather than a surprise: `phi_j → cos` as `τ_j → 0`, so the filter bank's best available
+   strategy is to reproduce the unfiltered affinity, and it does. The learnability is not doing
+   work.
+4. **Combining is not better than the best part.** At C1 the full set (0.1472) is 0.013 BELOW `cos`
+   alone (0.1603); at C3 it is 0.005–0.006 above `cos`/`phi` (0.1352 vs 0.1288/0.1302), i.e. at the
+   noise floor. Across both C the honest statement is that the three-block combination buys nothing
+   over the single best block.
+5. **Consequence for the method.** The `f+es` contribution reduces to ONE scalar per candidate
+   pair, `Σ_i û_ui û_vi` over the tracked basis — no filter bank, no learnable τ, no leverage term.
+   That is a substantial simplification of what §10.13 built, and it is the same quantity the
+   offline probe used, which closes the gap §10.13 point 6 opened ("the in-model gain is not
+   simply the probe's effect"): on uci it now appears that it IS the probe's feature, consumed
+   in-model.
+5b. **Dropping `phi` makes the readout EXACTLY gauge-invariant, not approximately.** Write the
+   block as `û_u diag(g(λ)) û_vᵀ`. Under `U → UR` this is unchanged for all pairs iff `R` commutes
+   with `diag(g(λ))` — i.e. iff `R` is block-diagonal with respect to the eigenvalue multiplicities.
+   For `cos` the filter is the identity (`g ≡ 1`), so it commutes with EVERY orthogonal `R`: `cos`
+   is exactly invariant. `lev` is too (`‖uR‖ = ‖u‖`). But `phi` with distinct `τ_j` only commutes
+   within an eigenspace, which is precisely the "O(|f(λ_i) − f(λ_j)|) sensitive to mixing between
+   nearly-equal eigenvalues" caveat in `DynamicSInvariant`'s own docstring. So the ablation does not
+   merely simplify the method — it removes the one block whose invariance was approximate, on a
+   spectrum §10.12 measured as clustered at ~1e-3 gaps, which is exactly the regime where that
+   approximation is weakest. **The empirically-best variant is also the theoretically-clean one.**
+6. Persistence still dominates on uci in this batch too: 0.2677±0.0127 against the best spectral
+   arm's 0.1603±0.0055.
+_uci C9 — COMPLETE (in-batch feature = 0.0743±0.0070, persist = 0.1946±0.0199):_
+
+| parts | real | placebo | real − placebo | real − feature |
+|---|---|---|---|---|
+| `phi` | 0.1098±0.0046 | 0.0757±0.0054 | +0.034 | +0.036 |
+| `cos` | 0.1155±0.0133 | 0.0704±0.0061 | +0.045 | +0.041 |
+| `lev` | 0.0706±0.0110 | 0.0764±0.0117 | **−0.006** | −0.004 |
+| `phi+cos+lev` | 0.1016±0.0071 | 0.0680±0.0103 | +0.034 | +0.027 |
+
+_as733 C9 — THE REPLICATION, on the dataset with the largest effect (in-batch feature =
+0.2656±0.0054); logs `runs/abl_parts/as733_*.log`, sim07 + sim08:_
+
+| parts | real | placebo | real − placebo | real − feature |
+|---|---|---|---|---|
+| `phi` | 0.5966±0.0079 | — | — | **+0.331** |
+| **`cos`** | **0.5898±0.0076** | 0.2785±0.0014 | **+0.311** | **+0.324** |
+| `lev` | 0.2474±0.0083 | 0.2653±0.0111 | **−0.018** | **−0.018** |
+
+7. **The attribution replicates, and it is not a small-dataset artifact.** On as733 C9 — where the
+   full model scores +0.360 over feature — `cos` ALONE delivers +0.324 of it and `phi` alone
+   +0.331, while `lev` is again inert-to-negative (−0.018 against both its own placebo and the
+   feature baseline). The same three-way ordering holds on uci at C1, C3 and C9 and on as733 at C9:
+   **`cos` ≈ `phi` ≫ `lev` ≈ 0**, four cells, two datasets, three orders of magnitude of effect
+   size. `cos` alone recovers ~90% of the full model's gain on as733 and 100%+ of it on uci.
+8. **Scope of what is NOT yet shown.** reddit_body has not been attributed, and as733 was measured
+   at C9 only (no C1, and `phi`'s placebo was not run — it was the least decisive arm under a fixed
+   GPU budget). Nothing here contradicts the uci reading, but "the filter bank is unnecessary" rests
+   on `phi ≈ cos` rather than on `phi` failing against a placebo.
+
+---
+
+## 12. The MRR negative-filter asymmetry — measured, and it does not matter  **[2026-08-10]**
+
+**The issue.** The two negative samplers in one evaluation use different forbidden sets. The
+classification batch forbids the target snapshot's WHOLE `edge_index`
+(`federated_orchestrator.py`), while the MRR ranker forbids only the positives placed in the batch,
+i.e. the evaluated split (`src/metrics/mrr.py`). Under `split: [0.8,0.1,0.1]`, `pos_test` is 10% of
+the snapshot, so ~90% of the target snapshot's true edges are eligible MRR negatives.
+
+**This is ROLAND's behaviour, not a divergence.** `roland/graphgym/contrib/train/train_utils.py`
+:230-235 takes `edge_label_index[:, edge_label == 1]` and `gen_negative_edges` set-differences
+against exactly that (`:50`). The default must therefore stay as-is or Table-3 comparability is
+lost. New knob `metric.mrr_filter` ∈ `split` (default, unchanged) | `snapshot` | `both`; strict mode
+resamples to keep exactly K, so both arms rank against K competitors.
+
+**Tier 1 — contamination rate (model-free, `analysis/probes/mrr_contamination.py`).** Expected
+number of a K=1000 draw landing on a true edge of the target snapshot outside the evaluated split:
+
+| dataset | N | eval pairs | sources | contam / K | % of K | sources ≥1 | max |
+|---|---|---|---|---|---|---|---|
+| `uci`         |  1,899 |  27 |   2,400 | **3.012** | 0.301% | 68.8% |  81.6 |
+| `as733`       |  7,716 | 732 | 698,776 | **1.069** | 0.107% | 18.1% | 168.7 |
+| `reddit_body` | 35,776 | 176 |  25,071 | **0.051** | 0.005% |  0.2% |   4.3 |
+
+**Tier 2 — paired in-model delta** (`uci`, C=1, `feature`, `mrr_filter=both`, 3 seeds; same model,
+same snapshot, same seed — only the forbidden set differs):
+
+| seed | MRR `split` | MRR `snapshot` | delta |
+|---|---|---|---|
+| 1234 | 0.10786 | 0.10196 | −0.00590 |
+| 1334 | 0.11702 | 0.11635 | −0.00067 |
+| 1434 | 0.10731 | 0.10534 | −0.00198 |
+
+**delta = −0.0029 ± 0.0022** (mean ± population std, n=3), **inside the documented 0.005–0.007
+noise floor**.
+
+**The pre-registered prediction was WRONG on both counts, and is recorded as such.**
+It said (a) the delta would be non-negative — removing genuine edges from the negative pool can only
+reduce the competitors outranking the positive — and (b) it would scale with edge-recurrence rate,
+giving `as733` > `reddit_body` > `uci`. Neither held:
+
+1. The delta is *negative* on all three seeds, though too small to distinguish from draw noise.
+2. Contamination is driven by **snapshot density relative to N**, not recurrence. `uci` (recurrence
+   0.49) has 59× the contamination of `reddit_body` (0.55) purely because N is 19× smaller. The
+   recurrence hypothesis for this quantity is refuted.
+
+**Reading.** Contamination is real but inert. ~3 of 1000 `uci` negatives are genuine edges, yet the
+metric barely moves — a contaminating pair only inflates the rank if it outscores the source's best
+positive, and at MRR≈0.11 the backbone does not reliably score true edges that highly.
+
+**Not run, and needed before calling the residual zero:** a same-filter double-draw control (compute
+MRR twice under `split` with different draws) to separate draw noise from a genuine filter effect.
+The consistent negative sign across 3/3 seeds is not significant on its own (P=0.25 under a null).
+This control is **load-bearing, not cleanup**: the two arms use independent draws, so the delta
+carries sampling variance of unmeasured size, and −0.0029 ± 0.0022 sits inside it.
+
+**Caveat on the headline of a `both` run** (measured during the test audit): the strict arm makes a
+different number of `randint` calls than the split arm (3 vs 2 for the same input), so enabling
+`snapshot` or `both` shifts the run's global RNG stream from the first eval onward. A `both` run's
+headline MRR is therefore **not comparable to a banked `split` run's** — visible above as seed
+1234 giving 0.10786 under `both` against 0.10791 for the same seed under plain `split`. The *delta*
+remains a valid within-run paired quantity (same model state, same snapshot); only the absolute
+headline drifts. The `split` default is untouched and is pinned bit-exactly by
+`tests/test_mrr_filter.py::test_no_extra_forbidden_is_bit_identical`.
+
+**Consequence for §10.14/§10.16's persistence comparison:** the exposure runs *against* recurrence-
+predicting methods, so persistence's measured lead over the spectral term is if anything
+understated. It is not an artefact that a protocol fix would remove.
+
+**Cluster runs deliberately NOT spent:** `uci` is the worst case by a factor of 3 over `as733` and
+59 over `reddit_body`, and it shows no detectable effect, so the Tier-2 runs on the other two were
+dropped rather than executed. Recorded so the gap is not mistaken for an oversight.
+
+### 12b. Re-confirmation and refinement of the known fixed-seed non-determinism
+
+**This is a known property, not a new finding** — the project's standing reference note already
+records that the CPU sandbox is non-deterministic at fixed seed ("same-seed fedlap feature C=1 runs
+varied 0.076–0.098", multi-threaded float reductions rather than MPS atomics) and already prescribes
+`OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONHASHSEED=0` for bit-exact reruns. What follows
+re-confirms it on the current HEAD, quantifies it on `uci`, and **narrows the remedy**.
+
+Six runs of the **identical command, identical seed (1234), on CPU**, `uci` / `feature` / C=1:
+
+`0.09678, 0.10401, 0.11427, 0.12145, 0.10939, 0.10608` → **0.1087 ± 0.0078** (population std,
+n=6), range **0.0247**.
+
+Cause isolated by elimination:
+
+| condition | reproducible? | wall-clock (uci) |
+|---|---|---|
+| default | **no** — six values spanning 0.0968–0.1215 | 14 s |
+| `PYTHONHASHSEED=0`, default threads | **no** — 0.10939 vs 0.10608 | — |
+| `torch.set_num_threads(1)` + `OMP/MKL_NUM_THREADS=1` | **yes** — `0.10063452711673798` ×2 | 16 s |
+| **`torch.use_deterministic_algorithms(True)`, default threads** | **yes** — `0.11838083517634207` ×3 | 16 s |
+
+**Two refinements to the standing remedy:**
+
+1. `PYTHONHASHSEED=0` is **neither necessary nor sufficient** — alone it leaves the run
+   non-reproducible, and both working remedies below are bit-exact with the hash seed left random.
+2. **`torch.use_deterministic_algorithms(True)` alone is sufficient on CPU, at full thread count.**
+   It was never tried before; it raises no error **on CPU**, so every op exercised there has a
+   deterministic kernel. This is the better remedy on CPU: thread pinning serialises the whole run,
+   whereas the flag keeps the thread pool. On `uci` both cost the same (~14% over default), but
+   `uci` is small enough that serialisation barely bites — the advantage should grow with graph
+   size, which is **not measured here** and should not be assumed.
+
+   **CUDA: UNVERIFIED, and expected to fail.** `CUBLAS_WORKSPACE_CONFIG` appears nowhere in the
+   repo (grep) while `src/utils/utils.py:50-52` resolves `device` to `cuda:0` whenever CUDA is
+   available. On CUDA ≥10.2 that variable must be exported before the cuBLAS handle is created or
+   the first `addmm`/`matmul` raises — i.e. on the cluster hosts the flag would crash at the first
+   linear layer of the first forward pass. CUDA scatter/index-add in message passing may have no
+   deterministic kernel and raise after that. No GPU was available to test either. **Do not enable
+   this flag on a cluster run until it has been measured there** (plan step C). The earlier
+   unqualified wording here — "raises no error on this codebase" — was a CPU-only result stated too
+   broadly, and is corrected.
+
+**Caveat that matters if either remedy is adopted:** the two converge to *different* fixed points
+(`0.10063` thread-pinned vs `0.11838` deterministic-flag). Both are bit-reproducible; neither is
+"the" correct value — they are different summation orders. So the choice must be made once and
+held, and numbers produced under one are not comparable to numbers produced under the other.
+
+**NOW AVAILABLE AS A KNOB (2026-08-15):** `experimental.deterministic` (bool, default **false**)
+calls `torch.use_deterministic_algorithms(True)` once in `main()`, before seeding, dataset load and
+partition. Verified: enabled → `0.11838083517634207` on two runs, bit-identical; disabled →
+unchanged, and `_run_id()` stays byte-identical (`uci_gru_feature_C1_s1234`) so existing
+checkpoints still load, while an enabled run gets `..._det_s1234` and cannot collide with one.
+Suite 259/1/1. Default is off precisely because of the caveat above — **every number in this file
+and in `docs/spectral_method.tex` was produced with it off**, and enabling it makes future numbers
+non-comparable to them.
+
+Quantification worth keeping:
+
+1. On `uci`/`feature`/C=1 the fixed-seed spread is **±0.0078 (n=6), range 0.0247** — the same order
+   as the declared noise floor (0.005–0.007), so that floor is not wrong, but a "3-seed mean ± std"
+   does not average this away. Thread noise alone contributes ≈0.0045 of SEM to a 3-seed mean
+   before any genuine seed variance.
+2. It applies to the CUDA cluster runs as well (already recorded: same-seed UCI recompute gave
+   0.060 then 0.068).
+
+**This does NOT affect §12's Tier-2 delta.** Both arms of that comparison are computed inside a
+single run against a single model state, so the paired delta carries no run-to-run variance. That
+is precisely why the paired design was chosen over comparing two separate runs — a two-run design
+would have been swamped, since the ±0.0078 run-to-run spread is ~3× the −0.0029 effect being
+measured.
+
+**Not yet done:** decide whether to pin threads for future reported runs (reproducibility vs
+wall-clock), and whether to restate the noise floor's attribution in §5 and in
+`docs/spectral_method.tex`'s reporting paragraph.
 
 ---
 
