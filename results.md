@@ -3055,11 +3055,25 @@ giving `as733` > `reddit_body` > `uci`. Neither held:
 metric barely moves — a contaminating pair only inflates the rank if it outscores the source's best
 positive, and at MRR≈0.11 the backbone does not reliably score true edges that highly.
 
-**Not run, and needed before calling the residual zero:** a same-filter double-draw control (compute
-MRR twice under `split` with different draws) to separate draw noise from a genuine filter effect.
-The consistent negative sign across 3/3 seeds is not significant on its own (P=0.25 under a null).
-This control is **load-bearing, not cleanup**: the two arms use independent draws, so the delta
-carries sampling variance of unmeasured size, and −0.0029 ± 0.0022 sits inside it.
+**Tier 3 — the draw-noise control, now RUN** (`analysis/probes/mrr_draw_noise.py`, uci, C=1,
+`feature`, 3 seeds). `_extra_forbidden` is neutralised so BOTH arms of `mrr_filter=both` use the
+split filter; the only remaining difference between them is the second independent draw, so every
+delta it reports is pure sampling noise:
+
+| | per-seed deltas | mean ± std | range |
+|---|---|---|---|
+| measured effect (Tier 2) | −0.0059, −0.0007, −0.0020 | **−0.0029 ± 0.0022** | 0.0052 |
+| draw noise (this control) | +0.0045, +0.0042, −0.0050 | **+0.0012 ± 0.0044** | 0.0095 |
+
+**The noise floor is larger than the effect.** The Tier-2 delta is therefore **not separable from
+sampling variance**, and the earlier "consistently negative on 3/3 seeds" observation carries no
+weight either — the noise control produced 2 positive and 1 negative of comparable magnitude, so
+sign consistency at n=3 is uninformative here.
+
+This does not change §12's conclusion, it grounds it: the filter asymmetry is inert not merely
+because the measured effect is small, but because it is indistinguishable from the noise of drawing
+K negatives twice. Any future attempt to detect it needs either many more seeds or a design that
+holds the draw fixed across arms.
 
 **Caveat on the headline of a `both` run** (measured during the test audit): the strict arm makes a
 different number of `randint` calls than the split arm (3 vs 2 for the same input), so enabling
