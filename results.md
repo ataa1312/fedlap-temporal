@@ -3111,15 +3111,27 @@ Cause isolated by elimination:
    `uci` is small enough that serialisation barely bites — the advantage should grow with graph
    size, which is **not measured here** and should not be assumed.
 
-   **CUDA: UNVERIFIED, and expected to fail.** `CUBLAS_WORKSPACE_CONFIG` appears nowhere in the
-   repo (grep) while `src/utils/utils.py:50-52` resolves `device` to `cuda:0` whenever CUDA is
-   available. On CUDA ≥10.2 that variable must be exported before the cuBLAS handle is created or
-   the first `addmm`/`matmul` raises — i.e. on the cluster hosts the flag would crash at the first
-   linear layer of the first forward pass. CUDA scatter/index-add in message passing may have no
-   deterministic kernel and raise after that. No GPU was available to test either. **Do not enable
-   this flag on a cluster run until it has been measured there** (plan step C). The earlier
-   unqualified wording here — "raises no error on this codebase" — was a CPU-only result stated too
-   broadly, and is corrected.
+   **CUDA: MEASURED on sim10 (RTX 4080), 2026-08-16.** The prediction was half right.
+
+   | run | outcome |
+   |---|---|
+   | `deterministic=true`, no env var | **RuntimeError at the first `F.linear`** (`encoder.py:21`): *"this operation is not deterministic because it uses CuBLAS and you have CUDA >= 10.2 … you must set CUBLAS_WORKSPACE_CONFIG=:4096:8"* |
+   | `deterministic=true` + `CUBLAS_WORKSPACE_CONFIG=:4096:8` | runs clean; `0.10520243979300614` on **two** runs, bit-identical |
+   | `deterministic=false` (control) | `0.11026` vs `0.12371` — differ by **0.0135** |
+
+   So the cuBLAS half of the prediction is **confirmed** and the scatter half is **refuted** — the
+   message-passing aggregation has deterministic CUDA kernels and raises nothing. Only the env var
+   was missing. Non-determinism on CUDA is also real and larger than on CPU (0.0135 here vs a
+   ±0.0078 spread on CPU).
+
+   **Fixed:** `main()` now does `os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")` when
+   and only when the flag is enabled — separately verified on sim10 that setting it *after* torch
+   is imported still works, so it can stay conditional. It is deliberately not set unconditionally:
+   the workspace config can steer cuBLAS algorithm selection, and non-deterministic runs must stay
+   comparable to banked numbers.
+
+   The earlier wording here — "raises no error on this codebase" — was a CPU-only result stated too
+   broadly. It was corrected to "CPU-only, CUDA unverified", and is now replaced by the measurement.
 
 **Caveat that matters if either remedy is adopted:** the two converge to *different* fixed points
 (`0.10063` thread-pinned vs `0.11838` deterministic-flag). Both are bit-reproducible; neither is

@@ -162,12 +162,10 @@ def _experimental() -> Registry:
     e["rank_eval_multiplier"] = 1000
     e["restrict_training_set"] = -1
     e["eval_seed"] = None
-    e["deterministic"] = False              # CPU-ONLY IN PRACTICE -- UNVERIFIED ON CUDA: nothing
-                                            # sets CUBLAS_WORKSPACE_CONFIG, so on a GPU host this
-                                            # is expected to raise at the first addmm (and CUDA
-                                            # scatter may raise after that). Measure on an approved
-                                            # host before enabling for a cluster run.
-                                            # torch.use_deterministic_algorithms(True) at startup.
+    e["deterministic"] = False              # torch.use_deterministic_algorithms(True) at startup.
+                                            # Works on CPU and CUDA (measured: sim10 RTX 4080,
+                                            # bit-identical x2; main() sets CUBLAS_WORKSPACE_CONFIG
+                                            # for the CUDA path, which is mandatory there).
                                             # Off by default: same seed reruns vary ~±0.008 MRR
                                             # (results.md §12b), enabling it makes them bit-exact
                                             # at full thread count for ~14% wall-clock. BUT it

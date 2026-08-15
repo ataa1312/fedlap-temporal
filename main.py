@@ -197,6 +197,12 @@ def main() -> None:
     exp = config["experimental"]
     deterministic = bool(exp["deterministic"]) if "deterministic" in exp else False
     if deterministic:
+        # CUDA >=10.2 refuses deterministic cuBLAS without this, so the flag would
+        # otherwise die at the first Linear. Set only when deterministic is on:
+        # the workspace config can steer cuBLAS algorithm choice, and normal runs
+        # must stay comparable to banked numbers. setdefault so an explicit value
+        # wins. Verified on sim10 (RTX 4080) that setting it post-import suffices.
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
         torch.use_deterministic_algorithms(True)
     LOGGER.info(f"deterministic={deterministic}")
 
