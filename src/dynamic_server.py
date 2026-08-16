@@ -421,24 +421,35 @@ class DynamicServer(Server):
             f"C{config['subgraph']['num_subgraphs']}",
         ]
         sp = config["spectral"]
+        fed = config["federated"]
+        spectral_dt = dt in ("f+s", "structure", "f+pe", "f+es")
         if dt in ("f+s", "structure"):
             # basis_source is the placebo switch -- without it a real arm and its
             # shuffled_fixed control share an identity, and f+s checkpointing works.
-            parts += [f"um-{um}", f"sfv-{config['federated']['sfv_share']}",
-                      f"basis-{sp['basis_source']}"]
-            if um in ("update", "recompute"):
-                parts.append(f"proc-{'on' if sp['use_procrustes'] else 'off'}")
+            # spectral_len is this path's k; smodel_type selects a different model.
+            parts += [f"um-{um}", f"sfv-{fed['sfv_share']}",
+                      f"basis-{sp['basis_source']}", f"k{sp['spectral_len']}",
+                      f"sm-{config['model']['smodel_type']}"]
         elif dt == "f+pe":
             parts += [f"um-{um}", f"pe{sp['pe_dim']}", f"basis-{sp['basis_source']}"]
         elif dt == "f+es":
             parts += [f"um-{um}", f"pe{sp['pe_dim']}", f"basis-{sp['basis_source']}",
                       f"esf-{sp['es_features']}", f"esp-{sp['es_spec_parts']}"]
-            if um in ("update", "recompute"):
-                parts.append(f"proc-{'on' if sp['use_procrustes'] else 'off'}")
+        # The procrustes branch in get_spectral_features is data-type agnostic, so
+        # it applies on EVERY spectral path -- f+pe included -- under update/recompute.
+        if spectral_dt and um in ("update", "recompute"):
+            parts.append(f"proc-{'on' if sp['use_procrustes'] else 'off'}")
         # Solver changes the basis and so the numbers. Appended only when it is not
         # the default, so existing default-solver identities stay byte-identical.
-        if dt in ("f+s", "structure", "f+pe", "f+es") and sp["solver"] != "arnoldi":
+        if spectral_dt and "solver" in sp and sp["solver"] != "arnoldi":
             parts.append(f"solver-{sp['solver']}")
+        # Federation axes: fl=false is the local-only floor and eval_scope picks the
+        # test set, both real experiment axes (they are already wandb group axes).
+        # Appended only when non-default so existing identities stay byte-identical.
+        if not fed["fl"]:
+            parts.append("local")
+        if config["metric"]["eval_scope"] != "auto":
+            parts.append(f"eval-{config['metric']['eval_scope']}")
         sf = ds["snapshot_freq"]
         if isinstance(sf, str) and sf.endswith("s") and sf[:-1].isdigit():
             parts.append(f"freq-{sf}")

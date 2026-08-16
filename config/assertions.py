@@ -132,7 +132,8 @@ def assert_cfg(config: Registry) -> None:
             raise ValueError(
                 f"spectral.pe_dim must be >0 for data_type={model['data_type']}, got {spectral['pe_dim']!r}"
             )
-        if model["data_type"] == "f+es" and spectral["solver"] == "arnoldi":
+        if (model["data_type"] == "f+es" and "solver" in spectral
+                and spectral["solver"] == "arnoldi"):
             # the Krylov estimate overlaps the true low subspace by only ~0.27-0.62
             # (results.md §10.12); an invariant readout over it reads noise
             raise ValueError(
