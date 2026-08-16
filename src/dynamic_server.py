@@ -479,6 +479,16 @@ class DynamicServer(Server):
             "cum_edges": self._cum_edges,
             "mrr_history": mrr_history,
             "metrics_history": metrics_history,
+            # Without these a resumed run continues on a freshly seeded stream, so
+            # it never matches an uninterrupted one -- and experimental.deterministic
+            # cannot fix that, since it pins kernels rather than stream position.
+            "rng": {
+                "python": random.getstate(),
+                "numpy": np.random.get_state(),
+                "torch": torch.get_rng_state(),
+                "cuda": (torch.cuda.get_rng_state_all()
+                         if torch.cuda.is_available() else None),
+            },
         }
         tmp = ckpt_path + ".tmp"
         torch.save(ckpt, tmp)
@@ -490,12 +500,23 @@ class DynamicServer(Server):
         if not os.path.exists(ckpt_path):
             return None
         try:
-            ckpt = torch.load(ckpt_path, weights_only=False)  # our own trusted ckpt
+            # map_location='cpu': set_rng_state needs a CPU ByteTensor, and the
+            # caller moves hs/model state to the device itself.
+            ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
         except Exception as e:
             LOGGER.warning(f"could not load checkpoint {ckpt_path}: {e}")
             return None
         if ckpt.get("run_id") != self._run_id():
             return None
+        # Restore the streams before anything draws. Absent on checkpoints written
+        # before RNG capture existed -- those resume as they always did.
+        rng = ckpt.get("rng")
+        if rng is not None:
+            random.setstate(rng["python"])
+            np.random.set_state(rng["numpy"])
+            torch.set_rng_state(rng["torch"])
+            if rng.get("cuda") is not None and torch.cuda.is_available():
+                torch.cuda.set_rng_state_all(rng["cuda"])
         self.load_state_dict(ckpt["server_state"])
         self.share_weights()  # sync clients' fmodel to the restored global weights
         _set_sfv(self.classifier, ckpt.get("server_sfv"))

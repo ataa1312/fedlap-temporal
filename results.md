@@ -3209,6 +3209,27 @@ The `f+es` row looks worse but was unreachable: `_get_sfv` dereferenced `smodel.
 collision. A crash is not a safeguard, and a strict xfail in `tests/test_edge_score_smodel.py`
 had already documented it.
 
+**Second gap in the same subsystem: resume was not stream-faithful.** The checkpoint carried no RNG
+state, so a resumed run continued on a freshly seeded stream — negative sampling (train batch and
+MRR ranker), dropout, and the Bernoulli `spectral.recompute_prob` draw all restarted from the wrong
+position. `experimental.deterministic` could not compensate: it pins kernels, not stream position.
+The centralized backbone had solved this (`train/checkpoint.py` stores python/numpy/torch states and
+loads at `map_location="cpu"`); fedlap's checkpointing was written later and never picked it up.
+
+Now fixed and measured on a 5-snapshot toy run under `deterministic=true`:
+
+| run | mean_mrr |
+|---|---|
+| uninterrupted | `0.2376644592732191` |
+| checkpointed then resumed | `0.2376644592732191` — **exact match** |
+| resumed with the `rng` block stripped (= pre-fix) | `0.2391632255166769` — **differs** |
+
+The third row is the non-vacuity check: without RNG restore the resumed run genuinely diverges, so
+the match in row 2 is the fix working rather than an insensitive test. Checkpoints predating the
+change (no `rng` key) still resume, verified. **Relevant to banked numbers only if any came from a
+resumed run — worth checking the cluster job logs, since before this they diverged from their
+uninterrupted equivalents.**
+
 **Fixed.** Identity now carries `basis_source` on `f+s`, a full `f+es` branch
 (`um`/`pe`/`basis`/`es_features`/`es_spec_parts`/`proc`), and `solver` — the last appended only when
 it is not the default, so default-solver identities stay byte-identical and existing checkpoints
