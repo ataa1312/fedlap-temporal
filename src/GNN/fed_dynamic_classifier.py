@@ -57,6 +57,18 @@ class DynamicSLaplace(SpectralLaplaceMixin, SClassifier):
     def get_embeddings(self):
         return self.bn(super().get_embeddings())
 
+    def get_SFV(self):
+        # The learnable SFV lives in the graph here; the SignNet and Invariant
+        # smodels own none and return None. Checkpointing goes through this
+        # protocol rather than reaching into smodel internals.
+        return self.graph.x
+
+    def set_SFV(self, w):
+        if w is None or self.graph.x is None:
+            return
+        with torch.no_grad():
+            self.graph.x.copy_(w.to(self.graph.x.device))
+
     def state_dict(self):
         weights = super().state_dict()
         weights["bn"] = self.bn.state_dict()
@@ -171,6 +183,10 @@ class DynamicSSignNet(Classifier):
 
     def get_SFV(self):
         return None
+
+    def set_SFV(self, w):
+        # owns no SFV; its learnables are in state_dict already
+        return
 
     def get_embeddings(self):
         Q = self.Q
@@ -336,6 +352,10 @@ class DynamicSInvariant:
 
     def get_SFV(self):
         return None
+
+    def set_SFV(self, w):
+        # owns no SFV; the MLP and log_tau are already in state_dict
+        return
 
     def get_D(self):
         return self.D

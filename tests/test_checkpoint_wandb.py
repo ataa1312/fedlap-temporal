@@ -14,6 +14,26 @@ from src.dynamic_client import DynamicClient
 from src.train.federated_orchestrator import _partition_edges_per_snapshot
 from registries import losses
 
+
+class _FakeSFVSmodel:
+    """Minimal smodel implementing the get_SFV/set_SFV protocol.
+
+    Checkpointing goes through that protocol rather than reaching into
+    smodel.graph, so the fake has to implement it; .graph is kept so the
+    round-trip assertions below can still read the tensor directly."""
+
+    def __init__(self, x):
+        import types as _t
+        self.graph = _t.SimpleNamespace(x=x)
+
+    def get_SFV(self):
+        return self.graph.x
+
+    def set_SFV(self, w):
+        with torch.no_grad():
+            self.graph.x.copy_(w.to(self.graph.x.device))
+
+
 @pytest.fixture
 def global_config_restore():
     original_registry = copy.deepcopy(src.config._registry)
@@ -153,9 +173,9 @@ def test_round_trip_fidelity(global_config_restore, tmp_path):
     server.initialize_FL()
     
     import types
-    server.classifier.smodel = types.SimpleNamespace(graph=types.SimpleNamespace(x=torch.randn(3, 3)))
+    server.classifier.smodel = _FakeSFVSmodel(torch.randn(3, 3))
     for c, cl in enumerate(server.clients):
-        cl.classifier.smodel = types.SimpleNamespace(graph=types.SimpleNamespace(x=torch.randn(3, 3)))
+        cl.classifier.smodel = _FakeSFVSmodel(torch.randn(3, 3))
         cl.hs = [torch.randn(1, 16)]
         
     server._first_spectral = types.SimpleNamespace(U=torch.randn(5, 5), D=torch.randn(5))
@@ -171,9 +191,9 @@ def test_round_trip_fidelity(global_config_restore, tmp_path):
     server_fresh = make_server(global_snaps, client_snaps)
     server_fresh.initialize_FL()
     
-    server_fresh.classifier.smodel = types.SimpleNamespace(graph=types.SimpleNamespace(x=torch.zeros(3, 3)))
+    server_fresh.classifier.smodel = _FakeSFVSmodel(torch.zeros(3, 3))
     for cl in server_fresh.clients:
-        cl.classifier.smodel = types.SimpleNamespace(graph=types.SimpleNamespace(x=torch.zeros(3, 3)))
+        cl.classifier.smodel = _FakeSFVSmodel(torch.zeros(3, 3))
         
     resumed = server_fresh._load_partial_ckpt()
     assert resumed is not None
@@ -340,9 +360,9 @@ def test_sfv_local_guard(global_config_restore, tmp_path):
     server.initialize_FL(data_type="feature")
     
     import types
-    server.classifier.smodel = types.SimpleNamespace(graph=types.SimpleNamespace(x=torch.ones(3, 3)))
+    server.classifier.smodel = _FakeSFVSmodel(torch.ones(3, 3))
     for cl in server.clients:
-        cl.classifier.smodel = types.SimpleNamespace(graph=types.SimpleNamespace(x=torch.ones(3, 3)))
+        cl.classifier.smodel = _FakeSFVSmodel(torch.ones(3, 3))
         cl.hs = [torch.randn(1, 16)]
         
     server._save_partial_ckpt(1, None, [], [])

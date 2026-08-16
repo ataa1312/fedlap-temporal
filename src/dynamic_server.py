@@ -61,20 +61,22 @@ def _cheb_cutoff(prev_D, safety=0.9):
 
 
 def _get_sfv(clf):
-    """The learnable SFV W (smodel.graph.x) — a leaf param that is NOT in the
-    state_dict when federated.sfv_share='local', so checkpoints capture it here."""
+    """The learnable SFV W — a leaf param that is NOT in the state_dict when
+    federated.sfv_share='local', so checkpoints capture it here.
+
+    Goes through the smodel's get_SFV/set_SFV protocol rather than reaching into
+    ``smodel.graph``: only DynamicSLaplace owns an SFV, while SignNet and the
+    f+es Invariant smodel own none (their learnables are already in state_dict)
+    and return None."""
     smodel = getattr(clf, "smodel", None)
-    if smodel is None or smodel.graph.x is None:
-        return None
-    return smodel.graph.x.detach().cpu()
+    w = smodel.get_SFV() if smodel is not None else None
+    return None if w is None else w.detach().cpu()
 
 
 def _set_sfv(clf, w):
     smodel = getattr(clf, "smodel", None)
-    if smodel is None or w is None:
-        return
-    with torch.no_grad():
-        smodel.graph.x.copy_(w.to(smodel.graph.x.device))
+    if smodel is not None and w is not None:
+        smodel.set_SFV(w)
 
 
 def _weighted_mean_metrics(
@@ -418,13 +420,25 @@ class DynamicServer(Server):
             ds["name"], config["gnn"]["embed_update_method"], str(dt),
             f"C{config['subgraph']['num_subgraphs']}",
         ]
+        sp = config["spectral"]
         if dt in ("f+s", "structure"):
-            parts += [f"um-{um}", f"sfv-{config['federated']['sfv_share']}"]
+            # basis_source is the placebo switch -- without it a real arm and its
+            # shuffled_fixed control share an identity, and f+s checkpointing works.
+            parts += [f"um-{um}", f"sfv-{config['federated']['sfv_share']}",
+                      f"basis-{sp['basis_source']}"]
             if um in ("update", "recompute"):
-                parts.append(f"proc-{'on' if config['spectral']['use_procrustes'] else 'off'}")
+                parts.append(f"proc-{'on' if sp['use_procrustes'] else 'off'}")
         elif dt == "f+pe":
-            parts += [f"um-{um}", f"pe{config['spectral']['pe_dim']}",
-                      f"basis-{config['spectral']['basis_source']}"]
+            parts += [f"um-{um}", f"pe{sp['pe_dim']}", f"basis-{sp['basis_source']}"]
+        elif dt == "f+es":
+            parts += [f"um-{um}", f"pe{sp['pe_dim']}", f"basis-{sp['basis_source']}",
+                      f"esf-{sp['es_features']}", f"esp-{sp['es_spec_parts']}"]
+            if um in ("update", "recompute"):
+                parts.append(f"proc-{'on' if sp['use_procrustes'] else 'off'}")
+        # Solver changes the basis and so the numbers. Appended only when it is not
+        # the default, so existing default-solver identities stay byte-identical.
+        if dt in ("f+s", "structure", "f+pe", "f+es") and sp["solver"] != "arnoldi":
+            parts.append(f"solver-{sp['solver']}")
         sf = ds["snapshot_freq"]
         if isinstance(sf, str) and sf.endswith("s") and sf[:-1].isdigit():
             parts.append(f"freq-{sf}")

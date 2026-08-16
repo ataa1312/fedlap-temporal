@@ -26,6 +26,7 @@ _SPECTRAL_SMODELS = {"SpectralLaplace", "LanczosLaplace", "SpectralDGCN", "Lancz
 _FUSIONS = {"add", "concat"}
 _DATA_TYPES = {"feature", "f+s", "structure", "f+pe", "f+es"}
 _UPDATE_MODES = {"keep", "update", "recompute"}
+_SOLVERS = {"arnoldi", "exact", "chebyshev"}
 _BASIS_SOURCES = {"laplacian", "random", "shuffled", "random_fixed", "shuffled_fixed"}
 _SFV_SHARES = {"local", "avg"}
 
@@ -123,6 +124,10 @@ def assert_cfg(config: Registry) -> None:
             )
         _require_in(spectral["update_mode"], _UPDATE_MODES, "spectral.update_mode")
         _require_in(spectral["basis_source"], _BASIS_SOURCES, "spectral.basis_source")
+        # Dispatch is if/elif/else with the Krylov path as the fallback, so an
+        # unrecognised name would silently select arnoldi and look like a real run.
+        if "solver" in spectral:
+            _require_in(spectral["solver"], _SOLVERS, "spectral.solver")
         if model["data_type"] in {"f+pe", "f+es"} and spectral["pe_dim"] <= 0:
             raise ValueError(
                 f"spectral.pe_dim must be >0 for data_type={model['data_type']}, got {spectral['pe_dim']!r}"

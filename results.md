@@ -3182,6 +3182,43 @@ wall-clock), and whether to restate the noise floor's attribution in §5 and in
 
 ---
 
+## 13. Run-identity gap — an `f+s` placebo could have shared its real arm's checkpoint  **[2026-08-16]**
+
+`DynamicServer._run_id()` is what stops a re-launched run from loading a foreign checkpoint. Until
+today it omitted knobs that change the numbers:
+
+| data type | identity carried | omitted |
+|---|---|---|
+| `f+s` / `structure` | `um`, `sfv`, `proc` | **`basis_source`**, `solver` |
+| `f+pe` | `um`, `pe`, `basis` | `solver` |
+| `f+es` | *nothing beyond dataset/update-method/type/C/seed* | everything spectral |
+
+**The `f+s` row is the one that matters.** `basis_source` is the placebo switch, so a `laplacian`
+run and its `shuffled_fixed` control at the same dataset/C/seed produced the **same identity** — and
+`f+s` checkpointing works. Under `train.auto_resume=true` the placebo arm could therefore load the
+real arm's `.ckpt`, or return its `.done` results outright, manufacturing agreement between an arm
+and its own control.
+
+**Whether this actually happened cannot be settled from this checkout.** `train.auto_resume`
+defaults to `false`, and the sweep runner scripts are not committed here. **Before any `f+s` placebo
+comparison in §10 is quoted as an independent control, check the cluster job scripts for
+`auto_resume`.** If it was off throughout, nothing is affected.
+
+The `f+es` row looks worse but was unreachable: `_get_sfv` dereferenced `smodel.graph.x` and
+`DynamicSInvariant` has no `graph`, so `f+es` + `auto_resume` raised `AttributeError` before any
+collision. A crash is not a safeguard, and a strict xfail in `tests/test_edge_score_smodel.py`
+had already documented it.
+
+**Fixed.** Identity now carries `basis_source` on `f+s`, a full `f+es` branch
+(`um`/`pe`/`basis`/`es_features`/`es_spec_parts`/`proc`), and `solver` — the last appended only when
+it is not the default, so default-solver identities stay byte-identical and existing checkpoints
+still load. `spectral.solver` is now validated against `{arnoldi, exact, chebyshev}` instead of
+silently falling through to the Krylov path on a typo. `_get_sfv`/`_set_sfv` go through the
+smodel's `get_SFV`/`set_SFV` protocol rather than reaching into `graph`, which also makes `f+es`
+checkpointing work (the xfail is now a passing test). Suite 290 passed / 1 skipped.
+
+---
+
 ## 11. Provenance & reproduction
 - Code: fedlap repo, branch `roland-dev`. Runs on TUM CUDA hosts `tueilnt-sim{08,09,10,12,13,14}`.
 - Commits behind §8/§9: `3595fc8` SignNet smodel; `f45c3a3` `federated.fl`; `a3e907a`
