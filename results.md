@@ -3300,6 +3300,92 @@ settle it; both are specified in the `fedlap-recurrence-mechanism` change.
 
 ---
 
+## 15. The arnoldi null is mostly the OPERATOR, not the solver  **[2026-08-18]**
+
+`analysis/probes/operator_confound.py`, `uci`, snapshots t=14 (mid-run) and t=26 (final).
+
+Every published arnoldi-vs-chebyshev comparison varied the solver *and* the operator *and* the
+support together: exact/chebyshev build `L_sym` on the giant component, while the Krylov path built
+`L_rw` (the old default) over all nodes. This isolates the operator by holding the solver fixed.
+
+Note this is **not** a 2×2. `calc_eigs_exact_sym` goes through `_active_lsym()` and ignores
+`L_type`, so there is no "exact on rw" cell to run.
+
+**k = 300** (the window where §10.12's headline claim was made):
+
+| t | cell | overlap vs exact | recon AUC | operator asymmetric? |
+|---|---|---|---|---|
+| 14 | exact (`L_sym`) | 1.000 | **0.968** | — |
+| 14 | arnoldi (`L_rw`) | 0.278 | **0.532** | yes (max asym 4.96e-1) |
+| 14 | arnoldi (`L_sym`) | 0.384 | **0.773** | no |
+| 26 | exact (`L_sym`) | 1.000 | **0.963** | — |
+| 26 | arnoldi (`L_rw`) | 0.273 | **0.509** | yes |
+| 26 | arnoldi (`L_sym`) | 0.378 | **0.790** | no |
+
+**k = 50:**
+
+| t | cell | overlap | recon AUC |
+|---|---|---|---|
+| 14 | exact | 1.000 | 0.864 |
+| 14 | arnoldi (`L_rw`) | 0.546 | 0.482 |
+| 14 | arnoldi (`L_sym`) | 0.661 | 0.596 |
+| 26 | exact | 1.000 | 0.848 |
+| 26 | arnoldi (`L_rw`) | 0.560 | 0.448 |
+| 26 | arnoldi (`L_sym`) | 0.653 | 0.676 |
+
+**The pre-registered prediction held, and more strongly than expected.** At t=26, k=300 the probe
+reproduces §10.12's headline `0.509` exactly — and changing *only the operator*, with the same
+Krylov solver, takes it to **0.790**. Decomposing the gap to exact:
+
+- operator (`rw` → `sym`): **0.509 → 0.790**, `+0.281`
+- solver and giant-component truncation (`arnoldi+sym` → `exact`): **0.790 → 0.963**, `+0.173`
+
+**The operator was the larger factor.** The Krylov estimate on the correct operator is not at chance
+— it carries substantial graph structure.
+
+**What this retracts.** §10.12 and `docs/spectral_method.tex` both state that the Krylov estimate
+"scores 0.509 at k=300, chance level, which is what the project consumed throughout its history."
+The number is right and the attribution is wrong. What scored at chance was **the Krylov estimate on
+the random-walk operator**. That combination is what the project consumed, so the historical nulls
+stand as facts about what was run — but "Krylov cannot resolve the clustered low spectrum" is not
+what those numbers show. They show `L_rw` + Rayleigh-Ritz is broken, which the code has documented
+at `graph.py:444-455` all along: the projection `QᵀL_rw Q` is asymmetric, `eigh` is invalid on it,
+and the imaginary part is discarded.
+
+**What still stands.** The Krylov subspace is genuinely wrong even on the right operator: overlap
+0.378 against exact at k=300. So Chebyshev's advantage over Krylov is real; it is just far smaller
+than "chance versus exact" implied, and part of what the report attributes to the solver belongs to
+the operator.
+
+### 15b. bitcoin's basis is fine — the sparsity explanation is refuted
+
+Same probe, `bitcoin_otc`, k=300, snapshots t=131 and t=260:
+
+| t | cell | overlap | recon AUC |
+|---|---|---|---|
+| 131 | arnoldi (`L_rw`) | 0.286 | 0.639 |
+| 131 | arnoldi (`L_sym`) | 0.336 | 0.806 |
+| 260 | exact (`L_sym`) | 1.000 | **0.961** |
+| 260 | arnoldi (`L_rw`) | 0.273 | 0.635 |
+| 260 | arnoldi (`L_sym`) | 0.323 | 0.802 |
+
+The operator effect replicates (`0.635 → 0.802`, `+0.167`). But the more important number is the
+exact row: **0.961 on `bitcoin_otc` against 0.963 on `uci`** at the same k. The bitcoin basis
+reconstructs its own graph as well as uci's does.
+
+**So "bitcoin is too sparse to support a meaningful spectral basis" is refuted.** The basis is not
+the problem there. Whatever makes the method null on bitcoin, it is downstream of basis quality —
+which is consistent with the recurrence reading in §14 (at 8% recurrence there is little history for
+the basis to encode) and inconsistent with a conditioning or sparsity story.
+
+This also removes a possible confound from §14: the gain does not track recurrence merely because
+low-recurrence datasets happen to have worse bases. They do not.
+
+**Scope.** Two datasets, two snapshots each, one seed per cell (the solve is deterministic given the
+graph). No MRR here by design — this measures bases.
+
+---
+
 ## 11. Provenance & reproduction
 - Code: fedlap repo, branch `roland-dev`. Runs on TUM CUDA hosts `tueilnt-sim{08,09,10,12,13,14}`.
 - Commits behind §8/§9: `3595fc8` SignNet smodel; `f45c3a3` `federated.fl`; `a3e907a`
