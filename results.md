@@ -3386,6 +3386,64 @@ graph). No MRR here by design — this measures bases.
 
 ---
 
+## 16. E3 — the entire gain is on pairs that have interacted before  **[2026-08-18]**
+
+`metric.repeat_new_split=true` (new knob, default off). Each evaluation reports MRR three times from
+one decode and one negative draw: over all evaluated positives, over those whose pair is already in
+the cumulative union, and over those whose pair is new. Splitting **positives** rather than sources
+means a source with one of each contributes to both subsets, and the negatives are identical across
+them — the subsets differ only in which positives are ranked.
+
+`uci`, 3 seeds, `f+es` + chebyshev + update against the feature-only backbone:
+
+| cell | aggregate | repeat | new |
+|---|---|---|---|
+| C1 feature | 0.1087±0.0048 | 0.1467±0.0096 | 0.0633±0.0088 |
+| C1 `f+es` | 0.1524±0.0036 | **0.2376±0.0071** | 0.0495±0.0041 |
+| C9 feature | 0.0786±0.0053 | 0.0969±0.0100 | 0.0488±0.0068 |
+| C9 `f+es` | 0.1047±0.0099 | **0.1536±0.0188** | 0.0478±0.0049 |
+
+**Gain (`f+es` − feature):**
+
+| C | aggregate | repeat | new |
+|---|---|---|---|
+| 1 | +0.0436 | **+0.0909** | −0.0138 |
+| 9 | +0.0261 | **+0.0567** | −0.0010 |
+
+**The whole effect is on the repeat subset.** The repeat gain is *larger* than the aggregate gain,
+because the new subset drags the aggregate down. On new pairs there is no detectable gain at either
+client count: −0.0138 and −0.0010 both sit inside the ±0.014 fixed-seed floor (§12b), so the honest
+statement is "no gain on new pairs", not "a negative effect".
+
+This holds at C1 and at C9, so it is not an artefact of sharding. And unlike §14 it is a
+**within-dataset** measurement, so it is not confounded with dataset identity, density or node
+count — the objection §14 explicitly flagged against itself.
+
+**What this settles.** The report's stated mechanism is that a globally computed basis substitutes
+for cross-client message passing destroyed by sharding. If that were right, the gain would appear on
+pairs the model could not otherwise connect — which includes new pairs. It does not appear there at
+all. The gain appears exactly where the cumulative graph already records an interaction.
+
+Combined with §14 (gain tracks recurrence, not cut fraction) and §15b (bitcoin's basis is as good as
+uci's, so the null there is not a basis-quality problem), the evidence now points one way: **the
+spectral term acts as a memory of the global graph, not as a repair for severed edges.** It is a
+compact, gauge-invariant encoding of "these two nodes have interacted before" — which is also why a
+one-bit persistence feature beats it (§10.14), and why it is null at 8% recurrence.
+
+**Scope and what would strengthen it.** `uci` only. The two cells that would make this conclusive
+are `as733` C9 — largest effect, 95% recurrence, so the repeat subset is nearly everything — and
+`bitcoin_otc`, where at 8% recurrence the repeat subset is small and the prediction is that neither
+subset shows a gain. The repeat fraction of evaluated positives measured 0.443 here, consistent with
+uci's 0.488 recurrence rate, which is a sanity check that the split is partitioning what it claims.
+
+**Consequence for the report.** The mechanism claim, the abstract's federated motivation, and the
+reading of "the margin grows with sharding" all need rewriting. The contribution is not thereby
+lost — a compact encoding of interaction history that a GRU hidden state does not capture is a real
+result — but it is a different claim from the one currently made, and it is not primarily about
+federation.
+
+---
+
 ## 11. Provenance & reproduction
 - Code: fedlap repo, branch `roland-dev`. Runs on TUM CUDA hosts `tueilnt-sim{08,09,10,12,13,14}`.
 - Commits behind §8/§9: `3595fc8` SignNet smodel; `f45c3a3` `federated.fl`; `a3e907a`

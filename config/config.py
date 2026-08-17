@@ -193,6 +193,13 @@ def _metric() -> Registry:
     m["hard_neg"] = "random"                # discrimination negatives for auc/ap: 'random'
                                             # (deepsnap ~1:1, saturates ~0.96) or 'degree'
                                             # (degree-weighted hard, de-saturates auc/ap)
+    m["repeat_new_split"] = False           # also report MRR split by whether the positive pair is
+                                            # already in the cumulative union. Separates "the term
+                                            # supplies structure lost to sharding" from "the term
+                                            # encodes which pairs have interacted before" -- the
+                                            # aggregate metric cannot tell those apart. Off by
+                                            # default; enabling it costs one extra rank pass, no
+                                            # extra decode, and does not change the headline value.
     m["mrr_filter"] = "split"               # what MRR negatives are forbidden from hitting:
                                             # 'split'    = the evaluated split's positives only
                                             #              (ROLAND-faithful, train_utils.py:230-235)

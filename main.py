@@ -163,6 +163,9 @@ def run_once() -> dict:
     if mm.get("mrr_snapshot") is not None:
         paired = (f" mrr_snapshot={mm['mrr_snapshot']}"
                   f" mrr_delta={mm['mrr_snapshot'] - results['mean_mrr']}")
+    if mm.get("mrr_repeat") is not None:
+        paired += (f" mrr_repeat={mm['mrr_repeat']} mrr_new={mm['mrr_new']}"
+                   f" repeat_frac={mm.get('repeat_frac')}")
     LOGGER.info(
         f"RESULT dataset={name} clients={n_clients} fl={config['federated']['fl']} "
         f"eval={config['metric']['eval_scope']} seed={config['seed']} "

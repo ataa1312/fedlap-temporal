@@ -214,6 +214,56 @@ def compute_mrr_from_z(
     return _rank_and_aggregate(scores, u, unique_sources, n_sources, K, method)
 
 
+@torch.no_grad()
+def compute_mrr_splits_from_z(
+    z: torch.Tensor,
+    snap: Data,
+    K: int,
+    method: str,
+    device: str,
+    model: nn.Module,
+    repeat_mask: torch.Tensor,
+    mrr_filter: str = "split",
+) -> tuple[float, float, float]:
+    """MRR over all positives, over repeating ones, and over new ones.
+
+    ``repeat_mask``: bool over the snapshot's POSITIVE columns, True where that
+    pair is already in the cumulative union. Splitting positives (not sources)
+    means a source with one of each contributes to both subsets.
+
+    One decode and one negative draw for all three numbers, so the subsets differ
+    only in which positives are ranked -- a source's negatives are identical
+    across them. Returns nan for an empty subset so it drops out of averaging.
+    """
+    pm = snap.edge_label == 1.0
+    if pm.sum().item() == 0:
+        return float("nan"), float("nan"), float("nan")
+
+    pos_edges = snap.edge_label_index[:, pm]
+    u, v_pos = pos_edges[0], pos_edges[1]
+    N = snap.num_nodes
+    unique_sources = torch.unique(u)
+    n_sources = unique_sources.size(0)
+
+    v_neg = _sample_filtered_negatives(
+        unique_sources, u, v_pos, N, K, device, _extra_forbidden(snap, mrr_filter)
+    )
+    src_repeated = unique_sources.unsqueeze(1).expand(-1, K).flatten()
+    all_u = torch.cat([u, src_repeated])
+    all_v = torch.cat([v_pos, v_neg.flatten()])
+
+    temp = snap.clone()
+    temp.edge_label_index = torch.stack([all_u, all_v], dim=0)
+    temp.edge_label = torch.zeros(all_u.size(0), device=device)
+    scores, _ = model.decode(z, temp)
+
+    rm = repeat_mask.to(scores.device).bool()
+    full = _rank_and_aggregate(scores, u, unique_sources, n_sources, K, method)
+    rep = _rank_and_aggregate(scores, u, unique_sources, n_sources, K, method, keep=rm)
+    new = _rank_and_aggregate(scores, u, unique_sources, n_sources, K, method, keep=~rm)
+    return full, rep, new
+
+
 def _rank_and_aggregate(
     scores: torch.Tensor,
     u: torch.Tensor,
@@ -221,6 +271,7 @@ def _rank_and_aggregate(
     n_sources: int,
     K: int,
     method: str,
+    keep: torch.Tensor | None = None,
 ) -> float:
     n_pos = u.size(0)
     pos_scores_flat = scores[:n_pos]
@@ -229,7 +280,12 @@ def _rank_and_aggregate(
     rrs: list[torch.Tensor] = []
     for i in range(n_sources):
         src = unique_sources[i]
-        src_pos = pos_scores_flat[u == src]
+        sel = u == src
+        if keep is not None:
+            sel = sel & keep
+            if not bool(sel.any()):
+                continue  # this source has no positive in the requested subset
+        src_pos = pos_scores_flat[sel]
 
         if method == "max":
             p_star = src_pos.max()
@@ -243,4 +299,6 @@ def _rank_and_aggregate(
         rank = (neg_scores_per_src[i] >= p_star).sum() + 1
         rrs.append(1.0 / rank.float())
 
+    if not rrs:
+        return float("nan")  # empty subset: excluded from averaging, not counted as 0
     return torch.stack(rrs).mean().item()

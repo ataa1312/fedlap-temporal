@@ -14,7 +14,7 @@ from src.GNN.fed_dynamic_classifier import (
     FedDynamicPEClassifier,
     make_fed_dynamic_classifier,
 )
-from src.metrics.mrr import compute_mrr_from_z, compute_hard_auc_ap_from_z
+from src.metrics.mrr import compute_mrr_from_z, compute_mrr_splits_from_z, compute_hard_auc_ap_from_z
 from src.metrics.classification import binary_classification_metrics
 from src.train.federated_orchestrator import (
     _partition_edges_per_snapshot,
@@ -58,6 +58,12 @@ def _cheb_cutoff(prev_D, safety=0.9):
     if d is None or len(d) == 0:
         return None
     return safety * float(d.max())
+
+
+def _repeat_new_split() -> bool:
+    """metric.repeat_new_split, tolerant of configs predating the key."""
+    m = config["metric"]
+    return bool(m["repeat_new_split"]) if "repeat_new_split" in m else False
 
 
 def _get_sfv(clf):
@@ -301,6 +307,11 @@ class DynamicServer(Server):
             #    every owner via set_QD (before eval — encoding snap_t needs Q_t).
             if use_spectral:
                 self._spectral_step(t, smt)
+            elif _repeat_new_split():
+                # The split needs the cumulative union, which _spectral_step would
+                # otherwise be the only thing maintaining. Keep it for backbone-only
+                # runs too, so per-subset gains can be measured against a baseline.
+                self._accumulate_cum_edges(t)
 
             # 1. Reported eval. FL: clients hold the global weights (share_weights
             #    at initialize_FL / end of the previous snapshot) -> global stitch.
@@ -694,6 +705,29 @@ class DynamicServer(Server):
 
         return share, num_spectral_features
 
+    def _accumulate_cum_edges(self, t):
+        """Advance the cumulative undirected union to include snapshot t.
+
+        _spectral_step does this as a side effect; backbone-only runs need it too
+        when metric.repeat_new_split is on, and it must accumulate the same way so
+        the two paths agree."""
+        e = self.global_snaps[t].edge_index.cpu()
+        e = torch.cat([e, e.flip(0)], dim=1)
+        if self._cum_edges is not None:
+            e = torch.cat([self._cum_edges, e], dim=1)
+        self._cum_edges = torch.unique(e, dim=1)
+
+    def _repeat_mask(self, pos_edges):
+        """True where a positive pair is already in the cumulative union."""
+        if self._cum_edges is None or self._cum_edges.numel() == 0:
+            return torch.zeros(pos_edges.size(1), dtype=torch.bool)
+        n = self.global_snaps[0].num_nodes
+        ce = self._cum_edges.cpu().to(torch.long)
+        keys = torch.unique(torch.minimum(ce[0], ce[1]) * n + torch.maximum(ce[0], ce[1]))
+        p = pos_edges.cpu().to(torch.long)
+        pk = torch.minimum(p[0], p[1]) * n + torch.maximum(p[0], p[1])
+        return torch.isin(pk, keys)
+
     def _spectral_step(self, t, smodel_type):
         # Laplacian over the CUMULATIVE undirected edge union up to t: per-window
         # slices are spectrally degenerate (0-eigenvalue multiplicity from isolated
@@ -810,6 +844,15 @@ class DynamicServer(Server):
             metrics["mrr_snapshot"] = compute_mrr_from_z(
                 gz, eval_snap, mrr_k, mrr_method, device, self.classifier, "snapshot"
             )
+        if _repeat_new_split():
+            pm = eval_snap.edge_label == 1.0
+            rmask = self._repeat_mask(eval_snap.edge_label_index[:, pm])
+            _, m_rep, m_new = compute_mrr_splits_from_z(
+                gz, eval_snap, mrr_k, mrr_method, device, self.classifier, rmask,
+                "snapshot" if mrr_filter == "snapshot" else "split",
+            )
+            metrics["mrr_repeat"], metrics["mrr_new"] = m_rep, m_new
+            metrics["repeat_frac"] = float(rmask.float().mean()) if rmask.numel() else float("nan")
         return mrr, metrics
 
     def _eval_mrr_local(self, t, loss_fn, mrr_k, mrr_method):
