@@ -238,7 +238,16 @@ def _spectral() -> Registry:
     s = Registry("spectral")
     s["spectral_len"] = 300
     s["lanczos_iter"] = 400
-    s["L_type"] = "rw"                      # 'normal', 'rw', 'sym'
+    s["L_type"] = "sym"                     # 'normal', 'rw', 'sym'. sym is the default because the
+                                            # Rayleigh-Ritz tracker projects as H = Q^T L Q and then
+                                            # calls eigh, which assumes symmetry. L_rw is NOT
+                                            # symmetric, so H picks up complex eigenvalues
+                                            # (max|Im| ~2e-2, residuals ~1e-2) and the code discards
+                                            # the imaginary part -- an approximation, not an
+                                            # identity. Under sym that branch never fires and the
+                                            # tracking is exact (residual ~1e-7). See graph.py:444.
+                                            # Only the tracking path reads this; exact and chebyshev
+                                            # always build L_sym on the giant component.
     s["method"] = "arnoldi"                 # 'arnoldi', 'lanczos'
     s["deterministic_start"] = True         # arnoldi start: fixed-seed vector (stable gauge across
                                             # snapshots -> recompute eigvecs move only as the graph

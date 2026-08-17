@@ -3240,6 +3240,66 @@ checkpointing work (the xfail is now a passing test). Suite 290 passed / 1 skipp
 
 ---
 
+## 14. E2 — the gain tracks edge recurrence, not severed edges  **[2026-08-18]**
+
+No new runs: this is a regression over numbers already banked in §10.14/§10.15. It is the cheapest
+test that could separate the report's stated mechanism (the global basis substitutes for
+cross-client message passing destroyed by sharding) from the competing one (the basis acts as a
+memory of the global graph, so it helps where edges recur).
+
+**E2a — within `uci`, does the gain track the fraction of severed edges?** Substitution predicts a
+strong positive relationship. Cut fraction is `1 − 1/C` (measured 0.665 / 0.856 / 0.895 at C=3/7/9).
+
+| C | cut | feature | spectral | gain | rel. gain |
+|---|---|---|---|---|---|
+| 1 | 0.000 | 0.1202 | 0.1578 | **+0.0376** | +31.3% |
+| 3 | 0.665 | 0.0891 | 0.1356 | **+0.0465** | +52.2% |
+| 7 | 0.856 | 0.0767 | 0.1170 | **+0.0403** | +52.5% |
+| 9 | 0.895 | 0.0718 | 0.0967 | **+0.0249** | +34.7% |
+
+Pearson(gain, cut) = **−0.219**, Spearman = **−0.400**. The absolute gain is *largest at C3* and
+*smallest at C9*, i.e. it does not increase as more edges are severed. Relative gain correlates
++0.543, but that is partly mechanical: the baseline falls with C, so a fixed absolute gain becomes a
+larger fraction of it.
+
+**E2b — across datasets, does the gain track edge-recurrence rate?**
+
+| dataset | recurrence | gain C1 | gain C9 |
+|---|---|---|---|
+| `bitcoin_alpha` | 0.084 | +0.0073 | −0.0197 |
+| `bitcoin_otc` | 0.081 | +0.0023 | −0.0002 |
+| `uci` | 0.488 | +0.0376 | +0.0249 |
+| `reddit_body`* | 0.551 | +0.0525 | +0.0791 |
+| `as733` | 0.952 | +0.3056 | +0.3603 |
+
+Pearson = **+0.885** (C1) / **+0.902** (C9); Spearman = **+1.000** (C1) / **+0.900** (C9).
+
+**Robustness.** Dropping `as733` — the obvious outlier — *strengthens* the linear fit
+(Pearson +0.985 at C1). Leave-one-out Spearman at C1 is +1.000 for every dataset dropped. So the
+ordering is not an artefact of one point.
+
+**Reading.** Within a dataset, severing more edges does not increase the gain; across datasets,
+recurrence predicts it almost perfectly. That is the pattern the memory hypothesis predicts and the
+opposite of what substitution predicts. The single most awkward number for substitution is already
+in §10.15 and needs no correlation to see: on `uci` the C1 gain (+0.0376) exceeds the C9 gain
+(+0.0249), so **more than the whole effect is present with one client and no severed edges at all.**
+
+**Limits of this test, stated plainly.**
+- E2a has n=4 and E2b has effectively 4 distinct recurrence levels (the two bitcoin graphs sit at
+  0.084 and 0.081). Neither correlation is significant on its own; what carries weight is the sign
+  and the rank order, which are unambiguous and consistent across C.
+- Recurrence and dataset identity are confounded — nothing here separates recurrence from any other
+  property that happens to order the same way (density, node count, snapshot count). E1's
+  history-window sweep is the test that varies history *within* a dataset and is not confounded that
+  way.
+- `reddit_body` rows are the pre-`6ef42a2` batch.
+
+**This does not settle the mechanism.** It removes substitution as the *simplest* reading and makes
+memory the leading one. E3 (repeat/new split) and E1 (history-window sweep) are the tests that can
+settle it; both are specified in the `fedlap-recurrence-mechanism` change.
+
+---
+
 ## 11. Provenance & reproduction
 - Code: fedlap repo, branch `roland-dev`. Runs on TUM CUDA hosts `tueilnt-sim{08,09,10,12,13,14}`.
 - Commits behind §8/§9: `3595fc8` SignNet smodel; `f45c3a3` `federated.fl`; `a3e907a`

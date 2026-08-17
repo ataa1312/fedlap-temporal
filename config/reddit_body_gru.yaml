@@ -57,7 +57,7 @@ meta:
 spectral:
   spectral_len: 300
   matrix: lap
-  L_type: rw
+  L_type: sym
   method: arnoldi
   decompose: eigh
   lanczos_iter: 400

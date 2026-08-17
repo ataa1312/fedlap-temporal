@@ -443,6 +443,10 @@ class DynamicServer(Server):
         # the default, so existing default-solver identities stay byte-identical.
         if spectral_dt and "solver" in sp and sp["solver"] != "arnoldi":
             parts.append(f"solver-{sp['solver']}")
+        # The tracking path's operator changes the basis and so the numbers.
+        # Appended only when it is not the default, keeping current identities intact.
+        if spectral_dt and "L_type" in sp and sp["L_type"] != "sym":
+            parts.append(f"L-{sp['L_type']}")
         # Federation axes: fl=false is the local-only floor and eval_scope picks the
         # test set, both real experiment axes (they are already wandb group axes).
         # Appended only when non-default so existing identities stay byte-identical.
