@@ -28,6 +28,7 @@ _DATA_TYPES = {"feature", "f+s", "structure", "f+pe", "f+es"}
 _UPDATE_MODES = {"keep", "update", "recompute"}
 _SOLVERS = {"arnoldi", "exact", "chebyshev"}
 _BASIS_SOURCES = {"laplacian", "random", "shuffled", "random_fixed", "shuffled_fixed"}
+_CUM_DECAYS = {"none", "count", "harmonic", "exp", "window"}
 _SFV_SHARES = {"local", "avg"}
 
 
@@ -82,6 +83,34 @@ def assert_cfg(config: Registry) -> None:
             "experimental.deterministic must be a bool (true = "
             f"torch.use_deterministic_algorithms at startup), got {exp['deterministic']!r}"
         )
+
+    if "cum_decay" in spectral:
+        _require_in(spectral["cum_decay"], _CUM_DECAYS, "spectral.cum_decay")
+        _cd, _cp = spectral["cum_decay"], spectral["cum_decay_param"]
+        # Only exp and window read the parameter; the others take none, so an
+        # out-of-range value there is inert rather than an error.
+        if _cd == "exp" and not (isinstance(_cp, (int, float)) and 0.0 < _cp <= 1.0):
+            raise ValueError(
+                "spectral.cum_decay_param must be a decay factor in (0, 1] for "
+                f"cum_decay='exp', got {_cp!r}"
+            )
+        if _cd == "window" and not (isinstance(_cp, int) and not isinstance(_cp, bool) and _cp >= 1):
+            raise ValueError(
+                "spectral.cum_decay_param must be a positive integer horizon for "
+                f"cum_decay='window', got {_cp!r}"
+            )
+
+    _proc = spectral["use_procrustes"]
+    if not (isinstance(_proc, bool) or _proc == "auto"):
+        raise ValueError(
+            "spectral.use_procrustes must be a bool or 'auto' ('auto' = on for "
+            f"f+s/f+pe/structure, off for f+es), got {_proc!r}"
+        )
+
+    sm = config["structure_model"]
+    for _k in ("sfv_reset_per_snapshot", "freeze_sfv"):
+        if _k in sm and not isinstance(sm[_k], bool):
+            raise ValueError(f"structure_model.{_k} must be a bool, got {sm[_k]!r}")
 
     # ----- hard checks (federated / spectral) ----- #
     if not isinstance(federated["fl"], bool):
@@ -140,6 +169,34 @@ def assert_cfg(config: Registry) -> None:
                 "data_type=f+es needs spectral.solver='chebyshev' or 'exact' — the arnoldi "
                 "estimate does not resolve the clustered low spectrum (results.md §10.12)"
             )
+        # cum_decay only reaches the operator through calc_eigs_chebyshev and
+        # calc_eigs_exact_sym. The Krylov path (calc_eignvalues) and the tracking
+        # path (update_eigpairs) both rebuild L via Graph.create_L -> create_adj,
+        # which hard-codes edge_weight=ones (src/utils/utils.py:372) and has no
+        # weight hook. On those paths a decayed run is bit-identical to none while
+        # _run_id still stamps `cum-<kernel>` -- a null that is pure plumbing and
+        # reads exactly like a real negative result. Refuse it instead.
+        #   update_mode='keep' computes only t=0, where every kernel gives f(0)=1,
+        #   so it is inert for all of them.
+        #   solver='exact' + update_mode='update' is inert too: t=0 is f(0)=1 and
+        #   every t>0 goes through the unweighted update_eigpairs.
+        if "cum_decay" in spectral and spectral["cum_decay"] != "none":
+            _eff = "exact" if model["data_type"] == "f+pe" else spectral["solver"]
+            _mode = spectral["update_mode"]
+            _treated = (
+                (_eff == "chebyshev" and _mode in ("update", "recompute"))
+                or (_eff == "exact" and _mode == "recompute")
+            )
+            if not _treated:
+                raise ValueError(
+                    f"spectral.cum_decay={spectral['cum_decay']!r} has NO EFFECT with "
+                    f"solver={_eff!r} + update_mode={_mode!r}: that path builds the "
+                    "Laplacian through create_adj, which ignores edge weights, so the "
+                    "basis would be identical to cum_decay='none' while the run id "
+                    "still records the kernel. Use solver='chebyshev' with "
+                    "update_mode='update'|'recompute', or solver='exact' with "
+                    "update_mode='recompute'."
+                )
         if model["smodel_type"] in _SPECTRAL_SMODELS and spectral["spectral_len"] <= 0:
             raise ValueError(
                 f"spectral.spectral_len must be >0 for smodel_type={model['smodel_type']!r}, "
@@ -160,3 +217,15 @@ def assert_cfg(config: Registry) -> None:
 
     if not gnn["dims"]:
         raise ValueError("gnn.dims must list at least one MP layer width")
+
+    if "encoder_edge_drop" in gnn:
+        p = gnn["encoder_edge_drop"]
+        if isinstance(p, bool) or not isinstance(p, (int, float)):
+            raise ValueError(
+                f"gnn.encoder_edge_drop must be a float in [0, 1), got {p!r}"
+            )
+        if not 0.0 <= float(p) < 1.0:
+            raise ValueError(
+                f"gnn.encoder_edge_drop must be in [0, 1) (1.0 would leave the encoder "
+                f"no message-passing edges at all), got {p!r}"
+            )

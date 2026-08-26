@@ -5,6 +5,7 @@ from src import *
 from src.classifier import Classifier
 from src.models.model_binders import ModelSpecs, ModelBinder
 from src.models.weight_init import init_weights
+from src.train.federated_orchestrator import _mp_graph
 from registries import heads
 
 # D1 sentinel: distinguishes an omitted arg (use the stateful self.graph/self.hs)
@@ -116,9 +117,13 @@ class DynamicClassifier(Classifier):
         active = getattr(g, "node_degree_new", None)
         if active is not None:
             active = active > 0
+        # The ONLY place the encoder's message-passing edge set is chosen.
+        # gnn.encoder_edge_drop attaches a fixed subset here and nowhere else,
+        # so labels/negatives/splits/spectral basis keep the full edge set.
+        mp_edge_index, mp_edge_attr = _mp_graph(g)
         z, new_hs = self.model.encode(
-            self.node_input(g), g.edge_index, h,
-            edge_attr=getattr(g, "edge_attr", None),
+            self.node_input(g), mp_edge_index, h,
+            edge_attr=mp_edge_attr,
             keep_ratio=getattr(g, "keep_ratio", None),
             active_mask=active,
         )

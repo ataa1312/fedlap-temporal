@@ -19,6 +19,7 @@ from src.metrics.classification import binary_classification_metrics
 from src.train.federated_orchestrator import (
     _partition_edges_per_snapshot,
     _precompute_keep_ratio,
+    _precompute_encoder_edge_drop,
     _pos_for_split,
     _attach_future_link_pred_labels,
     _step_eval_with_mrr_pair,
@@ -85,6 +86,28 @@ def _set_sfv(clf, w):
         smodel.set_SFV(w)
 
 
+def _procrustes_on(data_type=None) -> bool:
+    """Effective spectral.use_procrustes for the current data type.
+
+    'auto' means on wherever the readout reads U's coordinates (f+s, f+pe,
+    structure) and off on f+es, whose features are rotation-invariant -- the
+    rotation cannot help there and it breaks the phi block's identity, since
+    procrustes_project rotates U but not D. An explicit bool wins everywhere.
+    """
+    v = config["spectral"]["use_procrustes"]
+    if isinstance(v, bool):
+        return v
+    dt = config["model"]["data_type"] if data_type is None else data_type
+    return dt != "f+es"
+
+
+def _sfv_flag(key: str) -> bool:
+    """structure_model.{sfv_reset_per_snapshot,freeze_sfv}, tolerant of configs
+    predating the keys."""
+    sm = config["structure_model"]
+    return bool(sm[key]) if key in sm else False
+
+
 def _weighted_mean_metrics(
     metrics_list: list[dict], weights: list[float]
 ) -> dict[str, float]:
@@ -135,6 +158,9 @@ class DynamicServer(Server):
         self._first_spectral: SpectralFeatures | None = None
         self._prev_spectral: SpectralFeatures | None = None
         self._cum_edges = None  # undirected union of global edges up to the current t
+        # (pair_key, snapshot) appearances backing the age kernel; rebuilt on resume
+        self._cum_events_key = None
+        self._cum_events_t = None
 
     def add_client(self, snaps):
         client = DynamicClient(snaps, id=self.num_clients)
@@ -171,6 +197,12 @@ class DynamicServer(Server):
                     num_spectral_features=config["spectral"]["spectral_len"],
                 )
                 SFV = self.graph.structural_features
+            if _sfv_flag("freeze_sfv"):
+                # One place covers every owner: make_sgraph re-wraps with
+                # requires_grad=SFV.requires_grad, and SFVMixin.parameters()
+                # appends graph.x only when it requires grad -- so clearing it
+                # here keeps W out of every optimizer and out of get_grads.
+                SFV = SFV.detach().requires_grad_(False)
             share["SFV"] = SFV
             self.classifier = make_fed_dynamic_classifier(smodel_type, self.graph, SFV)
         else:
@@ -238,6 +270,7 @@ class DynamicServer(Server):
         use_spectral = dt in ("structure", "f+s", "f+pe", "f+es")
         self._first_spectral = self._prev_spectral = None  # runs are independent (fresh W, fresh Bernoulli draws)
         self._cum_edges = None
+        self._cum_events_key = self._cum_events_t = None
         rounds = config["model"]["iterations"] if epochs is None else epochs
         local_epochs = config["model"]["local_epochs"]
         tol = config["train"]["internal_validation_tolerance"]
@@ -275,6 +308,17 @@ class DynamicServer(Server):
             _precompute_keep_ratio(self.global_snaps, km)
             for cl in self.clients:
                 _precompute_keep_ratio(cl.snaps, km)
+
+        # Encoder-only edge starvation (gnn.encoder_edge_drop). Attached to the
+        # CLIENT snapshots alone, because those are the only objects ever encoded:
+        # the server classifier decodes the stitched z and never message-passes,
+        # and self.global_snaps feeds the eval targets, the negatives and the
+        # cumulative union of _spectral_step -- all of which must stay complete.
+        # Placed after _precompute_keep_ratio so keep_ratio degrees are still
+        # counted over the FULL snapshot (ROLAND's edge_train_mode='all').
+        edrop = config["gnn"]["encoder_edge_drop"] if "encoder_edge_drop" in config["gnn"] else 0.0
+        for c, cl in enumerate(self.clients):
+            _precompute_encoder_edge_drop(cl.snaps, float(edrop), seed + 500000 * (c + 1))
 
         n_tasks = len(self.global_snaps) - 1
         if n_tasks < 1:
@@ -333,6 +377,14 @@ class DynamicServer(Server):
                         f"ap={m.get('ap', float('nan')):.4f} f1={m.get('f1', float('nan')):.4f} "
                         f"mcc={m.get('mcc', float('nan')):.4f}"
                     )
+
+            # 1b. Optional SFV reset -- AFTER the reported eval, BEFORE training on
+            #     this snapshot. Resetting before the eval would measure a random W
+            #     rather than a W trained without accumulation, which is a different
+            #     (and useless) arm. Placed here, snapshot t is trained from a fresh
+            #     draw and the eval at t+1 sees a W fitted to t alone.
+            if _sfv_flag("sfv_reset_per_snapshot"):
+                self._reset_sfvs()
 
             # 2. Training. FL: `rounds` communication rounds of `local_epochs`
             #    local steps, weight-averaged via sum_lod, with round-level early
@@ -421,6 +473,26 @@ class DynamicServer(Server):
 
     # ---- checkpointing: resume long live-update runs across crashes ---- #
 
+    def _reset_sfvs(self) -> None:
+        """Re-draw the learnable SFV for every owner at a snapshot boundary.
+
+        One draw is shared by all owners, mirroring initialize/make_sgraph, where
+        every client starts from the SAME init and only then diverges. Drawing
+        independently per client would change two things at once (no carry-forward
+        AND a different init regime across clients), so the arm would no longer
+        isolate accumulation.
+
+        The draw comes off the global torch RNG, which main._seed() seeds, so two
+        runs sharing a seed see the same reset sequence.
+        """
+        w = _get_sfv(self.classifier)
+        if w is None:
+            return  # smodel owns no SFV (SignNet, f+es Invariant) -- nothing to reset
+        fresh = Graph.initialize_random_features(size=tuple(w.shape))
+        _set_sfv(self.classifier, fresh)
+        for cl in self.clients:
+            _set_sfv(cl.classifier, fresh)
+
     def _run_id(self) -> str:
         """Filesystem-safe identity for this exact run (mirrors the wandb group +
         seed) so a re-launched run finds its own checkpoint and no other."""
@@ -446,10 +518,13 @@ class DynamicServer(Server):
         elif dt == "f+es":
             parts += [f"um-{um}", f"pe{sp['pe_dim']}", f"basis-{sp['basis_source']}",
                       f"esf-{sp['es_features']}", f"esp-{sp['es_spec_parts']}"]
-        # The procrustes branch in get_spectral_features is data-type agnostic, so
-        # it applies on EVERY spectral path -- f+pe included -- under update/recompute.
+        # Procrustes applies on every spectral path under update/recompute, but
+        # 'auto' resolves it per data type (off for f+es), so ask for the effective value.
         if spectral_dt and um in ("update", "recompute"):
-            parts.append(f"proc-{'on' if sp['use_procrustes'] else 'off'}")
+            # EFFECTIVE value, not the configured one: under 'auto' an f+es run and
+            # an f+s run resolve differently, and two runs that differ in whether
+            # the basis was rotated must not share a checkpoint.
+            parts.append(f"proc-{'on' if _procrustes_on(dt) else 'off'}")
         # Solver changes the basis and so the numbers. Appended only when it is not
         # the default, so existing default-solver identities stay byte-identical.
         if spectral_dt and "solver" in sp and sp["solver"] != "arnoldi":
@@ -458,9 +533,33 @@ class DynamicServer(Server):
         # Appended only when it is not the default, keeping current identities intact.
         if spectral_dt and "L_type" in sp and sp["L_type"] != "sym":
             parts.append(f"L-{sp['L_type']}")
+        # Age kernel on the cumulative adjacency: changes the operator, so the
+        # arms must not share a checkpoint. Non-default only, and the parameter
+        # only for the kernels that read it, so defaults stay byte-identical.
+        if spectral_dt and "cum_decay" in sp and sp["cum_decay"] != "none":
+            cd = sp["cum_decay"]
+            parts.append(
+                f"cum-{cd}" if cd in ("count", "harmonic")
+                else f"cum-{cd}{sp['cum_decay_param']}"
+            )
+        # SFV lifetime: the three arms of the hop2vec ablation (carry / reset /
+        # freeze) differ only by these, so without them all three resolve to one
+        # identity and, under auto_resume, arms 2 and 3 load arm 1's checkpoint.
+        # Appended only when non-default, keeping existing identities byte-identical.
+        if _sfv_flag("sfv_reset_per_snapshot"):
+            parts.append("sfvreset")
+        if _sfv_flag("freeze_sfv"):
+            parts.append("sfvfrozen")
         # Federation axes: fl=false is the local-only floor and eval_scope picks the
         # test set, both real experiment axes (they are already wandb group axes).
         # Appended only when non-default so existing identities stay byte-identical.
+        # Encoder edge starvation is a real experiment axis: p=0/0.5/0.75 are three
+        # different runs and must not share a checkpoint. Appended only when on, so
+        # existing identities stay byte-identical.
+        gcfg = config["gnn"]
+        edrop = gcfg["encoder_edge_drop"] if "encoder_edge_drop" in gcfg else 0.0
+        if edrop:
+            parts.append(f"edrop{edrop:g}")
         if not fed["fl"]:
             parts.append("local")
         if config["metric"]["eval_scope"] != "auto":
@@ -553,6 +652,9 @@ class DynamicServer(Server):
         self._first_spectral = ckpt["first_spectral"]
         self._prev_spectral = ckpt["prev_spectral"]
         self._cum_edges = ckpt["cum_edges"]
+        # A pure function of global_snaps, so rebuild rather than trusting a
+        # possibly older checkpoint format to carry it.
+        self._rebuild_cum_events(int(ckpt["t"]) if "t" in ckpt else -1)
         return ckpt["t"] + 1, ckpt["w_init"], ckpt["mrr_history"], ckpt["metrics_history"]
 
     def _save_done_ckpt(self, results):
@@ -688,7 +790,7 @@ class DynamicServer(Server):
             if (
                 spectral_update_mode in ["recompute", "update"]
                 and ss_idx > 0
-                and config["spectral"]["use_procrustes"]
+                and _procrustes_on()
             ):
                 U = graph.procrustes_project(U, first_spectral.U)
 
@@ -716,6 +818,65 @@ class DynamicServer(Server):
         if self._cum_edges is not None:
             e = torch.cat([self._cum_edges, e], dim=1)
         self._cum_edges = torch.unique(e, dim=1)
+        self._append_cum_events(t)
+
+    def _cum_edge_weight(self, t):
+        """Age-kernel weights for the cumulative adjacency at snapshot `t`,
+        aligned to `_cum_edges`' COLUMNS. None under the default kernel, which
+        leaves the binarizing path in _active_lsym untouched.
+
+            w_t(e) = sum over snapshots s <= t containing e of f(t - s)
+
+        Computed by one scatter-add over the appearance-event record rather than
+        a per-kernel recursion: `exp` admits one (w <- gamma*w; w[E_t] += 1) but
+        `harmonic` does not, since every existing term's denominator moves each
+        step. One exact primitive serves all five kernels.
+        """
+        sp_cfg = config["spectral"]
+        kind = sp_cfg["cum_decay"] if "cum_decay" in sp_cfg else "none"
+        if kind == "none" or self._cum_edges is None or self._cum_events_key is None:
+            return None
+        param = sp_cfg["cum_decay_param"]
+        age = (t - self._cum_events_t).to(torch.float64)
+        if kind == "count":
+            f = torch.ones_like(age)
+        elif kind == "harmonic":
+            f = 1.0 / (age + 1.0)
+        elif kind == "exp":
+            f = torch.pow(torch.tensor(float(param), dtype=torch.float64), age)
+        elif kind == "window":
+            f = (age < float(param)).to(torch.float64)
+        else:
+            raise ValueError(f"unknown spectral.cum_decay={kind!r}")
+
+        uniq, inv = torch.unique(self._cum_events_key, return_inverse=True)
+        wu = torch.zeros(uniq.numel(), dtype=torch.float64).scatter_add_(0, inv, f)
+        # map per-undirected-pair weights onto both directed columns
+        n = self.global_snaps[0].num_nodes
+        ce = self._cum_edges.cpu().to(torch.long)
+        col = torch.minimum(ce[0], ce[1]) * n + torch.maximum(ce[0], ce[1])
+        return wu[torch.searchsorted(uniq, col)]
+
+    def _rebuild_cum_events(self, upto_t):
+        """Appearance record for snapshots 0..upto_t. A pure function of
+        global_snaps, so resume rebuilds it instead of checkpointing it."""
+        self._cum_events_key = None
+        self._cum_events_t = None
+        for s in range(upto_t + 1):
+            self._append_cum_events(s)
+
+    def _append_cum_events(self, t):
+        n = self.global_snaps[0].num_nodes
+        e = self.global_snaps[t].edge_index.cpu().to(torch.long)
+        if e.numel() == 0:
+            return
+        key = torch.unique(torch.minimum(e[0], e[1]) * n + torch.maximum(e[0], e[1]))
+        ts = torch.full_like(key, int(t))
+        if self._cum_events_key is None:
+            self._cum_events_key, self._cum_events_t = key, ts
+        else:
+            self._cum_events_key = torch.cat([self._cum_events_key, key])
+            self._cum_events_t = torch.cat([self._cum_events_t, ts])
 
     def _repeat_mask(self, pos_edges):
         """True where a positive pair is already in the cumulative union."""
@@ -734,17 +895,20 @@ class DynamicServer(Server):
         # nodes exceeds spectral_len), and history <= t is leakage-free for t+1.
         # The union lives on CPU (the decomposition paths are CPU-bound); the
         # per-owner slices land on `device` via set_QD.
-        e = self.global_snaps[t].edge_index.cpu()
-        e = torch.cat([e, e.flip(0)], dim=1)
-        if self._cum_edges is not None:
-            e = torch.cat([self._cum_edges, e], dim=1)
-        self._cum_edges = torch.unique(e, dim=1)
+        # ONE accumulator for both paths (this one and the split-only path), so
+        # the union and the appearance record can never drift apart.
+        self._accumulate_cum_edges(t)
         num_nodes = self.global_snaps[0].num_nodes
         graph_t = Graph(
             x=torch.ones(num_nodes, 1),
             edge_index=self._cum_edges,
             node_ids=torch.arange(num_nodes),
         )
+        # Age kernel weights the BASIS only. _repeat_mask (the split) and set_adj
+        # ('persist') keep reading the unweighted union below -- if they moved
+        # with the treatment, 'repeat' would mean something different in every
+        # arm and no arm could be compared with another.
+        graph_t.cum_weight = self._cum_edge_weight(t)
 
         mode = config["spectral"]["update_mode"]
         if mode == "update" and random.random() < config["spectral"]["recompute_prob"]:

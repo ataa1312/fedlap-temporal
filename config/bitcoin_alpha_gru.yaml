@@ -62,7 +62,7 @@ spectral:
   decompose: eigh
   lanczos_iter: 400
   update_mode: null      # REQUIRED for f+s/structure: --set spectral.update_mode=keep | update | recompute
-  use_procrustes: true
+  use_procrustes: auto
   recompute_prob: 0.0
   output_bn: true
   regularizer_coef: 0

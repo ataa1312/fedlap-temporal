@@ -469,7 +469,7 @@ class Graph(Data):
 
         return next_D, next_U, prev_Q
 
-    def _active_lsym(self):
+    def _active_lsym(self, edge_weight=None):
         """L_sym = I - D^-1/2 A D^-1/2 restricted to the largest connected
         component of the ACTIVE subgraph, with the global node indices it
         covers. Isolated nodes and satellite components contribute only
@@ -477,13 +477,37 @@ class Graph(Data):
         graphs they stall ARPACK, and on many-component graphs (reddit: up to
         16k components mid-run) they crowd out every informative pair. Both
         solvers drop them here and zero-pad the missing rows afterwards.
-        Returns (None, None) when fewer than two active nodes remain."""
+        Returns (None, None) when fewer than two active nodes remain.
+
+        `edge_weight` (aligned to edge_index's COLUMNS) makes A weighted instead
+        of binary — spectral.cum_decay's age kernel. Absent, the original
+        binarizing path runs untouched, so the default stays bit-identical.
+        Weights must be non-negative; L_sym is then still symmetric with unit
+        diagonal and spectrum in [0, 2], and is invariant to a global rescaling
+        of the weights (the normalization cancels it)."""
         n = self.num_nodes
         e = self.edge_index.cpu().numpy()
-        A = sparse.coo_matrix(
-            (np.ones(e.shape[1]), (e[0], e[1])), shape=(n, n)
-        ).tocsr()
-        A = ((A + A.T) > 0).astype(np.float64)
+        if edge_weight is None:
+            A = sparse.coo_matrix(
+                (np.ones(e.shape[1]), (e[0], e[1])), shape=(n, n)
+            ).tocsr()
+            A = ((A + A.T) > 0).astype(np.float64)
+        else:
+            w = np.asarray(
+                edge_weight.detach().cpu().numpy()
+                if hasattr(edge_weight, "detach") else edge_weight,
+                dtype=np.float64,
+            ).ravel()
+            if w.shape[0] != e.shape[1]:
+                raise ValueError(
+                    f"edge_weight has {w.shape[0]} entries for {e.shape[1]} edge columns"
+                )
+            if (w < 0).any():
+                raise ValueError("edge_weight must be non-negative")
+            A = sparse.coo_matrix((w, (e[0], e[1])), shape=(n, n)).tocsr()
+            # The caller already symmetrizes the edge list, so A is symmetric and
+            # this is the identity; it also does the right thing if it is not.
+            A = (A + A.T) * 0.5
         A.setdiag(0)
         A.eliminate_zeros()
         deg = np.asarray(A.sum(axis=1)).ravel()
@@ -513,7 +537,9 @@ class Graph(Data):
         Sign is canonicalized by each eigenvector's largest-|entry| element.
         Dense eigh below dense_max nodes, sparse shift-invert eigsh above."""
         n = self.num_nodes
-        Lsym, act = self._active_lsym()
+        # cum_weight is set by DynamicServer when spectral.cum_decay is active;
+        # None on every other graph, which keeps the binarizing path.
+        Lsym, act = self._active_lsym(getattr(self, "cum_weight", None))
         if Lsym is None:
             return torch.zeros(k), torch.zeros(n, k)
         m = act.size
@@ -584,7 +610,9 @@ class Graph(Data):
         falls 1.00 -> 0.48 -> 0.07 as the cutoff goes 1.0x -> 1.3x -> 2.0x
         lambda_k. Buy accuracy with `oversample`/`n_iter`, never with cutoff."""
         n = self.num_nodes
-        Lsym, act = self._active_lsym()
+        # cum_weight is set by DynamicServer when spectral.cum_decay is active;
+        # None on every other graph, which keeps the binarizing path.
+        Lsym, act = self._active_lsym(getattr(self, "cum_weight", None))
         if Lsym is None:
             return torch.zeros(k), torch.zeros(n, k)
         m = act.size

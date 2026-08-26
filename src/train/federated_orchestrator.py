@@ -346,6 +346,59 @@ def _precompute_keep_ratio(snapshots: list[Data], mode: str) -> None:
         existing = existing + new
 
 
+MP_EDGE_INDEX_ATTR = "mp_edge_index"
+MP_EDGE_ATTR_ATTR = "mp_edge_attr"
+
+
+def _precompute_encoder_edge_drop(snapshots, p: float, seed: int) -> None:
+    """Attach ``mp_edge_index`` / ``mp_edge_attr``: a fixed random keep-subset of
+    each snapshot's edges, read ONLY by ``DynamicClassifier.encode`` as the
+    encoder's message-passing graph.
+
+    Starves message passing directly, without sharding. ``snap.edge_index`` is
+    left untouched, so everything else that reads it keeps the full edge set:
+    the per-snapshot train/val/test positive split, the negative-sampling
+    forbidden set, ``target_edge_index``, ``keep_ratio``, ``can_train``'s
+    abstention check, the degree-weighted hard negatives, and the cumulative
+    union the spectral basis is built on (which reads ``global_snaps`` anyway).
+
+    The mask is drawn once per (owner, snapshot) from ``seed + snapshot_index``
+    and reused for every epoch and round, so this is a sparser encoder graph,
+    not stochastic DropEdge. ``p <= 0`` clears any previously attached subset.
+
+    At least 2 edges are always kept where the snapshot has 2, since the edge
+    encoder's BatchNorm needs more than one sample in training mode.
+    """
+    for i, snap in enumerate(snapshots):
+        if p <= 0:
+            for attr in (MP_EDGE_INDEX_ATTR, MP_EDGE_ATTR_ATTR):
+                if hasattr(snap, attr):
+                    delattr(snap, attr)
+            continue
+        ei = snap.edge_index
+        n = ei.size(1)
+        if n == 0:
+            continue
+        n_keep = min(n, max(2, int(round(n * (1.0 - p)))))
+        if n_keep >= n:
+            continue
+        g = torch.Generator().manual_seed(seed + i)
+        keep = torch.randperm(n, generator=g)[:n_keep].sort().values.to(ei.device)
+        setattr(snap, MP_EDGE_INDEX_ATTR, ei[:, keep])
+        ea = getattr(snap, "edge_attr", None)
+        if ea is not None:
+            setattr(snap, MP_EDGE_ATTR_ATTR, ea[keep])
+
+
+def _mp_graph(g):
+    """(edge_index, edge_attr) the encoder message-passes over: the drop subset
+    when gnn.encoder_edge_drop attached one, else the snapshot's own edges."""
+    ei = getattr(g, MP_EDGE_INDEX_ATTR, None)
+    if ei is None:
+        return g.edge_index, getattr(g, "edge_attr", None)
+    return ei, getattr(g, MP_EDGE_ATTR_ATTR, None)
+
+
 def _pos_for_split(snap: Data, split: str) -> torch.Tensor:
     attr = f"pos_{split}"
     if not hasattr(snap, attr):

@@ -72,7 +72,12 @@ class DynamicSLaplace(SpectralLaplaceMixin, SClassifier):
     def state_dict(self):
         weights = super().state_dict()
         weights["bn"] = self.bn.state_dict()
-        if config["federated"]["sfv_share"] == "avg":
+        # A frozen W never changes, so averaging it is a numerical no-op -- but
+        # keep it out of the payload anyway, so "frozen" means one thing and the
+        # arm cannot be confused with a trained-and-shared one.
+        sm = config["structure_model"]
+        frozen = bool(sm["freeze_sfv"]) if "freeze_sfv" in sm else False
+        if config["federated"]["sfv_share"] == "avg" and not frozen:
             weights["SFV"] = self.graph.x.detach().clone()
         return weights
 

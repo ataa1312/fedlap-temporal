@@ -39,8 +39,33 @@ def _wandb_meta():
     sf = config["dataset"]["snapshot_freq"]
     fl = config["federated"]["fl"]
     scope = config["metric"]["eval_scope"]
+    gcfg = config["gnn"]
+    edrop = gcfg["encoder_edge_drop"] if "encoder_edge_drop" in gcfg else 0.0
+    spc = config["spectral"]
+    smc = config["structure_model"]
+    # EFFECTIVE procrustes: use_procrustes may be 'auto', which is a truthy string
+    # and would otherwise label every f+es run 'proc-on'.
+    proc_eff = proc if isinstance(proc, bool) else (dt != "f+es")
+    cum = spc["cum_decay"] if "cum_decay" in spc else "none"
+    cum_tok = None if cum == "none" else (
+        cum if cum in ("count", "harmonic") else f"{cum}{spc['cum_decay_param']}")
+    sfv_life = [k for k in ("sfv_reset_per_snapshot", "freeze_sfv")
+                if k in smc and smc[k]]
     custom_freq = isinstance(sf, str) and sf.endswith("s") and sf[:-1].isdigit()
     parts = [ds, temporal, str(dt), f"C{C}"]
+    # Every condition axis below must appear in the GROUP: the wandb run id is
+    # sha1(group + seed) with resume='allow', so two arms sharing a group also
+    # share a run and silently overwrite each other's history.
+    if cum_tok:
+        parts.append(f"cum-{cum_tok}")
+    for k in sfv_life:
+        parts.append("sfvreset" if k == "sfv_reset_per_snapshot" else "sfvfrozen")
+    if dt == "f+es" and um in ("update", "recompute"):
+        # f+es defaults to procrustes OFF under 'auto'; an explicit true is a
+        # different arm and must not collapse into the same group.
+        parts.append(f"proc-{'on' if proc_eff else 'off'}")
+    if edrop:  # encoder edge starvation is a condition axis, not a seed
+        parts.append(f"edrop{edrop:g}")
     if not fl:  # local-only floor: keep it out of the federated groups' averages
         parts.append("local")
     if scope != "auto":  # a non-default test set is a different measurement -> own group
@@ -48,7 +73,7 @@ def _wandb_meta():
     if dt in ("f+s", "structure"):
         parts += [f"um-{um}", f"sfv-{sfv}"]
         if um in ("update", "recompute"):  # procrustes only applies to these modes
-            parts.append(f"proc-{'on' if proc else 'off'}")
+            parts.append(f"proc-{'on' if proc_eff else 'off'}")
     elif dt == "f+pe":
         # basis_source is the condition axis of the PE experiments — without it
         # the treatment and its placebo would collapse into one group.
@@ -69,8 +94,14 @@ def _wandb_meta():
         "snapshot_freq": sf, "gnn_dims": list(config["gnn"]["dims"]),
         "pe_dim": config["spectral"]["pe_dim"],
         "basis_source": config["spectral"]["basis_source"],
+        "encoder_edge_drop": edrop,
     }
     tags = [ds, str(dt), f"C{C}", temporal]
+    if cum_tok:
+        tags.append(f"cum-{cum_tok}")
+    tags += ["sfvreset" if k == "sfv_reset_per_snapshot" else "sfvfrozen" for k in sfv_life]
+    if edrop:
+        tags.append(f"edrop{edrop:g}")
     if not fl:
         tags.append("local")
     if scope != "auto":
@@ -78,7 +109,7 @@ def _wandb_meta():
     if dt in ("f+s", "structure"):
         tags += [f"um-{um}", f"sfv-{sfv}"]
         if um in ("update", "recompute"):
-            tags.append(f"proc-{'on' if proc else 'off'}")
+            tags.append(f"proc-{'on' if proc_eff else 'off'}")
     elif dt == "f+pe":
         tags += [f"um-{um}", f"basis-{config['spectral']['basis_source']}"]
     if custom_freq:
@@ -171,7 +202,7 @@ def run_once() -> dict:
         f"eval={config['metric']['eval_scope']} seed={config['seed']} "
         f"mean_mrr={results['mean_mrr']} std={results['std_mrr']}{paired} "
         f"auc={mm.get('roc_auc')} ap={mm.get('ap')} f1={mm.get('f1')} mcc={mm.get('mcc')} "
-        f"snapshots={len(results['mrr_history'])}"
+        f"snapshots={len(results['mrr_history'])} run={server._run_id()}"
     )
 
     if wb is not None:

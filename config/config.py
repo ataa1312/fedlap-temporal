@@ -134,6 +134,16 @@ def _gnn() -> Registry:
     g["gru_kernel"] = "linear"
     g["mlp_update_layers"] = 2
     g["skip_connection"] = "affine"
+    g["encoder_edge_drop"] = 0.0            # ABLATION: fraction of each snapshot's edges hidden
+                                            # from the ENCODER's message passing, and from nothing
+                                            # else. 0.0 = current behaviour. The kept subset is
+                                            # fixed per (owner, snapshot) for the whole run, so this
+                                            # starves message passing rather than acting as a
+                                            # stochastic DropEdge regularizer. Evaluation targets,
+                                            # negatives, the per-snapshot train/val/test edge split,
+                                            # keep_ratio, client abstention and the cumulative union
+                                            # the spectral basis is built on all keep the FULL edge
+                                            # set -- see _precompute_encoder_edge_drop.
     return g
 
 
@@ -233,6 +243,19 @@ def _structure_model() -> Registry:
     s["DGCN_layers"] = 10
     s["structure_type"] = "hop2vec"
     s["num_structural_features"] = 512
+    # SFV lifetime. The learnable W is built once in initialize_FL, before the
+    # snapshot loop, and nothing resets it — so it already carries its trained
+    # values across every snapshot. Both knobs default to that behaviour; they
+    # exist to take it away, which is the only way to measure what it is worth.
+    #   reset_per_snapshot: re-draw W at every snapshot boundary, every owner.
+    #                       Removes accumulation across snapshots; still trains
+    #                       within one.
+    #   freeze:             hold W at its random init for the whole run — out of
+    #                       the optimizer, out of structural FedAvg. Separates
+    #                       "trained at all" from "trained and carried", which
+    #                       the reset arm alone confounds.
+    s["sfv_reset_per_snapshot"] = False
+    s["freeze_sfv"] = False
     s["estimate"] = False
     s["num_mp_vectors"] = 10
     s["rw_len"] = 50
@@ -290,7 +313,48 @@ def _spectral() -> Registry:
     s["decompose"] = "eigh"                 # 'svd', 'eigh'
     s["update_mode"] = "update"             # 'keep', 'update', 'recompute'
     s["recompute_prob"] = 0.0               # update mode: per-snapshot Bernoulli full re-Lanczos (basis refresh)
-    s["use_procrustes"] = True
+    # 'auto' | True | False. Procrustes rotates U toward snapshot 0's basis to
+    # stabilise the gauge across snapshots. It is worth it wherever the readout
+    # sees U's COORDINATES (f+s, f+pe, structure).
+    #
+    # It is NOT worth it on f+es, which is why 'auto' turns it off there: that
+    # path's features are rotation-invariant by construction (cos and lev are
+    # exactly invariant under any orthogonal R), so the rotation buys nothing --
+    # and it actively breaks the phi block, because procrustes_project rotates U
+    # without rotating D, so (U, Lambda) no longer satisfies L = U Lambda U^T and
+    # the filtered block stops being an entry of any M_f.
+    #
+    # An explicit True/False still wins on every path, so the on/off A/B on f+es
+    # stays runnable via --set spectral.use_procrustes=true.
+    s["use_procrustes"] = "auto"
+    # Age kernel weighting the CUMULATIVE adjacency the eigenbasis is built on.
+    # Today every edge that ever appeared counts once and forever: graph.py
+    # binarizes with ((A + A.T) > 0), so multiplicity is discarded too, and only
+    # 14% of the cumulative edge mass belongs to the current snapshot
+    # (|E_t|/|cum_t| = 0.138, analysis/probes/encoder_edge_budget.py). The basis
+    # therefore describes accumulated history, not the current graph.
+    #
+    # Weight of an undirected edge e at snapshot t:
+    #     w_t(e) = sum over snapshots s <= t containing e of  f(t - s)
+    #
+    #   none      f = 1 if ever seen        DEFAULT, bit-identical to the binary union
+    #   count     f = 1 per appearance      frequency only, no recency (isolates re-weighting)
+    #   harmonic  f = 1 / (age + 1)
+    #   exp       f = cum_decay_param ** age
+    #   window    f = 1 if age < cum_decay_param else 0
+    #
+    # count/harmonic/exp keep every ever-seen edge strictly positive, so the
+    # active set (deg > 0) and the giant component are unchanged -- they alter
+    # the metric, not the support. window can zero an edge outright and so also
+    # changes coverage; read it against exp at a matched horizon, not against none.
+    #
+    # L_sym = I - D^-1/2 A D^-1/2 is invariant to A -> cA, so only the SHAPE of
+    # the kernel matters; there is no normalisation to tune.
+    #
+    # Applies to the eigenbasis ONLY. The unweighted union still defines the
+    # repeat/new split and the 'persist' feature -- see DynamicServer.
+    s["cum_decay"] = "none"
+    s["cum_decay_param"] = 0.9              # exp: decay factor in (0,1]; window: int horizon >=1
     s["output_bn"] = True                   # BatchNorm on smodel output S (bounds spectral amplification; gamma zero-init)
     # SignNet smodel (model.smodel_type=SignNet): S = rho(sum_i [phi(u_i)+phi(-u_i)]).
     # phi is the shared per-entry map R^1->phi_dims (last = phi_out); rho maps
