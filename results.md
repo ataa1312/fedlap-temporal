@@ -3444,6 +3444,191 @@ federation.
 
 ---
 
+## 17. hop2vec — the random features ARE trained toward reducing the loss  **[2026-08-20]**
+
+FedLap's paper says the structural feature vectors (SFV, hop2vec) start random and are learned by
+gradient descent. That had never been checked on our dynamic path. It is now.
+
+### What `W` actually is here
+
+Three facts read off the code first, because they change what the question means:
+
+- `W` is **`(spectral_len, num_structural_features)` = `(300, 512)` — indexed by SPECTRAL SLOT, not
+  by node.** `DynamicServer.initialize` (`:168-172`) passes
+  `num_spectral_features=spectral.spectral_len`, which selects that branch in
+  `graph.py:262-267`. Nodes enter through `Q_t` in `S = MLP(relu(Q_t @ W))`, never through `W`.
+  Upstream FedLap's hop2vec *is* per-node — that is the `num_spectral_features=None` branch, which
+  we do not use.
+- `W` is built **once**, in `initialize_FL` (`dynamic_server.py:230`), before the snapshot loop at
+  `:305`, and **never reset**: `reset_parameters` has no caller on the dynamic client or
+  classifier. So it already persists across every snapshot.
+- The node space is **constant across snapshots** (`graph_partitioning.py:293-296`; verified —
+  all 28 `uci` snapshots report `num_nodes=1899`). So even a per-node SFV would persist
+  automatically; there is no "which nodes survived" step to write.
+
+Init is `N(0, 0.05)` (`graph.py:323-324`), `|W_0| ~ 19.6`; it becomes trainable through
+`SFVMixin.parameters()` (`sGNN.py:19-25`), not as an `nn.Parameter`.
+
+### Method — and one probe that had to be thrown away
+
+`analysis/probes/hop2vec_training.py`. At every local step: forward, record `L0`, backward,
+snapshot all parameters, let the optimizer take its **real** step, snapshot again, then restore
+everything **except `W`** and recompute the loss on the **same batch**. That difference is `dL_W`,
+the loss change attributable to `W` alone. Restoring the complement gives `dL_rest`.
+
+The first version stepped `W` by hand as `W <- W - lr*grad` and found nothing: `dL_W` mean
+`-0.000022`, median `+0.000093`, downhill in 47% of steps — a coin flip. **That null was an
+artifact of the probe.** The optimizer is Adam at `lr=1e-2`, whose step is ~`lr*sign(g)`
+elementwise, so `|dW| ~ 3.9`; the hand-rolled SGD step was `lr*|grad W| = 0.0008` against
+`|W| ~ 19.6`, a relative perturbation of `4e-5` that measures float noise. The `|dW|/|W|` column
+confirms it: first step `0.199`, against Adam's predicted `0.01*392/19.6 = 0.20`.
+
+### Results — three cells, all agreeing
+
+`f+s`, `update_mode=update`, first 4 snapshots, default seed.
+
+| cell | steps | in optimizer | `dL_W` mean | `dL_W < 0` | `dL_rest` mean | `dL_rest < 0` |
+|---|---|---|---|---|---|---|
+| uci C1 | 178 | 178/178 | **-0.0113** | **97.2%** | -0.0147 | 95.5% |
+| uci C9 | 147 | 147/147 | **-0.0120** | **95.2%** | -0.0159 | 94.6% |
+| as733 C1 | 59 | 59/59 | **-0.0170** | **94.9%** | -0.0065 | 64.4% |
+
+Gradient reaches `W` at all but 1 step in every cell. `W` travels 1.1–1.3x its own initial norm
+over 4 snapshots (~5% per step on uci, ~25% on as733).
+
+**Confirmed: the random features are trained toward reducing the loss**, and not marginally. On
+uci, `W` alone accounts for about as much per-step descent as every other parameter combined. On
+as733 it accounts for **more**, and far more reliably (94.9% vs 64.4% of steps).
+
+The parts do not sum to the whole (uci C1: `-0.0113 + -0.0147` vs `-0.0175` for the full step) —
+expected, since the loss is not linear in the parameters and the two updates overlap in effect.
+This is a contribution measure, not an exact partition.
+
+### What this does NOT show
+
+Per-step descent is a local property of the gradient. It does **not** show that training `W`
+improves the final MRR, and it does not show that carrying `W` across snapshots is worth anything.
+Those are separate claims needing the `freeze_sfv` and `sfv_reset_per_snapshot` arms
+(`openspec/changes/fedlap-hop2vec-ablation`). Since carrying forward is already the default, the
+value of carrying can only be measured by taking it away — the ablation is a **reset** arm, not a
+carry-forward arm.
+
+Open question this raises for §16: carrying `W` forward is a second persistence mechanism in the
+same model, never separated from the spectral basis `Q_t`. If the reset arm is null, `Q_t` carries
+the memory alone and `W` is a per-snapshot fit.
+
+---
+
+## 18. hop2vec lifetime ablation — training `W` is real but buys nothing  **[2026-08-20]**
+
+§17 established that `W`'s gradient descends the loss in ~96% of steps. This asks the next
+question: does any of that reach the reported metric? Three arms, `uci`, `f+s`,
+`update_mode=update`, `metric.repeat_new_split=true`, 3 seeds, 27 snapshots.
+
+| arm | `W` trained? | `W` carried across snapshots? |
+|---|---|---|
+| A carry (default) | yes | yes |
+| B reset | within each snapshot only | no — fresh draw at every boundary |
+| C freeze | never | n/a |
+
+### Results (mean ± std over 3 seeds)
+
+| arm | C | MRR | repeat | new |
+|---|---|---|---|---|
+| carry | 1 | 0.0859 ± 0.0036 | 0.1022 ± 0.0072 | 0.0611 ± 0.0008 |
+| reset | 1 | 0.0851 ± 0.0077 | 0.1051 ± 0.0157 | 0.0594 ± 0.0058 |
+| freeze | 1 | 0.0813 ± 0.0014 | 0.0964 ± 0.0029 | 0.0536 ± 0.0033 |
+| carry | 9 | 0.0627 ± 0.0068 | 0.0784 ± 0.0088 | 0.0459 ± 0.0088 |
+| reset | 9 | 0.0559 ± 0.0100 | 0.0654 ± 0.0194 | 0.0403 ± 0.0034 |
+| freeze | 9 | **0.0660 ± 0.0034** | 0.0794 ± 0.0083 | 0.0430 ± 0.0050 |
+
+Contrasts on the aggregate metric:
+
+| | C1 | C9 |
+|---|---|---|
+| `A-B` value of **carrying** | +0.0008 | +0.0068 |
+| `A-C` value of **training at all** | +0.0045 | **-0.0033** |
+| `B-C` value of within-snapshot training | +0.0038 | -0.0101 |
+
+### Reading — the pre-registered prediction failed
+
+The prediction was `A > B > C`, with `A-B` larger on the higher-recurrence dataset. It did not
+hold, and at C9 the ordering partly **inverts**: freezing `W` at its random initialisation gives
+the nominally best mean of any arm (0.0660).
+
+**No arm separates from any other beyond the noise floor.** Every contrast (|0.0008|–|0.0140|) sits
+inside the fixed-seed spread for this path: §12b puts it at 0.008–0.014, and a HEAD-against-itself
+check at one seed during this change measured 0.0054. With n=3 and per-arm std 0.0014–0.0100, the
+standard error on a difference of means is ~0.004, so even the largest contrast (`A-B` = +0.0068 at
+C9) is under 2 SE.
+
+The defensible conclusion is the negative one, and it is worth stating plainly:
+
+**`W` trains, and training it does not measurably help.** A random fixed projection of the spectral
+basis performs as well as one fitted by gradient descent over 27 snapshots. §17 and §18 are not in
+conflict — §17 measures descent on the *training* batch, §18 measures the *next-snapshot* metric.
+`W`'s learning reduces training loss without generalising forward.
+
+`A-B` being null also answers the original question directly: **carrying the trained SFV across
+snapshots is not what makes the method work.** Whatever temporal memory the model has is carried by
+`Q_t` and the GRU hidden state, not by `W`.
+
+### Where this sits in the record
+
+This is consistent with §10's basis-content control and with the inert-branch finding: another
+component of the spectral path that moves during training without earning its place. It is a
+reason to be careful in the report about describing the SFV as *learned* structural features — the
+learning happens, but nothing in the measured record shows it matters.
+
+### Limits
+
+`uci` only, n=3, and the effects of interest are the same size as the noise. This experiment can
+rule out an effect larger than ~0.01; it cannot resolve one of ~0.005. `as733` (recurrence 0.95,
+where a memory mechanism should show most) has not been run and is the obvious next cell. Reporting
+`A-B` at C9 as a positive result would require more seeds, not more datasets.
+
+`repeat_frac` is identical across all three arms at each seed (0.4432 / 0.4244 / 0.4486), which
+confirms the split is data-determined and not perturbed by the arm.
+
+---
+
+## 19. Procrustes on `f+es` — inert, and the default is now off there  **[2026-08-20]**
+
+`spectral.use_procrustes` was `true` in config and in all 12 YAMLs, and the branch
+(`dynamic_server.py:737-742`) is data-type agnostic, so it ran on `f+es` too. It should not have:
+`procrustes_project` rotates `U` but **not** `D`, so `(U, Λ)` stops satisfying `L = UΛUᵀ` and the
+`phi` block is no longer an entry of any `M_f`. `cos` and `lev` are exactly invariant under any
+orthogonal `R`, so on `f+es` the rotation could only ever damage `phi` — it had no upside there.
+
+**Change.** `use_procrustes` is now tri-state: `"auto"` (new default, in config and all 12 YAMLs)
+= on for `f+s`/`f+pe`/`structure`, off for `f+es`. An explicit `true`/`false` still wins on every
+path, so the A/B stays runnable. `_run_id` records the **effective** value, so an `auto` f+es run
+and an explicit-`true` one cannot share a checkpoint.
+
+**A/B.** uci, `f+es`, chebyshev + update, C ∈ {1, 9}, 3 seeds, repeat/new split on.
+
+| procrustes | C | MRR | repeat | new |
+|---|---|---|---|---|
+| off (`auto`) | 1 | 0.1527 ± 0.0122 | 0.2362 ± 0.0110 | 0.0503 ± 0.0073 |
+| on | 1 | 0.1518 ± 0.0023 | 0.2301 ± 0.0161 | 0.0499 ± 0.0048 |
+| off (`auto`) | 9 | 0.1115 ± 0.0033 | 0.1603 ± 0.0131 | 0.0508 ± 0.0077 |
+| on | 9 | 0.1098 ± 0.0053 | 0.1580 ± 0.0187 | 0.0479 ± 0.0059 |
+
+`off − on`: C1 **+0.0008 / +0.0060 / +0.0005**, C9 **+0.0017 / +0.0022 / +0.0029** (aggregate /
+repeat / new). Every delta is well inside the ±0.014 fixed-seed floor (§12b). The sign is
+uniformly non-negative — consistent with procrustes being inert-to-mildly-harmful on this path —
+but nothing here separates.
+
+**Consequence for the banked numbers: they survive.** §16's `f+es` cells were produced with
+procrustes on; the new default reproduces them within noise (§16 C1 0.1524/0.2376/0.0495 vs `auto`
+0.1527/0.2362/0.0503; C9 0.1047/0.1536/0.0478 vs 0.1115/0.1603/0.0508). The `on` arm here also
+reproduces §16 directly, which validates the harness rather than only the change.
+
+This closes the report audit's open decision on Procrustes: the theoretical objection was correct,
+the empirical impact is nil, and §4.4 should say both.
+
+---
+
 ## 11. Provenance & reproduction
 - Code: fedlap repo, branch `roland-dev`. Runs on TUM CUDA hosts `tueilnt-sim{08,09,10,12,13,14}`.
 - Commits behind §8/§9: `3595fc8` SignNet smodel; `f45c3a3` `federated.fl`; `a3e907a`
