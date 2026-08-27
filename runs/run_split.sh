@@ -68,7 +68,20 @@ arm_overrides() {
   case $1 in
     feature) echo "model.data_type=feature" ;;
     spec)    echo "model.data_type=f+es $spectral spectral.es_features=spec" ;;
+    # persist is NOT an informative control on the new subset: it is the split
+    # label handed back as a feature, so its new-pair penalty is forced by rank
+    # arithmetic (results.md 20.4a). Kept for the repeat subset and aggregate.
     persist) echo "model.data_type=f+es $spectral spectral.es_features=persist" ;;
+    # cn: the OTHER baseline 10.11 pre-registered and that was never run. An
+    # offline probe puts it above the spectral affinity on both reddit graphs,
+    # so `spec` is not attributable to the spectrum until it clears this.
+    cn)      echo "model.data_type=f+es $spectral spectral.es_features=cn" ;;
+    # The structure placebo. shuffled_fixed permutes the node->row assignment of
+    # the REAL basis with one fixed permutation: matched value distribution,
+    # matched orthonormality, matched temporal drift, structure severed. Without
+    # it nothing separates "the spectrum" from any graded proximity feature of
+    # the same shape.
+    placebo) echo "model.data_type=f+es $spectral spectral.es_features=spec spectral.basis_source=shuffled_fixed" ;;
     *) return 1 ;;
   esac
 }

@@ -3762,6 +3762,18 @@ out seed noise but not small-subpopulation bias. Any earlier statement that as73
 - Every cell ran `basis-laplacian`. No in-model structure placebo (`spectral.basis_source=
   shuffled|random`) was run, so nothing here separates "spectral content" from any 6-dimensional
   graded proximity feature.
+- **Same-seed CPU runs are not reproducible, and the spread is the size of the effects.**
+  Six runs of one arm at one seed (uci C1, `cn`) gave `mean_mrr` 0.0730 / 0.0827 / 0.0843 / 0.0901 /
+  0.0944 / 0.0950 — a 30% relative spread; independently reproduced at 0.1007 / 0.1093 / 0.1071 on
+  the `feature` arm. This is NOT the MPS effect the handoff records (MPS is disabled in
+  `src/utils/utils.py` and this box has no CUDA): it is thread-count reduction-order
+  nondeterminism, and `torch.set_num_threads(1)` with `OMP_NUM_THREADS=MKL_NUM_THREADS=1`
+  reproduces to the last digit. Consequences: any single-seed uci comparison below ~0.02 MRR is
+  noise; the thread count is an unrecorded run axis (`_run_id` does not carry it); and this is a
+  further argument for the per-dataset empirical floors of §20.1 over the ±0.014 constant, which
+  was itself derived on this path. The cluster matrix ran on CUDA and its floors are empirical, so
+  they already absorb whatever its own nondeterminism is — but numbers produced locally and on the
+  cluster must not be compared cell-for-cell.
 - A launcher defect destroyed one completed cell: `run_split.sh` was overwritten while jobs were
   executing it, and bash resumed from a stale byte offset, logging a spurious `rc=127 n=0` over four
   finished cells and truncating `bitcoin_otc_C1_persist` (re-run 2026-08-27). Fixed in `53dea20` by
