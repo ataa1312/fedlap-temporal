@@ -3629,6 +3629,145 @@ the empirical impact is nil, and §4.4 should say both.
 
 ---
 
+## 20. The in-model repeat/new split across five datasets — and what it does NOT show  **[2026-08-27]**
+
+30 cells: `{as733, reddit_body, reddit_title, bitcoin_alpha, bitcoin_otc}` x C{1,9} x
+`{feature, spec, persist}`, 3 seeds each (1234/1334/1434), `metric.repeat_new_split=true`,
+`f+es` arms on `solver=chebyshev` + `update_mode=update`. Logs `runs/split_matrix/*.log`,
+launcher `runs/run_split.sh` (tracked from `53dea20`; the version that launched these cells was
+untracked). Hosts: as733 C1 sim09, as733 C9 sim12, reddit_title C9 sim12, everything else sim07 —
+**except `reddit_title C1 spec`, which ran on sim09 while its own baselines ran on sim07.**
+
+This section exists to state a result and, more importantly, to fence off four readings of it that
+the numbers do not support.
+
+### 20.1 Two measurement caveats that must be read before the table
+
+**`mrr_new` is not one comparable quantity across these rows.** `_weighted_mean_metrics`
+(`dynamic_server.py:111`) gives every snapshot weight 1.0 and skips NaN, so `mrr_new` is an
+unweighted per-snapshot mean. as733 averages over 1-64 new positives per snapshot (median 4);
+reddit averages over 56-143; on bitcoin the "new" subset is ~90% of all evaluated positives. These
+are different estimators wearing one column heading.
+
+**The +-0.014 floor from §12b is the wrong instrument here.** It is a uci/feature/C1/`mean_mrr`
+constant and is wrong in both directions. Per-dataset floors below are 2x the mean across-seed
+standard deviation of `mrr_new` within an arm, pooled over arms and C:
+
+| dataset | repeat frac | arm sd | ~2sd floor |
+|---|---|---|---|
+| as733 | 0.9970 | 0.0048 | 0.0096 |
+| reddit_body | 0.5405 | 0.0053 | 0.0106 |
+| reddit_title | 0.5882 | 0.0038 | 0.0076 |
+| bitcoin_alpha | 0.1030 | 0.0090 | 0.0180 |
+| bitcoin_otc | 0.0881 | 0.0100 | 0.0201 |
+
+### 20.2 The result
+
+`D` = spec arm minus feature arm, paired per seed.
+
+| dataset | C | D aggregate | D repeat | **D new** | per-seed D_new | vs floor |
+|---|---|---|---|---|---|---|
+| as733 | 1 | +0.3000 | +0.3007 | **+0.0819** | +.085/+.079/+.082 | 8.5x |
+| as733 | 9 | +0.3677 | +0.3679 | **+0.0971** | +.098/+.105/+.088 | 10.1x |
+| reddit_body | 1 | +0.0536 | +0.0864 | **+0.0172** | +.021/+.015/+.016 | 1.6x |
+| reddit_body | 9 | +0.0715 | +0.1146 | **+0.0185** | +.012/+.020/+.023 | 1.7x |
+| reddit_title | 1 | +0.0435 | +0.0691 | +0.0115 | +.013/+.009/+.013 | HOST-CONFOUNDED |
+| reddit_title | 9 | +0.0281 | +0.0447 | +0.0074 | +.007/+.006/+.009 | 1.0x (AT floor) |
+| bitcoin_alpha | 1 | +0.0090 | +0.1071 | -0.0027 | -.008/+.006/-.006 | 0.2x NULL |
+| bitcoin_alpha | 9 | -0.0147 | +0.0047 | -0.0144 | -.041/+.004/-.006 | 0.8x NULL |
+| bitcoin_otc | 1 | +0.0025 | +0.1036 | -0.0050 | -.004/-.011/-.001 | 0.2x NULL |
+| bitcoin_otc | 9 | +0.0013 | +0.0659 | -0.0083 | -.024/-.021/+.020 | 0.4x NULL |
+
+**What stands: as733 and reddit_body only.** as733 is 3/3 seeds at ~8-10x its own floor;
+reddit_body is 3/3 at ~1.6x. Nothing else clears.
+
+### 20.3 The specificity problem — read this before citing 20.2
+
+In every positive cell the repeat-pair gain is **3.7x-6.2x** the new-pair gain. Worse, across the
+ten spectral cells the new-pair delta is almost entirely predicted by the aggregate delta:
+
+    D_new = -0.0041 + 0.284 * D_agg        R^2 = 0.990
+
+and the spillover ratio on the six positive cells is a near-constant **0.26-0.32**. That is what a
+single global representation improvement predicts; it is not the signature of a distinct mechanism
+acting on unseen pairs. The regression is partly self-correlated at the bitcoin end (there
+`mean_mrr` is ~90% new-pair mass), so the robust form of the claim is the constant spillover ratio
+on as733/reddit_body/reddit_title. **§16 is weakened, not overturned:** its uci finding (D_agg
++0.044 with D_new -0.0130) remains the only genuine dissociation on record, and uci was NOT re-run
+inside this matrix.
+
+### 20.4 Four readings the data does not support
+
+**(a) "The 1-bit persist control hurts new pairs, so the spectral term beats it where it matters."
+WITHDRAWN — this is a tautology.** `_persistence()` (`fed_dynamic_classifier.py:350`) is
+`torch.isin` on the canonical pair key against `self._cum_edges` — bit-for-bit the same tensor and
+the same predicate as `_repeat_mask`. persist is the split label handed back as a feature. Its head
+is `[1,128,1]` over one binary input, so it emits exactly two scores s0 < s1; every new positive
+gets s0, and because `metric.mrr_filter` defaults to `"split"` past edges remain eligible negatives
+and get s1. A negative new-pair delta is forced by rank arithmetic before any training occurs, and
+the observed values are reproducible from the past-edge negative rate alone. persist remains a
+valid control on the repeat subset and on the aggregate, and there it is decisive: it beats the
+spectral arm on aggregate MRR on every dataset measured (§10.14).
+
+**(b) "reddit_title confirms the effect." DROPPED.** Both cells sit at or below their own floor
+(+0.0115 and +0.0074 against 0.0076), and applying §16's own +-0.014 criterion — which was used to
+call uci's -0.0138 "no gain" — would exclude both. Additionally `reddit_title C1` is the only cell
+in the matrix whose treatment ran on a different host from its baseline (spec on sim09, feature and
+persist on sim07, all three seeds). Host is perfectly aliased with treatment there, cannot average
+out, and would itself manufacture the 3/3 sign consistency. Do not cite that cell either way until
+it is re-run host-clean.
+
+**(c) "The spectral term is negative on new pairs on bitcoin." NO — it is NULL.** Three of the four
+bitcoin cells flip sign across seeds, all four have |t| <= 1.72, and all four sit inside their own
+across-seed spread (0.018-0.020). In particular `bitcoin_alpha C9`'s -0.0144 is one outlier seed
+(-0.0408 against +0.0039 and -0.0064) and must never be quoted as a negative effect.
+
+**(d) "The margin grows with sharding, so the basis substitutes for severed message passing."
+NOT REPRODUCED.** §10.11's offline probe predicted as733 D_new +0.368 (C1) -> +0.746 (C9). Observed:
++0.082 -> +0.097. The magnitudes are 4.5-7.7x smaller and the predicted +0.378 growth came out as
+**+0.015**; reddit_body's predicted +0.012 growth came out as +0.0013. The confirmation is of SIGN
+only, on two datasets. The federated-growth half of the pre-registration failed in-model on every
+dataset. This is consistent with the `gnn.encoder_edge_drop` sweep, where starving message passing
+to a 0.9986 edge deficit at C=1 moved the new-pair delta by +0.0003 (t = +0.07).
+
+### 20.5 as733's number carries a mandatory caveat
+
+as733's `repeat_frac` is **0.9970** (read directly off the RESULT lines), so "new" is **0.30%** of
+evaluated positives. The per-snapshot shape — a median of 4 new positives per snapshot, with 9.6%
+of snapshots contributing none — comes from the 2026-08-27 audit and has NOT been independently
+recomputed here, because the per-`t` log line does not record subset sample counts (see §20.6).
+It should be re-derived once that logging exists. The +0.0819/+0.0971 is a
+rare-tail statistic, not a decomposition of the as733 headline: the +0.300 aggregate gain there is
+~100% repeat-pair, and the new subset moves it by ~0.0003. The seed-to-seed spread (+-0.0032) rules
+out seed noise but not small-subpopulation bias. Any earlier statement that as733's new subset is
+"~5% of positives" is wrong by 16x.
+
+### 20.6 Power and provenance limits
+
+- n=3 means a sign test cannot reach p<0.05 (minimum p=0.25); all significance rests on a
+  parametric t at 2 df.
+- C1 and C9 share data, split and seeds, so the six positive cells are **three datasets, not six
+  replications**.
+- Negatives are not paired across arms: `_sample_filtered_negatives` draws from the global RNG,
+  whose state diverges between arms, so each arm delta carries full run-to-run non-determinism.
+- Nothing in this matrix is auditable below the seed level. The per-`t` log line prints only
+  mrr/auc/ap/f1/mcc, and no `.done` checkpoints were written, so there is no pair-weighted
+  recomputation, no bootstrap CI, and no way to see whether as733's effect concentrates in a
+  handful of snapshots. Given as733's median of 4 new pairs per snapshot, that is the most likely
+  way its result would evaporate.
+- The pre-registered `cn` (common-neighbours) arm required by §10.11 was NOT run. This is
+  load-bearing: an offline probe puts `cn` ABOVE the spectral affinity on new pairs on both reddit
+  graphs (0.702 vs 0.641 body, 0.710 vs 0.646 title — audit-reported, not recomputed here), and
+  reddit_body is one of only two surviving datasets.
+- Every cell ran `basis-laplacian`. No in-model structure placebo (`spectral.basis_source=
+  shuffled|random`) was run, so nothing here separates "spectral content" from any 6-dimensional
+  graded proximity feature.
+- A launcher defect destroyed one completed cell: `run_split.sh` was overwritten while jobs were
+  executing it, and bash resumed from a stale byte offset, logging a spurious `rc=127 n=0` over four
+  finished cells and truncating `bitcoin_otc_C1_persist` (re-run 2026-08-27). Fixed in `53dea20` by
+  wrapping the body in `main()` and ending with `main "$@"; exit $?`, so the file is fully parsed
+  before execution; verified against a live-edit reproduction.
+
 ## 11. Provenance & reproduction
 - Code: fedlap repo, branch `roland-dev`. Runs on TUM CUDA hosts `tueilnt-sim{08,09,10,12,13,14}`.
 - Commits behind §8/§9: `3595fc8` SignNet smodel; `f45c3a3` `federated.fl`; `a3e907a`
