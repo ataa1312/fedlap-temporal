@@ -116,10 +116,20 @@ def _weighted_mean_metrics(
     if not metrics_list:
         return {}
     out = {}
-    for k in metrics_list[0]:
+    # Union of keys, not metrics_list[0]'s: a resumed run can restore a
+    # metrics_history whose dicts carry the repeat/new keys and then append dicts
+    # that do not (or the reverse), which raised KeyError at the very END of the
+    # run -- after all the compute and before the done-checkpoint. Absent keys
+    # contribute nothing rather than exploding.
+    # dict.fromkeys, not a set: set iteration over strings is PYTHONHASHSEED
+    # dependent, so a set here makes mean_metrics' key order (and the bytes of the
+    # done-checkpoint that stores it) differ between processes. First-seen order
+    # also keeps the fully-populated case byte-identical to metrics_list[0]'s.
+    keys = dict.fromkeys(k for md in metrics_list for k in md)
+    for k in keys:
         num, den = 0.0, 0.0
         for md, w in zip(metrics_list, weights):
-            v = md[k]
+            v = md.get(k, float("nan"))
             if v == v:  # skip nan
                 num += v * w
                 den += w
@@ -372,10 +382,24 @@ class DynamicServer(Server):
                     log_cb(t, mrr, metrics)
                 if log:
                     m = metrics or {}
+                    # The repeat/new numbers are per-snapshot MEANS over sources, and
+                    # the subsets can be tiny (as733 carries a median of a few new
+                    # positives per snapshot). Without the per-snapshot value AND its
+                    # sample count, a run-level mrr_new cannot be re-weighted, bootstrapped,
+                    # or checked for concentration in a handful of snapshots -- which is
+                    # exactly the audit that results.md §20.6 records as impossible.
+                    split = ""
+                    if "mrr_repeat" in m:
+                        split = (
+                            f" mrr_repeat={m.get('mrr_repeat', float('nan')):.4f}"
+                            f" mrr_new={m.get('mrr_new', float('nan')):.4f}"
+                            f" n_repeat={m.get('n_repeat', -1)} n_new={m.get('n_new', -1)}"
+                            f" src_repeat={m.get('src_repeat', -1)} src_new={m.get('src_new', -1)}"
+                        )
                     LOGGER.info(
                         f"t={t} mrr={mrr:.4f} auc={m.get('roc_auc', float('nan')):.4f} "
                         f"ap={m.get('ap', float('nan')):.4f} f1={m.get('f1', float('nan')):.4f} "
-                        f"mcc={m.get('mcc', float('nan')):.4f}"
+                        f"mcc={m.get('mcc', float('nan')):.4f}{split}"
                     )
 
             # 1b. Optional SFV reset -- AFTER the reported eval, BEFORE training on
@@ -573,6 +597,14 @@ class DynamicServer(Server):
         exp = config["experimental"]
         if "deterministic" in exp and exp["deterministic"]:
             parts.append("det")
+        # The split draws its OWN negatives from the global RNG, so a split-on run
+        # diverges from a split-off one at the same seed and reports a different
+        # headline mean_mrr. Without this token the two share an identity: under
+        # auto_resume one loads the other's checkpoint, and they collide on the same
+        # deterministic wandb id. Appended only when on, so existing identities stay
+        # byte-identical and banked checkpoints still load.
+        if _repeat_new_split():
+            parts.append("split")
         parts.append(f"s{config['seed']}")
         return "_".join(parts)
 
@@ -1010,13 +1042,33 @@ class DynamicServer(Server):
             )
         if _repeat_new_split():
             pm = eval_snap.edge_label == 1.0
-            rmask = self._repeat_mask(eval_snap.edge_label_index[:, pm])
+            pos_edges = eval_snap.edge_label_index[:, pm]
+            rmask = self._repeat_mask(pos_edges)
             _, m_rep, m_new = compute_mrr_splits_from_z(
                 gz, eval_snap, mrr_k, mrr_method, device, self.classifier, rmask,
                 "snapshot" if mrr_filter == "snapshot" else "split",
             )
             metrics["mrr_repeat"], metrics["mrr_new"] = m_rep, m_new
             metrics["repeat_frac"] = float(rmask.float().mean()) if rmask.numel() else float("nan")
+            # Sample counts for the two subsets. mrr_repeat/mrr_new are means over
+            # SOURCES (a source with no positive in a subset is skipped, not zeroed),
+            # so src_* is the actual denominator and n_* is the positive count behind
+            # it. Both are needed to re-weight or bootstrap a run-level mrr_new, and
+            # to see whether an effect rides on a handful of snapshots -- neither was
+            # recoverable before (results.md §20.6). Derived from rmask here rather
+            # than returned from mrr.py, so _rank_and_aggregate's signature stays
+            # stable for analysis/probes/ that import it.
+            # _repeat_mask returns CPU while pos_edges lives on `device`; index a
+            # CUDA tensor with a CPU mask and you are relying on an implicit
+            # transfer. compute_mrr_splits_from_z already moves it explicitly for
+            # the same reason. This box is CPU-only, so the mismatch cannot be
+            # exercised here -- move it rather than trust the untested path.
+            src = pos_edges[0]
+            rb = rmask.to(src.device).bool()
+            metrics["n_repeat"] = int(rb.sum())
+            metrics["n_new"] = int((~rb).sum())
+            metrics["src_repeat"] = int(torch.unique(src[rb]).numel()) if rb.any() else 0
+            metrics["src_new"] = int(torch.unique(src[~rb]).numel()) if (~rb).any() else 0
         return mrr, metrics
 
     def _eval_mrr_local(self, t, loss_fn, mrr_k, mrr_method):

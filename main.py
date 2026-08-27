@@ -202,7 +202,10 @@ def run_once() -> dict:
         f"eval={config['metric']['eval_scope']} seed={config['seed']} "
         f"mean_mrr={results['mean_mrr']} std={results['std_mrr']}{paired} "
         f"auc={mm.get('roc_auc')} ap={mm.get('ap')} f1={mm.get('f1')} mcc={mm.get('mcc')} "
-        f"snapshots={len(results['mrr_history'])} run={server._run_id()}"
+        # run= is diagnostic provenance (it is what makes a log self-identifying);
+        # never let it break a run, and keep test doubles that lack it usable.
+        f"snapshots={len(results['mrr_history'])} "
+        f"run={getattr(server, '_run_id', lambda: 'unavailable')()}"
     )
 
     if wb is not None:

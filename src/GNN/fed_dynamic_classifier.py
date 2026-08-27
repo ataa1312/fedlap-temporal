@@ -286,9 +286,12 @@ class DynamicSInvariant:
         self.keys = None      # sorted pair keys of the cumulative graph (persistence)
         self.n_nodes = None
         self.n_scale = None   # GLOBAL node count; see set_scale
+        self.adj = None       # CSR cumulative adjacency, built only for 'cn'
         self.features = features or config["spectral"]["es_features"]
-        if self.features not in ("spec", "persist", "both"):
-            raise ValueError(f"spectral.es_features must be spec|persist|both, got {self.features!r}")
+        if self.features not in ("spec", "persist", "both", "cn"):
+            raise ValueError(
+                f"spectral.es_features must be spec|persist|both|cn, got {self.features!r}"
+            )
         # attribution ablation: which of the three invariant blocks reach the MLP
         self.parts = tuple(p for p in config["spectral"]["es_spec_parts"].split("+") if p)
         unknown = set(self.parts) - {"phi", "cos", "lev"}
@@ -297,18 +300,20 @@ class DynamicSInvariant:
                 f"spectral.es_spec_parts must be a '+'-joined non-empty subset of phi|cos|lev, "
                 f"got {config['spectral']['es_spec_parts']!r}"
             )
-        self.n_filters = n_filters if self.features != "persist" and "phi" in self.parts else 0
-        n_spec = 0 if self.features == "persist" else (
+        _trivial = self.features in ("persist", "cn")   # 1-feature baseline arms
+        self.n_filters = n_filters if not _trivial and "phi" in self.parts else 0
+        n_spec = 0 if _trivial else (
             self.n_filters + ("cos" in self.parts) + ("lev" in self.parts)
         )
         n_persist = 1 if self.features in ("persist", "both") else 0
+        n_cn = 1 if self.features == "cn" else 0
         hidden = hidden or config["structure_model"]["DGCN_structure_layers_sizes"]
         # log-tau so tau stays positive; spread the initial scales over the
         # decades that matter for lambda in [0, 2]
         self.log_tau = nn.Parameter(
             torch.linspace(-2.0, 2.0, n_filters, device=device)
         )
-        dims = [n_spec + n_persist] + list(hidden) + [1]
+        dims = [n_spec + n_persist + n_cn] + list(hidden) + [1]
         layers = []
         for a, b in zip(dims[:-1], dims[1:]):
             layers += [nn.Linear(a, b), nn.ReLU()]
@@ -340,12 +345,69 @@ class DynamicSInvariant:
         be made against it, not only against the shuffled placebo — the placebo
         removes structure AND history together and cannot separate them."""
         self.n_nodes = num_nodes
+        self.adj = None
         if edge_index is None or edge_index.numel() == 0:
             self.keys = torch.empty(0, dtype=torch.long, device=device)
+            if self.features == "cn":
+                # An EMPTY adjacency, not None. Leaving it None makes
+                # _common_neighbours return None, edge_score return None, and the
+                # whole arm fall back to the plain decoder with no error and no log
+                # -- a cn run that is silently feature-only while _run_id still
+                # stamps esf-cn. Reachable for any owner whose induced cumulative
+                # union is empty (a client at small t under heavy sharding). persist
+                # has no such hole: its empty case leaves an empty keys tensor and
+                # still feeds a real 0 to the head, so this keeps the two baselines
+                # behaving alike, which is the whole point of the comparison.
+                from scipy import sparse as _sp
+                self.adj = _sp.csr_matrix((num_nodes, num_nodes), dtype="float32")
             return
         a = torch.minimum(edge_index[0], edge_index[1]).to(torch.long)
         b = torch.maximum(edge_index[0], edge_index[1]).to(torch.long)
         self.keys = torch.unique(a * num_nodes + b).to(device)
+        if self.features == "cn":
+            # Symmetric unweighted CSR of the SAME cumulative graph persist reads,
+            # so cn and persist differ only in what they compute from it. Built only
+            # for this arm: it costs memory and no other arm reads it.
+            from scipy import sparse as _sp
+            import numpy as _np
+            au = a.detach().cpu().numpy()
+            bu = b.detach().cpu().numpy()
+            r = _np.concatenate([au, bu])
+            c = _np.concatenate([bu, au])
+            m = _sp.csr_matrix(
+                (_np.ones(r.size, dtype=_np.float32), (r, c)),
+                shape=(num_nodes, num_nodes),
+            )
+            m.data[:] = 1.0        # collapse multi-edges: neighbour SET, not counts
+            m.setdiag(0)           # a node is not its own common neighbour
+            m.eliminate_zeros()
+            self.adj = m
+
+    def _common_neighbours(self, edge_label_index):
+        """log1p(|N(u) & N(v)|) on the cumulative graph — the pre-registered
+        structural baseline of results.md §10.11, which required every new-pair
+        claim to be tested against `exists` AND `cn`. An offline probe put cn
+        ABOVE the spectral affinity on both reddit graphs, so without this arm a
+        spectral new-pair result cannot be attributed to the spectrum.
+
+        log1p keeps the input O(1) like the leverage feature; it is monotone, so
+        it cannot change any ranking the raw count would induce."""
+        if self.adj is None or self.n_nodes is None:
+            return None
+        import numpy as _np
+        u = edge_label_index[0].detach().cpu().numpy()
+        v = edge_label_index[1].detach().cpu().numpy()
+        out = _np.empty(u.size, dtype=_np.float32)
+        # Chunked: adj[u] materialises a (P, N) sparse block whose nnz is sum(deg),
+        # which is large for a full 1000-negatives-per-source eval batch.
+        step = 65536
+        for i in range(0, u.size, step):
+            uu, vv = u[i:i + step], v[i:i + step]
+            out[i:i + step] = _np.asarray(
+                self.adj[uu].multiply(self.adj[vv]).sum(axis=1)
+            ).ravel()
+        t = torch.from_numpy(out).to(edge_label_index.device)
+        return torch.log1p(t).unsqueeze(-1)
 
     def _persistence(self, edge_label_index):
         if self.keys is None or self.n_nodes is None:
@@ -373,6 +435,9 @@ class DynamicSInvariant:
         if self.features == "persist":
             ex = self._persistence(edge_label_index)
             return None if ex is None else self.model(ex).squeeze(-1)
+        if self.features == "cn":
+            c = self._common_neighbours(edge_label_index)
+            return None if c is None else self.model(c).squeeze(-1)
         if self.Q is None or self.D is None:
             return None
         u = self.Q[edge_label_index[0]]

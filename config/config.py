@@ -299,7 +299,15 @@ def _spectral() -> Registry:
                                             # spectral affinities), 'persist' (the 1-bit "pair already
                                             # exists" control -- §10.11 scored it ABOVE spectral on
                                             # every dataset), 'both' (does the spectrum add anything
-                                            # on top of explicit history access?)
+                                            # on top of explicit history access?), 'cn' (log1p common
+                                            # neighbours on the same cumulative graph -- the OTHER
+                                            # baseline §10.11 pre-registered; an offline probe puts it
+                                            # ABOVE the spectral affinity on both reddit graphs, so a
+                                            # new-pair claim is not attributable to the spectrum until
+                                            # it clears this arm. NOTE persist is NOT an informative
+                                            # control on the new subset: it is the split label handed
+                                            # back as a feature, so its new-pair penalty is forced by
+                                            # rank arithmetic (results.md §20.4a). cn is.
     s["es_spec_parts"] = "phi+cos+lev"      # ATTRIBUTION ABLATION over the 'spec' feature block:
                                             # '+'-joined subset of 'phi' (learnable heat-kernel
                                             # affinities), 'cos' (the unfiltered affinity the probes

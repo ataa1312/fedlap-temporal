@@ -18,6 +18,7 @@ _META_METHODS = {"none", "moving_average", "online_mean"}
 _TRAIN_MODES = {"live_update"}
 _MRR_METHODS = {"min", "max", "mean"}
 _MRR_FILTERS = {"split", "snapshot", "both"}
+_ES_FEATURES = {"spec", "persist", "both", "cn"}
 _EVAL_SCOPES = {"auto", "local", "global"}
 _WANDB_MODES = {"online", "offline", "disabled"}
 _AGGREGATIONS = {"fedavg"}
@@ -161,6 +162,11 @@ def assert_cfg(config: Registry) -> None:
             raise ValueError(
                 f"spectral.pe_dim must be >0 for data_type={model['data_type']}, got {spectral['pe_dim']!r}"
             )
+        if model["data_type"] == "f+es" and "es_features" in spectral:
+            # Fail here rather than deep in the smodel constructor: these arms are
+            # launched in multi-hour cluster batches and a typo must not surface
+            # after the data load.
+            _require_in(spectral["es_features"], _ES_FEATURES, "spectral.es_features")
         if (model["data_type"] == "f+es" and "solver" in spectral
                 and spectral["solver"] == "arnoldi"):
             # the Krylov estimate overlaps the true low subspace by only ~0.27-0.62
