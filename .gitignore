@@ -17,6 +17,9 @@
 \logs
 \build
 \runs
+!runs/
+!runs/*.sh
+runs/*/
 *FedStruct.egg-info
 **/wandb/**
 /checkpoints/
