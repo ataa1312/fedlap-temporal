@@ -16,14 +16,20 @@ main() {
   local DS=$1 C=$2
   shift 2
   local ARMS=${@:-"feature spec persist"}
+  # Seed count. Default 3 keeps every existing cell and log name byte-identical;
+  # REPEAT=5 writes to a SEPARATE log so a 5-seed cell cannot silently overwrite
+  # a banked 3-seed one, and the two stay independently readable.
+  local REP=${REPEAT:-3}
+  local SUF=""
+  [ "$REP" != "3" ] && SUF="_r${REP}"
   local OUT=runs/split_matrix
   local H
   H=$(hostname -s)
   mkdir -p "$OUT"
 
   for arm in $ARMS; do
-    local LOG=$OUT/${DS}_C${C}_${arm}.log
-    if complete "$LOG"; then
+    local LOG=$OUT/${DS}_C${C}_${arm}${SUF}.log
+    if complete "$LOG" "$REP"; then
       echo "$(date +%H:%M:%S) SKIP $DS C$C $arm complete" >> $OUT/progress.txt
       continue
     fi
@@ -36,7 +42,7 @@ main() {
     echo "$H pid=$$" > "$LOG.lock/owner"
     # Re-check under the lock: another host may have finished this cell between the
     # check above and acquiring the lock.
-    if complete "$LOG"; then
+    if complete "$LOG" "$REP"; then
       rm -rf "$LOG.lock"
       echo "$(date +%H:%M:%S) SKIP $DS C$C $arm completed-by-peer" >> $OUT/progress.txt
       continue
@@ -47,21 +53,21 @@ main() {
 
     # Host is recorded per cell: host heterogeneity is a real confound (an arm and its
     # baseline that ran on different hosts produced an uninterpretable cell).
-    echo "$H" > "$OUT/${DS}_C${C}_${arm}.host"
+    echo "$H" > "$OUT/${DS}_C${C}_${arm}${SUF}.host"
     echo "$(date +%H:%M:%S) START $DS C$C $arm on $H" >> $OUT/progress.txt
-    nice -n 5 $PY main.py -c config/${DS}_gru.yaml --repeat 3 \
+    nice -n 5 $PY main.py -c config/${DS}_gru.yaml --repeat "$REP" \
       --set subgraph.num_subgraphs=$C metric.repeat_new_split=true wandb.mode=disabled $EXTRA \
       > "$LOG" 2>&1
     local rc=$?
     rm -rf "$LOG.lock"
     echo "$(date +%H:%M:%S) DONE  $DS C$C $arm rc=$rc n=$(count_results "$LOG") on $H" >> $OUT/progress.txt
   done
-  echo "$(date +%H:%M:%S) ALLDONE $DS C$C on $H" >> $OUT/progress.txt
+  echo "$(date +%H:%M:%S) ALLDONE $DS C$C rep=$REP on $H" >> $OUT/progress.txt
 }
 
 count_results() { grep -c '^.*RESULT ' "$1" 2>/dev/null || echo 0; }
 
-complete() { [ -s "$1" ] && [ "$(count_results "$1")" -ge 3 ]; }
+complete() { [ -s "$1" ] && [ "$(count_results "$1")" -ge "${2:-3}" ]; }
 
 arm_overrides() {
   local spectral="spectral.solver=chebyshev spectral.update_mode=update"
