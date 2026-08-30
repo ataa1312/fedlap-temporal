@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from test_run_identity import explicit_id_of
 import torch
 from torch_geometric.data import Data
 
@@ -291,7 +292,12 @@ def test_run_identity_is_unchanged_at_default_and_separates_the_arms(config):
     rid_default = srv._run_id()
     assert "cum-" not in rid_default
     del config["spectral"]["cum_decay"]
-    assert srv._run_id() == rid_default  # byte-identical to a config predating the key
+    # No TOKEN either way. The completeness fingerprint hashes the config's key
+    # SET as well as its values, so present-at-default and absent are different
+    # bytes and separate -- unreachable in a real run, where every key comes from
+    # get_default_config() and overlay_config only adds.
+    assert explicit_id_of(srv._run_id()) == explicit_id_of(rid_default)
+    assert "cum-" not in srv._run_id()
 
     ids = set()
     for kind, param in [("count", None), ("harmonic", None), ("exp", 0.5),

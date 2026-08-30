@@ -140,8 +140,8 @@ def run_until_crash(config, ckpt_dir, monkeypatch, crash_at, num_snaps=5):
 
     original = DynamicServer._save_partial_ckpt
 
-    def save_then_crash(self, t, w_init, mrr_history, metrics_history):
-        original(self, t, w_init, mrr_history, metrics_history)
+    def save_then_crash(self, t, w_init, mrr_history, metrics_history, t_history=None):
+        original(self, t, w_init, mrr_history, metrics_history, t_history)
         if t == crash_at:
             raise _Crash
 
@@ -213,8 +213,9 @@ def test_a_checkpoint_without_an_rng_block_still_resumes(config, tmp_path):
     resumed = server._load_partial_ckpt()
 
     assert resumed is not None
-    t_start, w_init, mrr_history, metrics_history = resumed
+    t_start, w_init, mrr_history, metrics_history, t_history = resumed
     assert t_start == 1
     assert mrr_history == [0.1]
     assert metrics_history == [{"roc_auc": 0.5}]
+    assert t_history is None  # a checkpoint predating the key carries no axis
     assert all_streams() == expected  # streams left exactly where they were

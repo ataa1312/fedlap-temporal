@@ -20,7 +20,7 @@ from test_checkpoint_wandb import (
     seed_all,
     setup_tiny_config,
 )
-from test_run_identity import set_identity_config
+from test_run_identity import explicit_id, explicit_id_of, set_identity_config
 
 
 # (kernel, cum_decay_param). window=1 keeps only the current snapshot, which is
@@ -365,7 +365,7 @@ def test_the_default_identity_is_byte_identical_to_the_pre_change_string(
     if data_type == "f+es":
         config["spectral"]["solver"] = "chebyshev"  # f+es forbids arnoldi
 
-    assert server._run_id() == PRE_CHANGE_IDS[data_type]
+    assert explicit_id(server) == PRE_CHANGE_IDS[data_type]
 
 
 def test_no_new_knob_adds_a_token_at_its_default(config, tmp_path):
@@ -379,7 +379,7 @@ def test_no_new_knob_adds_a_token_at_its_default(config, tmp_path):
     config["structure_model"]["freeze_sfv"] = False
     config["gnn"]["encoder_edge_drop"] = 0.0
 
-    assert server._run_id() == baseline == PRE_CHANGE_IDS["f+s"]
+    assert explicit_id(server) == explicit_id_of(baseline) == PRE_CHANGE_IDS["f+s"]
 
 
 def test_a_config_predating_the_kernel_keeps_its_identity(config, tmp_path):
@@ -387,7 +387,7 @@ def test_a_config_predating_the_kernel_keeps_its_identity(config, tmp_path):
     config["model"]["data_type"] = "f+s"
     del config["spectral"]["cum_decay"]
 
-    assert server._run_id() == PRE_CHANGE_IDS["f+s"]
+    assert explicit_id(server) == PRE_CHANGE_IDS["f+s"]
 
 
 @pytest.mark.parametrize("data_type", ["f+s", "f+pe", "structure"])
@@ -399,7 +399,7 @@ def test_the_identity_separates_every_kernel(config, tmp_path, data_type):
     for kernel, param in KERNELS:
         config["spectral"]["cum_decay"] = kernel
         config["spectral"]["cum_decay_param"] = param
-        ids[kernel] = server._run_id()
+        ids[kernel] = explicit_id(server)
 
     assert len(set(ids.values())) == len(KERNELS)
     assert ids["none"] == PRE_CHANGE_IDS[data_type]
@@ -433,15 +433,22 @@ def test_the_parameter_is_inert_for_the_kernels_that_ignore_it(config, tmp_path,
     config["spectral"]["update_mode"] = "update"
     config["spectral"]["cum_decay"] = kernel
 
-    ids, weights = set(), []
+    ids, hashes, weights = set(), set(), []
     for param in (0.1, 0.9, 1):
         config["spectral"]["cum_decay_param"] = param
         assert_cfg(config)  # accepted: these kernels never read it
-        ids.add(server._run_id())
+        ids.add(explicit_id(server))
+        hashes.add(server._run_id())
         weights.append(accumulated_server(config, kernel, param)._cum_edge_weight(3))
         config["spectral"]["cum_decay"] = kernel  # accumulated_server rewrote it
 
+    # The readable arm is unchanged: no kernel here reads the parameter, so no
+    # token records it. The completeness fingerprint DOES separate the three,
+    # because it hashes the config bytes and cannot know the value is inert.
+    # That is over-separation, and it is the accepted direction: the cost is a
+    # re-run, where under-separation costs a silent wrong-arm resume.
     assert len(ids) == 1
+    assert len(hashes) == 3
     for w in weights[1:]:
         assert (w is None and weights[0] is None) or torch.equal(w, weights[0])
 
@@ -454,7 +461,7 @@ def test_the_kernel_stays_out_of_a_non_spectral_identity(config, tmp_path):
     config["spectral"]["cum_decay"] = "exp"
     config["spectral"]["cum_decay_param"] = 0.5
 
-    assert server._run_id() == PRE_CHANGE_IDS["feature"]
+    assert explicit_id(server) == PRE_CHANGE_IDS["feature"]
 
 
 def test_the_identity_records_the_effective_procrustes_value(config, tmp_path):
@@ -475,8 +482,13 @@ def test_the_identity_records_the_effective_procrustes_value(config, tmp_path):
     config["spectral"]["use_procrustes"] = True
     assert server._run_id() != auto
     assert "proc-on" in server._run_id().split("_")
+    # An explicit False and 'auto' resolve to the SAME effective value on f+es, so
+    # the readable arm is identical -- but they are different config bytes, so the
+    # fingerprint separates them. Under the backstop "the same arm" means the same
+    # config, not the same effective behaviour.
     config["spectral"]["use_procrustes"] = False
-    assert server._run_id() == auto
+    assert explicit_id(server) == explicit_id_of(auto)
+    assert server._run_id() != auto
 
 
 # ---- config validation ---- #

@@ -36,6 +36,7 @@ from src.utils.graph import Graph
 from src.utils.graph_partitioning import partition_snapshots
 from test_checkpoint_wandb import make_server, seed_all
 from test_fl_local_baseline import make_toy_snapshots
+from test_run_identity import explicit_id_of
 
 
 COORDINATE_TYPES = ("f+s", "f+pe", "structure")
@@ -211,17 +212,22 @@ def test_run_id_records_the_effective_value_not_the_configured_one(config, tmp_p
     assert "proc-off" in auto.split("_")
     assert "proc-on" in explicit_on.split("_")
     assert auto != explicit_on
-    # 'auto' and an explicit False rotate identically, so they are the same run
-    # and must share one checkpoint rather than burn two sweep slots.
-    assert auto == explicit_off
+    # 'auto' and an explicit False rotate identically, so they are the same ARM
+    # and carry the same tokens. They are NOT the same config, and since the
+    # completeness fingerprint hashes config bytes it separates them -- one extra
+    # sweep slot, which is the accepted cost of never under-separating.
+    assert explicit_id_of(auto) == explicit_id_of(explicit_off)
+    assert auto != explicit_off
 
 
 @pytest.mark.parametrize("data_type", ["f+s", "f+pe"])
 def test_the_default_identity_is_unchanged_where_auto_resolves_on(
     config, tmp_path, data_type
 ):
-    # Byte-identity against the pre-change use_procrustes=True default: banked
-    # f+s / f+pe checkpoints must keep loading.
+    # Token-identity against the pre-change use_procrustes=True default. Banked
+    # checkpoints no longer load at all -- see test_run_identity.py::
+    # test_a_pre_fingerprint_checkpoint_is_not_adopted -- so what is pinned here
+    # is that 'auto' resolves to the pre-change arm, not that the id is stable.
     identity_cfg(config, tmp_path)
     config["model"]["data_type"] = data_type
     server = DynamicServer(make_toy_snapshots(N=30, num_snaps=2, seed=7))
@@ -231,7 +237,9 @@ def test_the_default_identity_is_unchanged_where_auto_resolves_on(
     config["spectral"]["use_procrustes"] = True
     pre_change = server._run_id()
 
-    assert shipped == pre_change
+    # Same tokens: 'auto' resolves to on for these data types, so the readable arm
+    # is the pre-change one. The fingerprint still separates the two configs.
+    assert explicit_id_of(shipped) == explicit_id_of(pre_change)
 
 
 def test_the_fes_default_moved_and_orphans_its_banked_checkpoints(config, tmp_path):
@@ -309,7 +317,11 @@ def test_the_flags_tolerate_a_config_predating_them(config, tmp_path):
 
     assert _sfv_flag("freeze_sfv") is False
     assert _sfv_flag("sfv_reset_per_snapshot") is False
-    assert server._run_id() == baseline
+    # No token appears for a flag at its default, present or absent. The
+    # fingerprint hashes the key set too, so deleting a key does move the hash --
+    # not reachable in a real run, where the config is always the full default
+    # tree with a YAML overlaid on it.
+    assert explicit_id_of(server._run_id()) == explicit_id_of(baseline)
 
 
 @pytest.mark.parametrize("frozen", [True, False])

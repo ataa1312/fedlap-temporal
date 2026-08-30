@@ -392,7 +392,9 @@ def test_the_split_separates_the_run_identity(config, tmp_path):
     config["metric"]["repeat_new_split"] = True
     on, on_wandb = server._run_id(), server._wandb_id()
 
-    assert off == "uci_gru_feature_C1_s1234"   # byte-identical to the banked id
+    from test_run_identity import explicit_id_of
+
+    assert explicit_id_of(off) == "uci_gru_feature_C1_s1234"  # the readable arm
     assert on != off and "split" in on
     assert on_wandb != off_wandb
 

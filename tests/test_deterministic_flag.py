@@ -13,6 +13,7 @@ from config.config import get_default_config
 from parser import Parser
 from src.dynamic_server import DynamicServer
 from src.utils.graph_partitioning import partition_snapshots
+from test_run_identity import explicit_id
 
 
 def make_toy_snapshots(N=8, W=1, num_snaps=2, seed=42):
@@ -182,10 +183,10 @@ def test_run_id_default_is_byte_identical_to_pre_change(config, tmp_path):
     server = DynamicServer(make_toy_snapshots())
 
     config["experimental"]["deterministic"] = False
-    assert server._run_id() == "uci_gru_feature_C1_s1234"
+    assert explicit_id(server) == "uci_gru_feature_C1_s1234"
 
     del config["experimental"]["deterministic"]  # a config predating the key
-    assert server._run_id() == "uci_gru_feature_C1_s1234"
+    assert explicit_id(server) == "uci_gru_feature_C1_s1234"
 
 
 def test_run_id_marks_deterministic_runs(config, tmp_path):
@@ -197,7 +198,7 @@ def test_run_id_marks_deterministic_runs(config, tmp_path):
     off_ckpt, off_done = server._ckpt_paths()
 
     config["experimental"]["deterministic"] = True
-    assert server._run_id() == "uci_gru_feature_C1_det_s1234"
+    assert explicit_id(server) == "uci_gru_feature_C1_det_s1234"
     assert server._run_id() != off_id
     assert server._wandb_id() != off_wandb
 
