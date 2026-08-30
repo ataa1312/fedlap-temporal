@@ -203,6 +203,13 @@ def _metric() -> Registry:
     m["hard_neg"] = "random"                # discrimination negatives for auc/ap: 'random'
                                             # (deepsnap ~1:1, saturates ~0.96) or 'degree'
                                             # (degree-weighted hard, de-saturates auc/ap)
+    # Directory for the per-(seed, snapshot) JSONL record. None -> beside the run
+    # log. The record is the ONLY durable form of the snapshot axis: mean_mrr means
+    # over snapshots first, which cannot distinguish a uniform effect from one
+    # carried by a subset of snapshots, and cannot test whether a deficit is a
+    # warm-up artifact of the sparse early cumulative graph. Every analysis in this
+    # program has otherwise been regex over log prose (results.md §20.6).
+    m["snapshot_record_dir"] = None
     m["repeat_new_split"] = False           # also report MRR split by whether the positive pair is
                                             # already in the cumulative union. Separates "the term
                                             # supplies structure lost to sharding" from "the term
@@ -363,6 +370,26 @@ def _spectral() -> Registry:
     # repeat/new split and the 'persist' feature -- see DynamicServer.
     s["cum_decay"] = "none"
     s["cum_decay_param"] = 0.9              # exp: decay factor in (0,1]; window: int horizon >=1
+    # Weight given to edges OUTSIDE the window horizon, in place of 0. A hard
+    # window drops nodes whose every edge has aged out: they leave the active set,
+    # get all-zero basis rows, and their pairs then receive a CONSTANT edge-score
+    # contribution -- i.e. the spectral term stops applying to them and they are
+    # ordered by the backbone alone. Since the backbone alone scores BETTER on new
+    # pairs than any spectral arm, a hard window can raise new-pair MRR purely by
+    # switching itself off. A positive floor keeps every ever-seen edge present, so
+    # recency still dominates the operator but no node leaves the active set, and
+    # recency can be measured without the coverage side effect.
+    # 0.0 reproduces the hard window bit-identically. Inert unless cum_decay=window.
+    s["window_floor"] = 0.0
+    # THE CONTROL for the above. Fraction of the SOLVER-COVERED nodes whose served
+    # basis rows are zeroed, drawn without replacement and seeded by (seed, snapshot).
+    # It reproduces a window's COVERAGE loss without its RECENCY change: the
+    # cumulative graph, the age kernel, the repeat/new split, `persist` and `cn` all
+    # stay exactly as they are. If a coverage_drop matched to a window's covered
+    # fraction reproduces that window's new-pair number, the window's effect was
+    # never about recency. Applied at the same point as basis_source substitution,
+    # so a coverage arm and a null-basis arm get identical treatment.
+    s["coverage_drop"] = 0.0
     s["output_bn"] = True                   # BatchNorm on smodel output S (bounds spectral amplification; gamma zero-init)
     # SignNet smodel (model.smodel_type=SignNet): S = rho(sum_i [phi(u_i)+phi(-u_i)]).
     # phi is the shared per-entry map R^1->phi_dims (last = phi_out); rho maps

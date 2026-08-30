@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from src import *
 from src.server import Server
+from config.registry import Registry
 from src.utils.graph import Graph
 from src.dynamic_client import DynamicClient
 from src.GNN.dynamic_classifier import DynamicClassifier
@@ -108,6 +109,101 @@ def _sfv_flag(key: str) -> bool:
     return bool(sm[key]) if key in sm else False
 
 
+
+# Config keys EXCLUDED from the identity fingerprint: they cannot change a number.
+# Everything else is included, so a knob added later is covered without anyone
+# remembering to give it a token -- which is the failure mode that let mrr_filter,
+# base_lr, iterations, dataset.split and spectral_len (on f+pe/f+es) collide.
+_FP_EXCLUDE_TOP = {
+    "seed",            # already its own token
+    "outdir", "device", "num_workers", "num_threads", "print", "remark",
+    "experiment", "num_runs", "metric_best", "downstream_task",
+    "wandb",           # reporting only
+}
+# Every exclusion is a hole in the backstop, so each one must be justified as
+# "no live code can read it", not "it looks like reporting". Verified by
+# grep: none of the keys above is read anywhere outside config/. Two below are
+# read, and are excluded as a DELIBERATE trade rather than as no-ops:
+#   dataset.path  -- the same dataset lives at different roots on the laptop and
+#                    on the NAS home, and including it would stop a cluster run
+#                    resuming a checkpoint written beside it. It CAN move a
+#                    number (point it at other data and you get other numbers).
+#   train.*       -- checkpoint plumbing. auto_resume MUST be excluded: it is the
+#                    switch that turns resuming on, so including it would change
+#                    the identity of the very run you are trying to resume.
+# node2vec is NOT excluded, despite reading as a dormant upstream section:
+# structure_model.structure_type='node2vec' reaches find_node2vect_embedings,
+# which reads walk_length/context_size/walks_per_node/p/q/num_negative_samples/
+# batch_size at call time. assert_cfg does not restrict structure_type, so the
+# path is one --set away and every one of those knobs moves the numbers.
+_FP_EXCLUDE_PATH = {
+    ("train", "ckpt_dir"), ("train", "auto_resume"), ("train", "ckpt_period"),
+    ("train", "ckpt_clean"),
+    ("metric", "snapshot_record_dir"),
+    ("dataset", "path"),
+}
+
+
+def _config_fingerprint() -> str:
+    """Short hash over every config value that can move a number.
+
+    The explicit tokens in _run_id stay -- they are readable and carry the arm's
+    meaning. This is the BACKSTOP: it makes the identity complete, so two runs
+    differing in any knob at all resolve to different checkpoints AND different
+    per-snapshot record files. Before it, a run differing only in mrr_filter,
+    hard_neg, base_lr, iterations, dataset.split, rank_eval_multiplier, or
+    spectral_len on f+pe/f+es was INDISTINGUISHABLE from its neighbour: a
+    wrong-arm checkpoint resume, and record rows that silently overwrote each
+    other last-write-wins.
+
+    Deliberately over-separates rather than under-separates. Adding a new config
+    key changes the hash for every arm, which orphans old checkpoints -- that is
+    the safe direction, and correctness of identity was chosen over preserving
+    banked ids.
+    """
+    import hashlib
+
+    def encode(v):
+        # NOT bare repr(): repr of a set or a dict depends on iteration order,
+        # which for strings is PYTHONHASHSEED dependent / insertion dependent, and
+        # repr of anything without a __repr__ carries a memory address. Any of the
+        # three makes the hash differ between processes, so a run could not find
+        # its own checkpoint. List order stays significant -- dataset.split
+        # [0.8,0.1,0.1] and [0.1,0.8,0.1] are different runs. Anything else raises
+        # rather than being hashed unstably: a loud failure at startup beats an
+        # identity that silently drifts.
+        if isinstance(v, (str, int, float, bool, type(None))):
+            return repr(v)
+        if isinstance(v, (list, tuple)):
+            return "[" + ",".join(encode(x) for x in v) + "]"
+        if isinstance(v, (set, frozenset)):
+            return "{" + ",".join(sorted(encode(x) for x in v)) + "}"
+        if isinstance(v, dict):
+            return "{" + ",".join(f"{k!r}:{encode(v[k])}" for k in sorted(v)) + "}"
+        raise TypeError(
+            f"config value of type {type(v).__name__!r} has no stable encoding for "
+            "the run fingerprint; add one rather than hashing an unstable repr"
+        )
+
+    def walk(node, path=()):
+        # Registry supports __iter__/__getitem__ but NOT .keys(), so a
+        # hasattr(node, "keys") test never recurses and silently hashes repr() of
+        # each whole section -- which separates everything by accident and makes
+        # every exclusion above dead code.
+        if isinstance(node, Registry):
+            for k in sorted(iter(node)):
+                if not path and k in _FP_EXCLUDE_TOP:
+                    continue
+                if (path + (k,)) in _FP_EXCLUDE_PATH:
+                    continue
+                yield from walk(node[k], path + (k,))
+        else:
+            yield ".".join(path) + "=" + encode(node)
+
+    blob = "\n".join(sorted(walk(config)))
+    return hashlib.sha1(blob.encode()).hexdigest()[:8]
+
+
 def _weighted_mean_metrics(
     metrics_list: list[dict], weights: list[float]
 ) -> dict[str, float]:
@@ -171,6 +267,8 @@ class DynamicServer(Server):
         # (pair_key, snapshot) appearances backing the age kernel; rebuilt on resume
         self._cum_events_key = None
         self._cum_events_t = None
+        self._basis_coverage = None  # served-basis coverage counts for the current t
+        self._basis_zero_rows = None  # zero-row mask of the basis SERVED at the current t
 
     def add_client(self, snaps):
         client = DynamicClient(snaps, id=self.num_clients)
@@ -341,6 +439,7 @@ class DynamicServer(Server):
         ckpt_every = config["train"]["ckpt_period"] if config["train"]["auto_resume"] else 0
 
         mrr_history: list[float] = []
+        t_history: list[int] = []  # TRUE snapshot index per entry; see the append site
         metrics_history: list[dict] = []
         w_init = None  # running meta W_init (moving-avg across snapshots; FL path)
         t_start = 0
@@ -353,7 +452,14 @@ class DynamicServer(Server):
                 return done
             resumed = self._load_partial_ckpt()
             if resumed is not None:
-                t_start, w_init, mrr_history, metrics_history = resumed
+                t_start, w_init, mrr_history, metrics_history, t_history = resumed
+                # Checkpoints predating t_history carry no axis for the pre-crash
+                # segment. -1 marks it as unknown; the writer refuses such a record
+                # rather than emitting rows that all share one index -- the reader
+                # keys on (arm, seed, t), so identical indices collapse to a single
+                # row and silently move every aggregate.
+                if t_history is None:
+                    t_history = [-1] * len(mrr_history)
                 if log:
                     LOGGER.info(f"{self._run_id()}: resuming from t={t_start}")
         for t in range(t_start, n_tasks):
@@ -375,6 +481,14 @@ class DynamicServer(Server):
             else:
                 mrr, metrics = self._eval_mrr_local(t, loss_fn, mrr_k, mrr_method)
             if mrr is not None and not math.isnan(mrr):
+                # TRUE snapshot index. mrr_history is appended ONLY when the eval
+                # returns a finite MRR (an edgeless snapshot yields no test positives
+                # and _eval_mrr returns None), so position in the list is NOT t. Any
+                # consumer that relabels survivors 0..n-1 silently compresses the axis:
+                # the early/late split lands on the wrong snapshots, and a cross-seed
+                # or cross-arm join pairs DIFFERENT snapshots the moment two runs skip
+                # different ones.
+                t_history.append(t)
                 mrr_history.append(mrr)
                 if metrics is not None:
                     metrics_history.append(metrics)
@@ -396,10 +510,20 @@ class DynamicServer(Server):
                             f" n_repeat={m.get('n_repeat', -1)} n_new={m.get('n_new', -1)}"
                             f" src_repeat={m.get('src_repeat', -1)} src_new={m.get('src_new', -1)}"
                         )
+                    # Basis coverage, per snapshot. The pair fraction is the one that
+                    # attributes a subset effect: pairs touching an all-zero row get a
+                    # constant edge-score term and fall back to backbone-only ranking.
+                    cov = ""
+                    if "basis_covered" in m:
+                        cov = (
+                            f" cov={m['basis_covered']}/{m['basis_total']}"
+                            f" zeroed={m['basis_zeroed']}"
+                            f" zpair={m.get('basis_zeroed_pair_frac', float('nan')):.4f}"
+                        )
                     LOGGER.info(
                         f"t={t} mrr={mrr:.4f} auc={m.get('roc_auc', float('nan')):.4f} "
                         f"ap={m.get('ap', float('nan')):.4f} f1={m.get('f1', float('nan')):.4f} "
-                        f"mcc={m.get('mcc', float('nan')):.4f}{split}"
+                        f"mcc={m.get('mcc', float('nan')):.4f}{split}{cov}"
                     )
 
             # 1b. Optional SFV reset -- AFTER the reported eval, BEFORE training on
@@ -472,7 +596,7 @@ class DynamicServer(Server):
                 cl.refresh(t)
 
             if ckpt_every > 0 and (t + 1) % ckpt_every == 0 and t + 1 < n_tasks:
-                self._save_partial_ckpt(t, w_init, mrr_history, metrics_history)
+                self._save_partial_ckpt(t, w_init, mrr_history, metrics_history, t_history)
 
         mean = statistics.fmean(mrr_history) if mrr_history else None
         std = statistics.pstdev(mrr_history) if len(mrr_history) > 1 else 0.0
@@ -488,6 +612,7 @@ class DynamicServer(Server):
             "mean_mrr": mean,
             "std_mrr": std,
             "mrr_history": mrr_history,
+            "t_history": t_history,
             "mean_metrics": mean_metrics,
             "metrics_history": metrics_history,
         }
@@ -605,6 +730,16 @@ class DynamicServer(Server):
         # byte-identical and banked checkpoints still load.
         if _repeat_new_split():
             parts.append("split")
+        # Coverage control and the window floor change the served basis and so the
+        # numbers; arms differing only in these must not share a checkpoint or a
+        # deterministic wandb id. Non-default only, so existing identities stay
+        # byte-identical and banked checkpoints still resolve.
+        if spectral_dt and "coverage_drop" in sp and sp["coverage_drop"]:
+            parts.append(f"cov{sp['coverage_drop']:g}")
+        if spectral_dt and "window_floor" in sp and sp["window_floor"]:
+            parts.append(f"wfl{sp['window_floor']:g}")
+        # Completeness backstop: covers every knob no explicit token above does.
+        parts.append(f"cfg-{_config_fingerprint()}")
         parts.append(f"s{config['seed']}")
         return "_".join(parts)
 
@@ -620,7 +755,7 @@ class DynamicServer(Server):
         base = os.path.join(d, self._run_id())
         return base + ".ckpt", base + ".done"
 
-    def _save_partial_ckpt(self, t, w_init, mrr_history, metrics_history):
+    def _save_partial_ckpt(self, t, w_init, mrr_history, metrics_history, t_history=None):
         ckpt_path, _ = self._ckpt_paths()
         ckpt = {
             "run_id": self._run_id(),
@@ -636,6 +771,11 @@ class DynamicServer(Server):
             "cum_edges": self._cum_edges,
             "mrr_history": mrr_history,
             "metrics_history": metrics_history,
+            # The TRUE snapshot index per entry. Without it a resumed run cannot
+            # know which snapshots the pre-crash segment skipped, and the record
+            # for that segment has no usable axis at all. Absent on checkpoints
+            # written before this key existed -- those resume with t unknown.
+            "t_history": t_history,
             # Without these a resumed run continues on a freshly seeded stream, so
             # it never matches an uninterrupted one -- and experimental.deterministic
             # cannot fix that, since it pins kernels rather than stream position.
@@ -687,7 +827,11 @@ class DynamicServer(Server):
         # A pure function of global_snaps, so rebuild rather than trusting a
         # possibly older checkpoint format to carry it.
         self._rebuild_cum_events(int(ckpt["t"]) if "t" in ckpt else -1)
-        return ckpt["t"] + 1, ckpt["w_init"], ckpt["mrr_history"], ckpt["metrics_history"]
+        # None on a checkpoint predating the key: the axis is genuinely unknown
+        # there, and the caller marks it rather than inventing one.
+        th = ckpt.get("t_history")
+        return (ckpt["t"] + 1, ckpt["w_init"], ckpt["mrr_history"],
+                ckpt["metrics_history"], th)
 
     def _save_done_ckpt(self, results):
         ckpt_path, done_path = self._ckpt_paths()
@@ -743,6 +887,47 @@ class DynamicServer(Server):
         # Q is the tracking basis for `update`; substitute it too so the control
         # stays coherent there (otherwise update would evolve the REAL subspace).
         return sub, (sub if Q is not None else None)
+
+    def _apply_coverage_drop(self, U, Q, ss_idx):
+        """spectral.coverage_drop control: zero the served basis rows of a random
+        subset of the SOLVER-COVERED nodes, without touching the graph, the age
+        kernel, the split, `persist` or `cn`.
+
+        Why it exists. A hard `window` kernel drops nodes whose every edge has aged
+        out; they leave the active set, `calc_eigs_*` zero-pads their rows, and a
+        pair touching a zero row gets all-zero spectral features -- so the edge-score
+        head returns the same constant for every such pair and cannot reorder them.
+        Those pairs are ranked by the backbone alone, and the backbone alone scores
+        BETTER on new pairs than any spectral arm. A window can therefore raise
+        new-pair MRR purely by switching the spectral term off. This control
+        reproduces that coverage loss with NO recency change, so the two
+        explanations separate.
+
+        Drawn from the covered rows only: sampling over all rows would spend part of
+        the budget re-zeroing rows the active-set restriction already zeroed, and the
+        arm would not match the window it is meant to match. Returns the served basis
+        plus (covered, zeroed) counts for the coverage instrumentation.
+        """
+        n = U.shape[0]
+        covered_mask = U.abs().sum(dim=1) > 0
+        covered = int(covered_mask.sum())
+        p = config["spectral"]["coverage_drop"] if "coverage_drop" in config["spectral"] else 0.0
+        if not p or covered == 0:
+            return U, Q, covered, n - covered
+        k = int(round(float(p) * covered))
+        if k <= 0:
+            return U, Q, covered, n - covered
+        # seeded by (seed, snapshot): a window's dropped set also changes as edges
+        # age out, so the control matches the treatment's temporal character.
+        g = torch.Generator().manual_seed(config["seed"] * 7919 + ss_idx)
+        cov_idx = torch.nonzero(covered_mask, as_tuple=False).flatten()
+        pick = cov_idx[torch.randperm(covered, generator=g)[:k]]
+        U = U.clone()
+        U[pick] = 0
+        if Q is not None:
+            Q = Q.clone()
+            Q[pick] = 0
+        return U, Q, covered, n - covered + k
 
     def get_previous_UD(
         self, spectral_update_mode: str, ss_idx: int
@@ -826,13 +1011,34 @@ class DynamicServer(Server):
             ):
                 U = graph.procrustes_project(U, first_spectral.U)
 
+            # Coverage control + coverage measurement, applied to the FINAL served
+            # basis so every branch above (exact, chebyshev, update_eigpairs) is
+            # covered, not just the two that route through _substitute_basis.
+            U_solved, Q_solved = U, Q
+            U, Q, _cov, _zero = self._apply_coverage_drop(U, Q, ss_idx)
+            self._basis_coverage = {
+                "basis_covered": _cov,
+                "basis_zeroed": _zero,
+                "basis_total": int(U.shape[0]),
+            }
+            # Zero-row mask of the SERVED basis, for the pair-level attribution in
+            # _eval_mrr. Held separately from the caches below, which must keep the
+            # SOLVED basis (see there).
+            self._basis_zero_rows = (U.abs().sum(dim=1) == 0).detach().cpu()
+
             share["D"] = D
             share["U"] = U
             num_spectral_features = D.shape[0]
 
             # Cache only the ROLAND-minimal set, on CPU: first (keep basis +
             # procrustes anchor) and previous (update tracking). No GPU growth.
-            sf = _to_cpu_sf(U, D, Q)
+            # The SOLVED basis, NOT the coverage-dropped one. coverage_drop is a
+            # serve-time mask and nothing else: cached, it would warm-start the
+            # next chebyshev solve (X0) or the next Rayleigh-Ritz (prev_Q) and
+            # anchor Procrustes, so it would change the SPECTRUM -- the exact
+            # confound the control exists to remove -- and it would compound under
+            # `keep`, decaying coverage like (1-p)^t instead of holding at p.
+            sf = _to_cpu_sf(U_solved, D, Q_solved)
             if ss_idx == 0:
                 self._first_spectral = sf
             self._prev_spectral = sf
@@ -877,7 +1083,14 @@ class DynamicServer(Server):
         elif kind == "exp":
             f = torch.pow(torch.tensor(float(param), dtype=torch.float64), age)
         elif kind == "window":
-            f = (age < float(param)).to(torch.float64)
+            # spectral.window_floor is the weight of an out-of-horizon edge. At the
+            # default 0.0 this is the original hard window, bit-identical. Positive
+            # keeps every ever-seen edge present, so no node loses its last edge and
+            # leaves the active set -- which is what separates a RECENCY change from
+            # the COVERAGE change a hard window also makes.
+            floor = sp_cfg["window_floor"] if "window_floor" in sp_cfg else 0.0
+            inside = (age < float(param)).to(torch.float64)
+            f = inside if not floor else inside + (1.0 - inside) * float(floor)
         else:
             raise ValueError(f"unknown spectral.cum_decay={kind!r}")
 
@@ -1069,6 +1282,25 @@ class DynamicServer(Server):
             metrics["n_new"] = int((~rb).sum())
             metrics["src_repeat"] = int(torch.unique(src[rb]).numel()) if rb.any() else 0
             metrics["src_new"] = int(torch.unique(src[~rb]).numel()) if (~rb).any() else 0
+        # Basis coverage of the SERVED basis. The pair-level fraction is the one that
+        # matters for attribution: a pair touching an all-zero row gets a constant
+        # edge-score contribution and is ordered by the backbone alone, so a change in
+        # a subset metric cannot be split between "ranked differently" and "the term
+        # stopped applying" without it. Absent for the backbone, so runs predating
+        # these fields are unaffected.
+        if self._basis_coverage is not None:
+            metrics.update(self._basis_coverage)
+            eli = eval_snap.edge_label_index
+            # the mask of the basis SERVED at this snapshot (set_QD ran for t in
+            # _spectral_step, just above this eval). NOT _prev_spectral, which
+            # holds the pre-drop solved basis for the tracker.
+            zero_row = self._basis_zero_rows
+            if zero_row is not None and eli.numel():
+                zero_row = zero_row.to(eli.device)
+                touched = zero_row[eli[0]] | zero_row[eli[1]]
+                metrics["basis_zeroed_pair_frac"] = float(touched.float().mean())
+            else:
+                metrics["basis_zeroed_pair_frac"] = float("nan")
         return mrr, metrics
 
     def _eval_mrr_local(self, t, loss_fn, mrr_k, mrr_method):

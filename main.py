@@ -1,4 +1,5 @@
 import os
+import json
 import random
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from registries import datasets
 import src.datasets  # noqa: F401  triggers uci/bitcoin loader registration
 from src.utils.graph_partitioning import partition_snapshots
 from src.dynamic_server import DynamicServer
+from src.utils.utils import save_path
 
 
 def _seed(s: int) -> None:
@@ -161,6 +163,108 @@ def _wandb_snapshot_logger(wb):
     return _cb
 
 
+def _warn(msg: str) -> None:
+    """Warn without assuming the logger's full surface, and without raising.
+
+    The record writer must never kill a completed seed, and its own error handler
+    must not be able to raise either -- a handler that calls a method the logger
+    lacks re-raises out of the except clause and defeats the guard entirely. The
+    default of a getattr is evaluated EAGERLY, so `getattr(LOGGER, "warning",
+    LOGGER.info)` still dies on a logger carrying neither; look both up lazily and
+    swallow whatever the logger itself does.
+    """
+    try:
+        log = getattr(LOGGER, "warning", None) or getattr(LOGGER, "info", None)
+        if log is not None:
+            log(msg)
+    except Exception:
+        pass
+
+
+def _write_snapshot_record(server, results, already_done=False) -> None:
+    """Append this seed's per-snapshot metrics to the run's JSONL record.
+
+    One object per (seed, snapshot), written per seed as it completes so a run that
+    dies on seed 3 still leaves seeds 1-2 on disk.
+
+    `t` is the TRUE snapshot index from the training loop, not the position in
+    mrr_history: the loop appends only when the eval returns a finite MRR, so an
+    edgeless snapshot leaves a hole and relabelling survivors 0..n-1 would compress
+    the axis -- which would put the early/late split on the wrong snapshots and make
+    a cross-seed join pair different snapshots whenever two runs skip different ones.
+
+    Absent metrics stay ABSENT rather than filled: the key set is genuinely ragged
+    (coverage fields only on spectral runs, subset fields only under the split) and a
+    filler value would be indistinguishable from a measured one.
+
+    Never raises into the seed loop: this is reporting, and a failed write must not
+    destroy a completed seed or the seeds after it.
+    """
+    try:
+        # Two sources for the same fact: run_once checks the done-checkpoint before
+        # training, the server sets the flag when it short-circuits on it. Honour
+        # either, so a .done written by a peer between the two checks cannot slip
+        # a duplicate seed into the record.
+        if already_done or (results or {}).get("_resumed_complete"):
+            # The done-checkpoint short-circuit returns the STORED history. Appending
+            # it again duplicates every row for that seed, and load() dedupes
+            # last-write-wins, so a rerun would silently overwrite banked numbers
+            # instead of being caught.
+            LOGGER.info("snapshot record: run already complete, not re-appending")
+            return
+        mrrs = results.get("mrr_history") or []
+        hist = results.get("metrics_history") or []
+        ts = results.get("t_history") or []
+        if not mrrs:
+            _warn("snapshot record: NOT WRITTEN (no snapshots in history)")
+            return
+        if len(ts) != len(mrrs) or any(t < 0 for t in ts):
+            # A run resumed from a checkpoint predating t_history has no axis for
+            # its pre-crash segment. Writing those rows anyway is WORSE than writing
+            # nothing: the reader keys on (arm, seed, t), so every unknown-index row
+            # collapses onto one entry and silently moves the mean, the weighted
+            # aggregate and the early group -- a persisted value disagreeing with
+            # the reported one, which the spec calls a defect. Refuse instead.
+            _warn(
+                f"snapshot record: NOT WRITTEN (snapshot axis unknown: t_history "
+                f"{len(ts)} vs mrr_history {len(mrrs)}). Resumed from a checkpoint "
+                "predating t_history; delete it to re-run with a recoverable axis."
+            )
+            return
+        if len(hist) != len(mrrs):
+            _warn(
+                f"snapshot record: metrics_history {len(hist)} != mrr_history "
+                f"{len(mrrs)}; rows will carry mrr only"
+            )
+        rid_fn = getattr(server, "_run_id", None)
+        if rid_fn is None:
+            # main.py guards this same case for the RESULT line; a test double or a
+            # future server without the method must not kill the run here either.
+            _warn("snapshot record: NOT WRITTEN (server has no _run_id)")
+            return
+        rid = rid_fn()
+        arm = rid.rsplit("_s", 1)[0]
+        m_cfg = config["metric"]
+        d = m_cfg["snapshot_record_dir"] if "snapshot_record_dir" in m_cfg else None
+        # Resolved at RUN time: the import-time save_path is built before the YAML
+        # overlay, so dataset.name is still None there and every run would land in
+        # one shared 'default' directory regardless of dataset, C or smodel.
+        d = d or os.path.join("results", config["dataset"]["name"] or "default", "snapshots")
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, f"{arm}.jsonl")
+        with open(path, "a") as fh:
+            for i, mrr in enumerate(mrrs):
+                row = {"run_id": rid, "arm": arm, "seed": config["seed"],
+                       "t": ts[i], "mrr": mrr}
+                if i < len(hist) and hist[i]:
+                    for k, v in hist[i].items():
+                        row[k] = v
+                fh.write(json.dumps(row) + "\n")
+        LOGGER.info(f"snapshot record: {len(mrrs)} rows -> {path}")
+    except Exception as e:  # reporting must never destroy a completed seed
+        _warn(f"snapshot record: NOT WRITTEN ({type(e).__name__}: {e})")
+
+
 def run_once() -> dict:
     _seed(config["seed"])
     name = config["dataset"]["name"]
@@ -207,6 +311,8 @@ def run_once() -> dict:
         f"snapshots={len(results['mrr_history'])} "
         f"run={getattr(server, '_run_id', lambda: 'unavailable')()}"
     )
+
+    _write_snapshot_record(server, results, already_done=already_done)
 
     if wb is not None:
         wb.summary["mean_mrr"] = results["mean_mrr"]

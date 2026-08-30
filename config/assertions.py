@@ -101,6 +101,24 @@ def assert_cfg(config: Registry) -> None:
                 f"cum_decay='window', got {_cp!r}"
             )
 
+    def _num(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+    if "window_floor" in spectral:
+        _wf = spectral["window_floor"]
+        if not _num(_wf) or _wf < 0:
+            raise ValueError(
+                "spectral.window_floor must be a non-negative number (weight given to "
+                f"out-of-horizon edges in place of 0), got {_wf!r}"
+            )
+    if "coverage_drop" in spectral:
+        _cdrop = spectral["coverage_drop"]
+        if not _num(_cdrop) or not (0.0 <= _cdrop < 1.0):
+            raise ValueError(
+                "spectral.coverage_drop must be a fraction in [0, 1) of the solver-covered "
+                f"nodes whose served basis rows are zeroed, got {_cdrop!r}"
+            )
+
     _proc = spectral["use_procrustes"]
     if not (isinstance(_proc, bool) or _proc == "auto"):
         raise ValueError(
@@ -145,6 +163,33 @@ def assert_cfg(config: Registry) -> None:
     _require_in(model["data_type"], _DATA_TYPES, "model.data_type")
     _require_in(model["fusion"], _FUSIONS, "model.fusion")
     _require_in(federated["sfv_share"], _SFV_SHARES, "federated.sfv_share")
+
+    # Both knobs below are silent no-ops on the wrong path, and a silent no-op reads
+    # exactly like a real negative result while _run_id still stamps the arm. Refuse
+    # instead -- the same trap the cum_decay guard refuses further down.
+    if "coverage_drop" in spectral and spectral["coverage_drop"]:
+        if model["data_type"] not in {"f+s", "structure", "f+pe", "f+es"}:
+            raise ValueError(
+                f"spectral.coverage_drop={spectral['coverage_drop']!r} has NO EFFECT with "
+                f"data_type={model['data_type']!r}: no eigenbasis is served, so the control would "
+                "zero nothing while the run id still records the arm."
+            )
+        _esf = spectral["es_features"] if "es_features" in spectral else "spec"
+        if model["data_type"] == "f+es" and _esf in {"persist", "cn"}:
+            raise ValueError(
+                f"spectral.coverage_drop={spectral['coverage_drop']!r} has NO EFFECT with "
+                f"es_features={_esf!r}: that arm's edge_score returns before it reads the "
+                "basis, so the served rows are zeroed and nothing consumes them -- "
+                "bit-identical to no drop, while the run id still stamps the arm."
+            )
+    if "window_floor" in spectral and spectral["window_floor"]:
+        _cd = spectral["cum_decay"] if "cum_decay" in spectral else "none"
+        if _cd != "window":
+            raise ValueError(
+                f"spectral.window_floor={spectral['window_floor']!r} has NO EFFECT with "
+                f"cum_decay={_cd!r}: the floor replaces the zero the window kernel assigns to "
+                "out-of-horizon edges, and no other kernel assigns one."
+            )
 
     if model["data_type"] in {"structure", "f+s", "f+pe", "f+es"}:
         if spectral["update_mode"] is None:
