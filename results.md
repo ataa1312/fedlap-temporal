@@ -4000,6 +4000,77 @@ snapshot, which is precisely the regime where point 1 above says the unweighted 
 trustworthy. Until those runs exist, §20's as733 and reddit conclusions stand on the snapshot mean
 alone and their pair-weighted counterpart is unknown.
 
+## 23. Injecting the structural embedding into the recurrence — the point matters, the basis does not  **[2026-08-30]**
+
+Until now the temporal model had never been given the structural signal. That is a fact about the
+code, not an inference: in `f+s`, `FedDynamicClassifier.encode` called `super().encode()` — running
+every MP layer and every state update — and only then did `z = z + S`, leaving the returned `new_hs`
+untouched. In `f+es` the term sits on the decoder logit. So in the two modes this program spent most
+of its time on, **the GRU never saw a spectral value**, and `S` was recomputed and discarded every
+snapshot. `f+pe` is the only mode that routed the basis through the recurrence and it put it at the
+INPUT, behind 8 layers of smoothing; it measured null (§10.7).
+
+`spectral.inject_at='last_mp'` adds `S` to the last recurrent layer's message-passing output BEFORE
+the state update, so it reaches the updater's gates and persists in the carried state, and suppresses
+the output fusion so `S` enters exactly once. The arms are **parameter-matched** (528907 both; `S` is
+already sized to `gnn.dims[-1]`, so no projection is added) — a difference cannot be capacity, which
+is the confound §10 had to concede for SignNet.
+
+uci, `f+s`, `gru`, `update_mode=update`, 3 seeds, single-threaded, one host.
+
+### C=1
+
+| arm | mrr | mrr_new | new (wtd) | mrr_repeat | ‖S‖/‖h‖ |
+|---|---|---|---|---|---|
+| feature | **0.1156±0.0093** | **0.0736±0.0008** | 0.0444 | **0.1394±0.0168** | — |
+| output / laplacian | 0.0832±0.0050 | 0.0623 | 0.0525 | 0.0952 | 0.292 |
+| output / shuffled | 0.0850±0.0150 | 0.0637 | 0.0543 | 0.1009 | 0.319 |
+| **last_mp / laplacian** | **0.1008±0.0045** | 0.0583 | 0.0459 | **0.1332±0.0053** | 0.327 |
+| last_mp / shuffled | 0.1033±0.0073 | 0.0619 | 0.0471 | 0.1199 | 0.407 |
+
+### C=9
+
+| arm | mrr | mrr_new | new (wtd) | mrr_repeat | ‖S‖/‖h‖ |
+|---|---|---|---|---|---|
+| feature | **0.0812±0.0073** | **0.0534±0.0047** | 0.0458 | **0.1000±0.0139** | — |
+| output / laplacian | 0.0724±0.0042 | 0.0478 | 0.0446 | 0.0832 | 0.234 |
+| output / shuffled | 0.0618±0.0067 | 0.0446 | 0.0461 | 0.0707 | 0.246 |
+| last_mp / laplacian | 0.0638±0.0052 | 0.0407 | 0.0418 | 0.0715 | 0.305 |
+| last_mp / shuffled | 0.0677±0.0061 | 0.0496 | 0.0404 | 0.0797 | 0.282 |
+
+**1. The falsifier fired.** Real basis minus its shuffled placebo AT THE SAME injection point:
+C1 output −0.0018 (sd 0.0150), C1 last_mp −0.0025 (sd 0.0073), C9 last_mp −0.0038 (sd 0.0061) — all
+inside the arms' own spread, and in all three the REAL basis is nominally BEHIND the placebo. Only
+C9 output clears its spread (+0.0107, 1.6 sd), which at n=3 is not resolved either. Per the
+pre-registration this closes the direction: **giving the recurrence the spectral signal does not make
+the basis content matter.**
+
+**2. The injection POINT is worth something — and the placebo collects it too.** At C1, `last_mp`
+beats `output` by **+0.018 mrr** (0.1008 vs 0.0832, ~2.4 sd, the largest `f+s` improvement measured in
+this program) and recovers nearly all of the backbone's repeat-pair advantage (0.1332 against
+feature's 0.1394, versus `output`'s 0.0952). **But `last_mp` with a SHUFFLED basis does the same**
+(0.1033, 0.1199). So what helps is delivering a well-conditioned per-node signal into the recurrent
+state, not delivering the eigenbasis. That is the same reading as §10's rank-2 collapse: the model
+wants a conditioning signal in its state and is indifferent to its spectral content.
+
+**3. At C=9 the ordering reverses.** `last_mp` (0.0638) falls behind `output` (0.0724), and the one
+cell that beats its placebo is `output`, not `last_mp`. The injection point that helps without
+sharding hurts with it — the opposite of what the federated argument predicts.
+
+**4. The null is interpretable, because the gate holds.** `spectral.output_bn` zero-inits the
+smodel's BatchNorm gamma AND bias, so `S` is EXACTLY 0.0 at initialisation; a `last_mp` null with
+`‖S‖ → 0` would mean the term was never injected rather than that the point does not matter, and the
+two are indistinguishable without measuring it. Measured `‖S‖/‖h_last‖` = 0.23–0.41 in every arm,
+starting at exactly 0.0000 and growing. The term was genuinely injected and genuinely large.
+
+**Limitations.** n=3; the C1 `output/shuffled` arm carries sd 0.0150, larger than several contrasts,
+and only the +0.018 injection-point gain is comfortably resolved. `shuffled_fixed` destroys the
+node↔row map, so it removes membership along with structure — a win over it would not have
+established structure anyway, but here there is no win to interpret. uci only, and `gru` only: under
+`moving_average` the candidate weight `(1 - keep_ratio)` is per-node and exactly 0 for a node with no
+new edges, so `ma` would degree-gate the injection off rather than scale it — a different model, not
+a comparable arm.
+
 ## 11. Provenance & reproduction
 - Code: fedlap repo, branch `roland-dev`. Runs on TUM CUDA hosts `tueilnt-sim{08,09,10,12,13,14}`.
 - Commits behind §8/§9: `3595fc8` SignNet smodel; `f45c3a3` `federated.fl`; `a3e907a`
