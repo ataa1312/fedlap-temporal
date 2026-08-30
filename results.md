@@ -3750,7 +3750,9 @@ out seed noise but not small-subpopulation bias. Any earlier statement that as73
   replications**.
 - Negatives are not paired across arms: `_sample_filtered_negatives` draws from the global RNG,
   whose state diverges between arms, so each arm delta carries full run-to-run non-determinism.
-- Nothing in this matrix is auditable below the seed level. The per-`t` log line prints only
+- Nothing in this matrix WAS auditable below the seed level; §22 adds a per-(seed, snapshot)
+  record, but the cells in this matrix predate it and carry none, so re-reading them requires
+  re-running. Original limitation: The per-`t` log line prints only
   mrr/auc/ap/f1/mcc, and no `.done` checkpoints were written, so there is no pair-weighted
   recomputation, no bootstrap CI, and no way to see whether as733's effect concentrates in a
   handful of snapshots. Given as733's median of 4 new pairs per snapshot, that is the most likely
@@ -3779,6 +3781,224 @@ out seed noise but not small-subpopulation bias. Any earlier statement that as73
   finished cells and truncating `bitcoin_otc_C1_persist` (re-run 2026-08-27). Fixed in `53dea20` by
   wrapping the body in `main()` and ending with `main "$@"; exit $?`, so the file is fully parsed
   before execution; verified against a live-edit reproduction.
+
+## 21. The windowed basis is confounded with coverage collapse  **[2026-08-28]**
+
+`spectral.cum_decay=window` was the only arm in the §20-era decay grid to move the new-pair subset
+upward. This section records why that number could not be interpreted, and builds the instrument
+that interprets it. The experiment itself follows in §21.2.
+
+### 21.1 The premise: new-pair gain tracks COVERAGE LOSS, not recency
+
+uci, `f+es` + chebyshev, 3 seeds, both tracking modes. Δ is against the `none` kernel; the
+active-set column is measured at `t=11`.
+
+| kernel | active set | Δ new-pair (update) | Δ new-pair (recompute) |
+|---|---|---|---|
+| `count` | 1746 → 1746 | −0.0011 | −0.0073 |
+| `harmonic` | 1746 → 1746 | −0.0043 | −0.0120 |
+| `exp`@0.5 | 1746 → 1746 | −0.0081 | −0.0086 |
+| `exp`@0.9 | 1746 → 1746 | −0.0018 | −0.0058 |
+| `window`@4 | 1746 → 585 (−66%) | +0.0008 | −0.0033 |
+| `window`@1 | 1746 → 263 (−85%) | **+0.0075** | **+0.0102** |
+
+**Every kernel that preserves coverage makes new-pair prediction worse — four of them, in both
+tracking modes, without exception.** The only two that help are the two that remove nodes, and the
+help scales with how many they remove. Read as a recency experiment this is incoherent: `exp`@0.5 is
+a far more aggressive recency weighting than `window`@4 and it does worse.
+
+**The mechanism that explains it.** `_active_lsym` restricts to `deg > 0` and the giant component,
+and `calc_eigs_chebyshev` / `calc_eigs_exact_sym` zero-pad the dropped rows (`graph.py:574`, `:650`).
+A pair touching a zero row has `prod = 0`, so `phi`, `cos` and `lev = log1p(0)` are all zero, the
+edge-score head returns its bias for every such pair, and the term is a constant that cannot reorder
+them. **Those pairs are ranked by the backbone alone — and the backbone alone scores BETTER on new
+pairs (0.0693) than any spectral arm (`none` = 0.0508).** So a hard window can raise new-pair MRR by
+switching the spectral term off for most of the graph, with no recency involved. The arithmetic
+fits: `0.85 × 0.0693 + 0.15 × 0.0508 = 0.0665` against `window`@1's measured **0.0653** under
+`recompute`.
+
+### 21.2 The instrument
+
+Two knobs, both inert at their defaults (verified bit-identical against a pristine `git archive` of
+HEAD on the `f+es` and `feature` paths, single-threaded — see §20.6 on why a multi-threaded
+comparison would prove nothing).
+
+- **`spectral.coverage_drop`** — zeroes the served basis rows of a random fraction of the
+  SOLVER-COVERED nodes, seeded by `(seed, snapshot)`. Reproduces a window's coverage loss with NO
+  recency change. Applied to the final served basis, so it covers the `update_eigpairs` branch that
+  bypasses `_substitute_basis`.
+- **`spectral.window_floor`** — out-of-horizon edges take this weight instead of 0, so no node loses
+  its last edge. Recency without the coverage side effect.
+
+Verified at uci `t=11`:
+
+| arm | covered / total | zeroed rows | zeroed-PAIR fraction |
+|---|---|---|---|
+| `none` | 1746 / 1899 | 153 | 0.0615 |
+| `window`@1 | **263** / 1899 | 1636 | 0.7231 |
+| `coverage_drop`@0.5 | 1746 / 1899 | 1026 | **0.7385** |
+| `window`@1 + `window_floor`=0.01 | **1746** / 1899 | 153 | 0.1385 |
+
+The floor restores coverage exactly. And the node/pair distinction is not academic: `window`@1 drops
+**85% of nodes** but reaches only a 0.72 *pair* fraction, while a uniform 50% drop reaches 0.74 — the
+window removes low-degree peripheral nodes, so matching must be done on the pair fraction, not the
+node fraction. That is why the control is swept rather than set to a single guessed value.
+
+**Separation verified.** `repeat_frac` is identical across every arm, and the `persist` and `cn`
+baselines are bit-identical with and without `coverage_drop` (neither reads the basis). Only the
+`spec` arm moves. The split does not travel with the treatment.
+
+### 21.3 The falsifier fired: the windowed-basis gain is the spectral term switching itself off
+
+uci, `f+es` + chebyshev + `update`, C ∈ {1, 9}, 3 seeds, one batch on one host, **single-threaded**
+(`OMP_NUM_THREADS=MKL_NUM_THREADS=1`) so same-seed runs are bit-reproducible and the contrasts are
+not swamped by the ~0.009 thread nondeterminism of §20.6. `window_floor` = **0.01** in the floored
+arm. `zpair` = measured fraction of EVALUATED pairs (positives and negatives) touching an all-zero
+row of the basis SERVED at that snapshot. Δ is against `none`.
+
+**Provenance warning.** A first version of this table was produced on a defective implementation and
+is VOID. `_apply_coverage_drop` zeroed the served rows and then cached the ZEROED basis into
+`_prev_spectral`/`_first_spectral`. Under `keep`, and under `update` with the arnoldi tracker (where
+`U = prev_Q @ next_V` propagates zero rows), that compounds and coverage decays as `(1-p)^t`. **The
+arms below are `update` + chebyshev, where compounding was measured NOT to occur** (extra zeroed rows
+3/4/6/6 against `round(0.5 x covered)` = 3/4/6/6): there the damage was solely a corrupted Chebyshev
+warm-start `X0`, which moved retained rows by up to 1.0 in absolute value. Found by the test-auditor;
+the corrected code caches the pre-mask basis, proved bit-identical across 8 solver/mode/procrustes
+combinations. Void logs kept as `cov_INVALID_cached_basis`.
+
+| arm | aggregate | repeat | **new** | Δ new | zpair | solver-cov | **served-cov** |
+|---|---|---|---|---|---|---|---|
+| feature | 0.1156±0.0114 | 0.1394±0.0206 | **0.0736±0.0010** | — | — | — | — |
+| `none` | 0.1574±0.0022 | 0.2395±0.0179 | 0.0506±0.0026 | — | 0.210 | 1603 | 1603 |
+| `window`@1 | 0.1885±0.0022 | 0.2935±0.0192 | 0.0577±0.0054 | +0.0072 | 0.746 | 290 | **290** |
+| `window`@4 | 0.2258±0.0068 | 0.3619±0.0212 | 0.0483±0.0034 | −0.0023 | 0.563 | 643 | 643 |
+| `coverage_drop`@0.25 | 0.1304±0.0055 | 0.1848±0.0049 | 0.0553±0.0064 | +0.0047 | 0.554 | 1603 | **1202** |
+| `coverage_drop`@0.5 | 0.1225±0.0078 | 0.1590±0.0118 | 0.0616±0.0010 | +0.0110 | 0.802 | 1603 | **802** |
+| `coverage_drop`@0.75 | 0.1223±0.0079 | 0.1535±0.0173 | **0.0747±0.0021** | +0.0241 | 0.953 | 1603 | **401** |
+| `window`@1 + floor 0.01 | 0.2320±0.0077 | 0.3792±0.0210 | 0.0487±0.0082 | −0.0018 | 0.214 | 1603 | 1603 |
+
+`solver-cov` is counted BEFORE the mask, so only `served-cov` describes what the model saw. Note
+`coverage_drop`@0.75 serves 401 nodes against `window`@1's 290 yet reaches a HIGHER zeroed-pair
+fraction (0.953 vs 0.746): the uniform control removes hubs a window keeps, because a window strips
+low-degree peripheral nodes. That is design D5's degree-bias concern appearing in the data, and it is
+why the arms are bracketed on zpair rather than matched on node counts.
+
+**1. The control reproduces the window.** The two are not matched exactly (0.802 vs 0.746), so the
+honest form is a bracket: `coverage_drop`@0.25 (zpair 0.554, new 0.0553) and @0.5 (0.802, 0.0616)
+straddle `window`@1 (0.746, 0.0577). Linearly interpolating the control to zpair 0.746 gives
+**0.0602 against the window's 0.0577** — a difference of −0.0025 against an empirical 2sd floor of
+0.0076. At C9, @0.5 gives 0.0409 against the window's 0.0455, difference +0.0045 against a 0.0168
+floor. `coverage_drop` carries **no recency information at all** — it zeroes uniformly at random — so
+reproducing the window's effect with it is the falsifier stated in the proposal.
+
+**2. At C1 the control's dose-response converges on the backbone.** New-pair MRR rises with the
+fraction of pairs whose spectral term has been switched off: 0.0506 (zpair 0.21) → 0.0553 (0.55) →
+0.0616 (0.80) → **0.0747 (0.95)**, against the feature-only backbone's **0.0736**. At
+`coverage_drop`@0.75 the arm has landed on the backbone to within +0.0011, which is what "the
+spectral term is switched off" means operationally. @0.75 (+0.0241) far exceeds `window`@1 (+0.0072)
+precisely because it disables more.
+
+**3. At C9 there is nothing to explain.** `window`@1's new-pair delta is +0.0007 — already null — and
+the control is null-to-negative (−0.0059 / −0.0039 / +0.0019). The C9 ladder is not monotone and must
+not be read as a dose-response; the honest statement is that the window has no C9 effect for a
+control to reproduce.
+
+**4. Recency with coverage preserved does nothing on new pairs — across a 1000x range of recency
+strength.** The floor sets the recency RATIO (an in-horizon edge weighs `1/floor` times a stale one)
+and, because any positive floor keeps every ever-seen edge present, served coverage is restored to
+1603 at every value. So the floor varies recency with coverage held fixed. Sweeping it:
+
+| `window`@1 + floor | C1 new | Δ new | C1 aggregate | C9 new | Δ new | C9 aggregate |
+|---|---|---|---|---|---|---|
+| 0 (hard window) | 0.0577 | +0.0072 | 0.1885 | 0.0455 | +0.0007 | 0.1034 |
+| 0.001 | 0.0541 | +0.0035 | 0.2217 | 0.0439 | −0.0009 | 0.1042 |
+| 0.01 | 0.0487 | −0.0018 | **0.2320** | 0.0485 | +0.0037 | 0.1301 |
+| 0.1 | 0.0505 | −0.0001 | 0.2318 | 0.0485 | +0.0037 | **0.1571** |
+| 0.5 | 0.0532 | +0.0026 | 0.1967 | 0.0451 | +0.0003 | 0.1355 |
+| 1.0 | 0.0529 | +0.0023 | 0.1887 | 0.0434 | −0.0014 | 0.1325 |
+| `count` | 0.0529 | +0.0023 | 0.1887 | 0.0434 | −0.0014 | 0.1325 |
+
+New-pair Δ spans −0.0018..+0.0035 at C1 (range 0.0053, inside the 0.0076 floor) and
+−0.0014..+0.0037 at C9 (range 0.0051, inside the 0.0168 floor). **Flat everywhere.** With coverage
+held, no recency strength between 1000x and 1x moves new-pair prediction.
+
+_Implementation check._ `window_floor = 1.0` weights every edge equally regardless of age, so the
+kernel must be exactly `count`. Measured: aggregate 0.1887 vs 0.1887 and new 0.0529 vs 0.0529 at C1,
+0.1325/0.0434 at C9 — identical to four decimals through two independent config paths. This validates
+the floor end to end.
+
+**5. Recency IS a large effect — on memory, with a real optimum.** Aggregate MRR is strongly
+non-monotone in the floor and peaks in the middle of the range: **0.2320 at floor 0.01 (C1)** and
+**0.1571 at floor 0.1 (C9)**, against `none` at 0.1574 / 0.1021 and the hard window at 0.1885 /
+0.1034. So a coverage-preserving recency weighting is worth **+0.075 (C1) and +0.055 (C9) aggregate**
+over the unweighted cumulative basis, and it beats both endpoints of its own sweep — the hard window
+(coverage collapse) and `count` (no recency). Repeat MRR follows the same shape (peak 0.3792 at C1,
+0.2517 at C9). This is the strongest positive knob found in the program, and it moves the memory
+channel ONLY: the same sweep that lifts aggregate by 0.075 leaves new pairs flat within noise. Same
+dissociation as §16, §20.3 and the `encoder_edge_drop` sweep, now traced across a parameter sweep
+rather than inferred from a single arm.
+
+**Verdict: the windowed-basis lead is closed.** The only arm in the §21.1 decay grid that moved the
+new-pair subset did so by disabling the spectral term for most of the graph, and on uci the backbone
+alone outranks the spectral arm on new pairs. Any future variant that improves new-pair MRR by
+reducing basis coverage must be checked against `coverage_drop` at a bracketing zeroed-pair fraction
+before it is believed.
+
+**What this does NOT say.** It does not show the basis is worthless — §20's structure placebo is null
+in 11 of 13 cells, so basis content matters. It says that ON UCI the spectral term is worse than
+nothing on new pairs, so anything reducing its influence there looks like an improvement. uci is the
+weakest cell for any spectral claim. This was not run on reddit_body or as733, where the new-pair
+deltas are positive; the coverage confound must be re-checked there before any windowed variant is
+proposed for those datasets. The coverage fields are emitted on the global eval path only, so an
+`fl=false` run reports none.
+
+## 22. The snapshot axis: uci's new-pair deficit is aggregation-dependent  **[2026-08-30]**
+
+Every headline number in this file means over SNAPSHOTS first and only then over seeds. That order
+cannot distinguish a uniform effect from one carried by a subset of snapshots, and it cannot test
+whether a deficit is a warm-up artifact of the sparse early cumulative graph. `main.py` now persists
+one JSONL row per `(seed, snapshot)` and `analysis/aggregate_snapshots.py` reads it four ways:
+cross-seed per snapshot, distribution over snapshots, an early/late split, and a pair-weighted
+aggregate for the subset metrics. Both aggregation orders are printed and labelled.
+
+uci, C1, `f+es` + chebyshev + update vs the feature backbone, 3 seeds, single-threaded, split on.
+
+| arm | unweighted snapshot mean | **pair-weighted** | early (n=5) | late (n=22) | early zpair |
+|---|---|---|---|---|---|
+| feature | **0.0736** | 0.0444 | 0.0384 | 0.0816 | — |
+| `f+es` spec | 0.0506 | **0.0489** | 0.0468 | 0.0514 | 0.612 |
+| **Δ spec − feature** | **−0.0230** | **+0.0045** | **+0.0084** | −0.0302 | |
+
+**1. The sign of uci's new-pair result depends on the aggregation.** Under the unweighted snapshot
+mean — the order every banked number uses — the spectral arm is 0.0230 WORSE on new pairs. Weight
+each snapshot by its new-positive count instead and it is 0.0045 BETTER. The mechanism is a 200x
+spread in sample size: `n_new` runs 493-860 in the first snapshots and 4-29 in the last. The
+unweighted mean gives a snapshot backed by 4 new pairs the same say as one backed by 860, and the
+backbone's advantage lives in exactly those tiny late snapshots.
+
+Neither aggregation is "the truth": the unweighted mean answers "how does the model do on a typical
+SNAPSHOT", the weighted one "how does it do on a typical PAIR". Both are reported from here on. What
+is not defensible is quoting one and calling it the new-pair result, which is what §16, §20 and §21
+do — on uci their conclusion holds only under the snapshot mean.
+
+**2. The deficit is entirely a LATE-snapshot phenomenon, which is the opposite of the warm-up
+hypothesis.** Split at the first 5 of 27 snapshots, the spectral arm is AHEAD early
+(0.0468 vs 0.0384, +0.0084) and behind late (0.0514 vs 0.0816, −0.0302). The backbone improves
++0.0432 from early to late while the spectral arm improves +0.0046. So the spectral term is
+relatively strongest exactly where the cumulative graph is sparsest and basis coverage is worst
+(early `zpair` 0.612 against 0.119 late) — it is not warming up, the backbone is pulling away.
+
+**3. Basis coverage is now measured rather than inferred.** 61% of evaluated pairs touch an all-zero
+basis row in the first 5 snapshots against 12% later. The early cumulative graph genuinely fails to
+cover most of what is being ranked. That coverage deficit is real and was previously invisible; it
+simply does not produce the deficit it was hypothesised to produce.
+
+**Scope.** uci only, 27 snapshots. The banked as733 (733 snapshots) and reddit_body (176) cells
+predate the record and carry none, so they cannot be re-read without re-running. That is where this
+matters most: §20.5 records as733's new-pair number resting on a median of ~4 new positives per
+snapshot, which is precisely the regime where point 1 above says the unweighted mean is least
+trustworthy. Until those runs exist, §20's as733 and reddit conclusions stand on the snapshot mean
+alone and their pair-weighted counterpart is unknown.
 
 ## 11. Provenance & reproduction
 - Code: fedlap repo, branch `roland-dev`. Runs on TUM CUDA hosts `tueilnt-sim{08,09,10,12,13,14}`.
