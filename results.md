@@ -4071,6 +4071,166 @@ established structure anyway, but here there is no win to interpret. uci only, a
 new edges, so `ma` would degree-gate the injection off rather than scale it — a different model, not
 a comparable arm.
 
+## 24. Solver choice on the f+s path is null in MRR  **[2026-08-30]**
+
+uci, `f+s`, gru, `spectral_len=300`, `sm=LanczosLaplace`, `sfv-local`, `basis-laplacian`, proc-on,
+`repeat_new_split=true`, 27 snapshots, 3 seeds (1234/1334/1434), single-threaded. mean_mrr (new-pair
+in brackets).
+
+| solver | C1 update | C9 update | C9 recompute |
+|---|---|---|---|
+| feature backbone | **0.1156±0.0093** (0.0736) | **0.0812±0.0073** (0.0534) | — |
+| arnoldi | 0.0832±0.0050 (0.0623) | **0.0724±0.0042** (0.0478) | 0.0696±0.0078 (0.0501) |
+| chebyshev | 0.0844±0.0053 (0.0584) | 0.0670±0.0060 (0.0536) | 0.0632±0.0097 (0.0485) |
+| exact | **0.0917±0.0066** (0.0596) | 0.0673±0.0085 (0.0421) | **0.0732±0.0059** (0.0496) |
+
+**1. Measured and null.** The within-cell spread across solvers is about one pooled across-seed sd
+(0.0085 at C1 update, 0.0054 at C9 update, 0.0100 at C9 recompute), and the nominal ordering FLIPS
+between cells: exact leads at C1 under `update`, arnoldi leads at C9 under `update`, exact leads
+again at C9 under `recompute`. No solver is best twice under the same mode. Do not read an ordering
+off this table.
+
+**2. The one mechanism worth stating, as nominal only.** Exact is nominally best wherever the basis
+is actually re-solved (C1 update, where t=0 dominates; C9 recompute) and nominally worst at C9 under
+`update`, where every snapshot after t=0 goes through the Krylov tracker rather than the exact
+solver. That is the expected direction — a tracker degrades an exact basis more than an approximate
+one, because there is more to lose — but it does NOT clear the floor and must not be reported as a
+result.
+
+**3. Every spectral arm is below the same-batch backbone**, at both client counts and in both modes.
+On new pairs every C1 arm (0.0584-0.0623) sits below the backbone's 0.0736±0.0008; the C9 arms are
+within noise of 0.0534.
+
+**Caveats.** The arnoldi arms ran at the current default `L_type=sym`, so they are NOT the historical
+`L_rw` arms and must not be read as reproducing the §3-§8 nulls. "exact" under `update_mode=update`
+is exact only at t=0. C1 `recompute` was never run. n=3, uci only.
+
+## 25. Accumulation kernels on the f+s path: nothing wins, and the coverage mechanism replicates  **[2026-08-30]**
+
+uci, `f+s`, chebyshev, 9 kernels x C in {1,9} x {update, recompute} = 36 cells, 3 seeds each,
+single-threaded. Kernels: `none`, `count`, `harmonic`, `exp`@0.5, `exp`@0.9, `window`@1, `window`@4,
+`window`@1+floor 0.01, `window`@1+floor 0.1.
+
+**1. No kernel is best in more than one of the four sweeps.** C1 update favours `harmonic` (+0.0092),
+C9 update `count` (+0.0085), C9 recompute-chebyshev `count` (+0.0092), C9 recompute-exact `exp`@0.9
+(+0.0041). Every kernel-vs-kernel delta is inside 2sd at n=3 (thresholds 0.0106 / 0.0120 / 0.0193 /
+0.0118). The four best chebyshev kernels all flip sign when the same sweep is run under `exact`.
+This is the signature of ranking noise; the kernel ordering is not resolved and more cells will not
+resolve it — more seeds would.
+
+**2. The §21.3 coverage mechanism replicates to three digits on an independent path.** `window`@1
+gives a zeroed-pair fraction of 0.745-0.747 in every one of the four sweeps, against §21.3's 0.746 on
+the `f+es` path; `window`@4 gives 0.562-0.568; the floors restore 0.208-0.213; every other kernel
+sits at 0.210-0.217. Identical across client counts, update modes and solvers. Coverage collapse
+under a hard window is a property of the graph and the active-subgraph restriction, not of any
+solver, mode or sharding level.
+
+**3. The pair-weighted new-pair aggregate is flat across all 36 cells** (ranges 0.0475-0.0518,
+0.0417-0.0477, 0.0416-0.0460, 0.0466-0.0499). Combined with the `f+es` grid of §21.3, that is two
+modes x two client counts x two solvers x nine kernels, all null. Re-weighting how history enters the
+basis does not move prediction on pairs that have never interacted. This also answers the §22
+objection for this axis: the immobility is not an artefact of the unweighted snapshot mean, because
+the pair-weighted aggregate is equally immobile.
+
+**4. `window` is the only consistently harmful kernel**, negative on both mrr and mrr_new in all four
+sweeps and worst under exact+recompute (`window`@4, −0.0184). Consistent with §21: windowing costs
+coverage and buys nothing.
+
+**Scope.** uci only, `f+s` only. This licenses no claim about the `f+es` headline path.
+
+## 26. The membership test: what the spectral affinity actually ranks  **[2026-08-30]**
+
+Every other result in this file infers "memory conduit" from subset deltas of a TRAINED model. This
+is the model-free test of the same claim. `analysis/probes/cos_smoothing_or_membership.py`, no
+training and no seeds: `cos` is computed exactly as `fed_dynamic_classifier.edge_score` does it, at
+the model's real `k = pe_dim = 50`, on the exact sym-Laplacian basis of the cumulative union (a valid
+stand-in for chebyshev: subspace overlap 1.000, §10.12/§15, and `cos` depends on the subspace only).
+Run `uci --marks 12`, `bitcoin_otc --marks 0`, `as733 --marks 40`.
+
+The design: hold MEMBERSHIP of the cumulative union fixed and ask whether the score still ranks. A
+smoothing/proximity score keeps skill inside the already-an-edge group, as CN and Adamic-Adar do. A
+memory of the union collapses to chance there, because membership is constant by construction.
+
+**Share of repeat-pair skill surviving membership matching**, `(AUC_mMEM − 0.5) / (AUC_rep − 0.5)`:
+
+| score | uci | bitcoin_otc | as733 |
+|---|---|---|---|
+| **cos** (the model's affinity) | **−1.0%** | **0.0%** | **−7.7%** |
+| CNcum | +14.3% | +12.1% | −31.5% |
+| AAcum | +14.8% | +12.4% | −34.3% |
+| PA (popularity null) | +8.3% | +14.2% | +13.8% |
+| RECENT (memory with gradation) | +74.7% | +70.2% | +96.0% |
+
+**1. `cos` is a membership indicator on uci and bitcoin_otc.** Its repeat-pair AUC is high (0.908,
+0.945) and collapses to chance the moment membership is held fixed (0.496, 0.500) — a survival of
+−1.0% and 0.0%, statistically indistinguishable from the 1-bit `mem` feature, which is 0% by
+construction. CN and Adamic-Adar, which are genuinely structural, retain 12-15% on the same data.
+`RECENT` retains 70-75%, confirming the matched group is not degenerate: a graded memory ranks well
+inside it, so `cos`'s failure there is a fact about `cos`.
+
+**2. `cos` is also beaten by a popularity null on those two datasets.** Aggregate AUC: uci 0.644 vs
+PA 0.723; bitcoin_otc 0.642 vs 0.713. The probe's own stated bar is that residual skill below PA is
+not evidence of smoothing.
+
+**3. as733 is different and the report must say so.** On genuinely NEW pairs, `cos` scores 0.753
+against CNcum 0.717 and PA 0.656 — it LEADS both baselines, the only dataset of the three where it
+does. On uci (0.540 vs 0.577 vs 0.630) and bitcoin_otc (0.617 vs 0.643 vs 0.691) it is beaten by
+both. This is consistent with §10.11's structural-determination gradient and with §20.2, where as733
+is where the in-model new-pair delta is largest. Two qualifications travel with it: as733's new
+population is 236 of 63,142 pooled positives (0.37%), the same rare tail §20.5 records; and its
+matched-membership column is uninformative there because CN and AA also fall below chance (−31.5%,
+−34.3%), so at 99.7% recurrence the matched test has no usable contrast.
+
+**What this licenses.** On the two datasets where a matched-membership test is meaningful, the
+spectral affinity is a memory of the cumulative union and not a proximity measure — that is the
+mechanism behind the repeat/new dissociation of §16, §20 and §21, measured directly rather than
+inferred. It does NOT license the claim on as733, where the same probe shows genuine new-pair skill
+above both baselines on a small tail.
+
+## 27. Encoder edge starvation: the term buffers global ranking without converting it into new-pair skill  **[2026-08-20, banked 2026-08-30]**
+
+§20.4 and §21.3 already cite this sweep in prose; this section is the data behind those citations.
+
+`gnn.encoder_edge_drop` hides a fixed fraction `p` of each snapshot's edges from the ENCODER's
+message passing and from nothing else — evaluation targets, negatives, the train/val/test split,
+`keep_ratio`, client abstention and the cumulative union the basis is built on all keep the full edge
+set. The kept subset is fixed per (owner, snapshot) for the whole run, so this STARVES message
+passing rather than acting as a stochastic DropEdge regulariser. uci, C=1, `f+es` vs the feature
+backbone, 6 seeds (1234-1734), paired per seed.
+
+| p | Δ AUC (f+es − feature) | Δ new-pair MRR | feature AUC |
+|---|---|---|---|
+| 0.00 | +0.0143±0.0104 | −0.0163±0.0074 | 0.8946 |
+| 0.50 | +0.0121±0.0084 | −0.0161±0.0078 | 0.8907 |
+| 0.75 | +0.0160±0.0105 | −0.0144±0.0042 | 0.8806 |
+| 0.90 | +0.0253±0.0118 | −0.0151±0.0055 | 0.8483 |
+| 0.95 | +0.0344±0.0184 | −0.0098±0.0088 | 0.8249 |
+| 0.99 | **+0.1180±0.0374** | −0.0160±0.0058 | **0.6816** |
+
+**1. The manipulation bites.** The backbone falls from AUC 0.8946 to 0.6816 as message passing is
+starved to a 0.9986 edge deficit — worse than the 0.985 severed fraction C=9 sharding produces.
+
+**2. In AUC, the spectral term substitutes for lost message passing.** Its contribution grows
+monotonically from +0.014 to +0.118, an 8x increase, at C=1 with no federation, no partition and
+nothing severed by sharding. This is the clearest evidence in the record that the term can stand in
+for message passing the encoder cannot do.
+
+**3. That substitution never reaches new pairs.** The new-pair delta is flat and negative across the
+entire sweep (−0.0098 to −0.0163); the endpoint contrast is +0.0003 with t = +0.07. Starving the
+encoder by three orders of magnitude changes the new-pair contribution not at all.
+
+**4. Read together, 2 and 3 are the sharpest dissociation in this record.** The term demonstrably
+compensates for absent message passing in discriminative terms, and the compensation stops exactly
+at the boundary of pairs the model has already seen. A substitution account of the spectral term is
+therefore true in AUC and false on new pairs, and any claim about "compensating for sharding" must
+say which of the two it means.
+
+**Caveats.** Run 2026-08-20, BEFORE the single-thread discipline of §20.6, so reduction-order
+nondeterminism applies; n=6 and the AUC trend is monotone and far larger than that noise, but the
+new-pair flatness rests on deltas comparable to it. The p=0.95 cell is the only wobble (−0.0098
+against ~−0.0155 elsewhere) and it alone produces a misleading positive correlation of the new-pair
+delta with p; the trustworthy statistic is the paired endpoint contrast. uci only, C=1 only, `f+es`.
+
 ## 11. Provenance & reproduction
 - Code: fedlap repo, branch `roland-dev`. Runs on TUM CUDA hosts `tueilnt-sim{08,09,10,12,13,14}`.
 - Commits behind §8/§9: `3595fc8` SignNet smodel; `f45c3a3` `federated.fl`; `a3e907a`
