@@ -738,6 +738,9 @@ class DynamicServer(Server):
             parts.append(f"cov{sp['coverage_drop']:g}")
         if spectral_dt and "window_floor" in sp and sp["window_floor"]:
             parts.append(f"wfl{sp['window_floor']:g}")
+        # Injection point changes where S enters the model and so the numbers.
+        if spectral_dt and "inject_at" in sp and sp["inject_at"] != "output":
+            parts.append(f"inj-{sp['inject_at']}")
         # Completeness backstop: covers every knob no explicit token above does.
         parts.append(f"cfg-{_config_fingerprint()}")
         parts.append(f"s{config['seed']}")
@@ -1288,6 +1291,17 @@ class DynamicServer(Server):
         # a subset metric cannot be split between "ranked differently" and "the term
         # stopped applying" without it. Absent for the backbone, so runs predating
         # these fields are unaffected.
+        # ||S|| / ||h_last||: the gate on reading any injection result (see
+        # FedDynamicClassifier._record_inject_scale). Absent when no smodel is served.
+        # Recorded on the CLIENT classifiers: the global eval stitches per-client
+        # embeddings, so the server's own encode is not what produced them.
+        _isc = [v for v in (getattr(c.classifier, "inject_scale", None) for c in self.clients)
+                if isinstance(v, float) and v == v]
+        if not _isc:
+            _s = getattr(self.classifier, "inject_scale", None)
+            if isinstance(_s, float) and _s == _s: _isc = [_s]
+        if _isc:
+            metrics["inject_scale"] = sum(_isc) / len(_isc)
         if self._basis_coverage is not None:
             metrics.update(self._basis_coverage)
             eli = eval_snap.edge_label_index

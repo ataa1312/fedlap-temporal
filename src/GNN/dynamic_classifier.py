@@ -111,7 +111,7 @@ class DynamicClassifier(Classifier):
     def node_input(self, g):
         return g.x
 
-    def encode(self, data=_UNSET, hs=_UNSET):
+    def encode(self, data=_UNSET, hs=_UNSET, inject=None):
         g = self.graph if data is _UNSET else data
         h = self.hs if hs is _UNSET else hs
         active = getattr(g, "node_degree_new", None)
@@ -126,6 +126,7 @@ class DynamicClassifier(Classifier):
             edge_attr=mp_edge_attr,
             keep_ratio=getattr(g, "keep_ratio", None),
             active_mask=active,
+            inject=inject,
         )
         if self.l2norm:
             z = F.normalize(z, p=2, dim=-1)

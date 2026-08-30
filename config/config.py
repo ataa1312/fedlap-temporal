@@ -390,6 +390,16 @@ def _spectral() -> Registry:
     # never about recency. Applied at the same point as basis_source substitution,
     # so a coverage arm and a null-basis arm get identical treatment.
     s["coverage_drop"] = 0.0
+    # WHERE the structural embedding S enters the model.
+    #   output   S is fused with the encoder's final z, AFTER every MP layer and every
+    #            recurrent state update. new_hs never sees S, so the GRU has never been
+    #            given a spectral value in this mode. DEFAULT, today's behaviour.
+    #   last_mp  S is added to the LAST recurrent layer's message-passing output BEFORE
+    #            the state update, so it reaches the updater's gates and persists in the
+    #            carried hidden state. The output fusion is suppressed so S enters once.
+    # last_mp is additive only: concat widens the head, which is meaningful at the output
+    # but would change the encoder's internal width at a layer boundary.
+    s["inject_at"] = "output"
     s["output_bn"] = True                   # BatchNorm on smodel output S (bounds spectral amplification; gamma zero-init)
     # SignNet smodel (model.smodel_type=SignNet): S = rho(sum_i [phi(u_i)+phi(-u_i)]).
     # phi is the shared per-entry map R^1->phi_dims (last = phi_out); rho maps

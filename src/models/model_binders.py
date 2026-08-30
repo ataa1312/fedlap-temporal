@@ -151,7 +151,8 @@ class ModelBinder(nn.Module):
             h = self.step(model, h, edge_index, edge_weight, edge_attr)
         return h
 
-    def encode(self, x, edge_index, hs=None, edge_attr=None, keep_ratio=None, active_mask=None):
+    def encode(self, x, edge_index, hs=None, edge_attr=None, keep_ratio=None,
+               active_mask=None, inject=None):
         """State-aware forward for the ROLAND recurrent encoder stack.
 
         Dispatches on each block's spec ``type``: ``edge_encoder`` transforms
@@ -163,6 +164,16 @@ class ModelBinder(nn.Module):
         """
         new_hs = []
         r = 0
+        # `inject` goes to the LAST recurrent layer only. Per-layer injection would
+        # need a projection per width and so extra parameters, which would confound a
+        # positive result with capacity (the reading §10 already had to give SignNet).
+        n_rec = sum(1 for sp in self.models_specs if sp.type == "recurrent_layer")
+        if inject is not None and n_rec == 0:
+            raise ValueError(
+                "inject was supplied but this stack has no recurrent_layer to "
+                "receive it; dropping it would run an injection arm that injects "
+                "nothing"
+            )
         for spec, model in zip(self.models_specs, self.models):
             if spec.type == "edge_encoder":
                 if edge_attr is not None:
@@ -176,6 +187,7 @@ class ModelBinder(nn.Module):
                     edge_attr=edge_attr,
                     keep_ratio=keep_ratio,
                     active_mask=active_mask,
+                    inject=(inject if r == n_rec - 1 else None),
                 )
                 new_hs.append(x)
                 r += 1

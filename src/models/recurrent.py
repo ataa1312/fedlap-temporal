@@ -77,11 +77,24 @@ class GeneralRecurrentLayer(nn.Module):
         edge_attr: torch.Tensor | None = None,
         keep_ratio: torch.Tensor | None = None,
         active_mask: torch.Tensor | None = None,
+        inject: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if self.edge_aware:
             h_cand = self.block(x, edge_index, edge_attr=edge_attr)
         else:
             h_cand = self.block(x, edge_index)
+        if inject is not None:
+            # Added to the message-passing output BEFORE the state update, so the
+            # signal reaches the updater's gates and enters the hidden state this
+            # layer carries to the next snapshot. Adding it AFTER the updater, or to
+            # the layer's output, would leave the carried state untouched -- which is
+            # exactly what the output-side fusion already does.
+            if inject.shape != h_cand.shape:
+                raise ValueError(
+                    f"inject shape {tuple(inject.shape)} != layer output "
+                    f"{tuple(h_cand.shape)}; refusing to broadcast"
+                )
+            h_cand = h_cand + inject
         # keep_ratio is consumed only by MovingAverageUpdater (per-node,
         # degree-based blend); other updaters swallow it via **_.
         return self.updater(h_prev, h_cand, keep_ratio=keep_ratio, active_mask=active_mask)

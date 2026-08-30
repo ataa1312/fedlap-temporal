@@ -31,6 +31,7 @@ _SOLVERS = {"arnoldi", "exact", "chebyshev"}
 _BASIS_SOURCES = {"laplacian", "random", "shuffled", "random_fixed", "shuffled_fixed"}
 _CUM_DECAYS = {"none", "count", "harmonic", "exp", "window"}
 _SFV_SHARES = {"local", "avg"}
+_INJECT_AT = {"output", "last_mp"}
 
 
 def _require_in(value, allowed: set, path: str) -> None:
@@ -190,6 +191,24 @@ def assert_cfg(config: Registry) -> None:
                 f"cum_decay={_cd!r}: the floor replaces the zero the window kernel assigns to "
                 "out-of-horizon edges, and no other kernel assigns one."
             )
+
+    if "inject_at" in spectral:
+        _require_in(spectral["inject_at"], _INJECT_AT, "spectral.inject_at")
+        if spectral["inject_at"] == "last_mp":
+            # Refuse rather than silently reinterpret: a run must not record a fusion
+            # mode or an injection arm it did not actually use.
+            if model["fusion"] == "concat":
+                raise ValueError(
+                    "spectral.inject_at='last_mp' is additive only and cannot be combined with "
+                    "model.fusion='concat': concat widens the head, which at a layer boundary "
+                    "would change the encoder's internal width. Use fusion='add'."
+                )
+            if model["data_type"] not in {"f+s", "structure"}:
+                raise ValueError(
+                    f"spectral.inject_at='last_mp' has NO EFFECT with data_type="
+                    f"{model['data_type']!r}: that path produces no structural embedding to "
+                    "inject, so the run would record an injection arm while injecting nothing."
+                )
 
     if model["data_type"] in {"structure", "f+s", "f+pe", "f+es"}:
         if spectral["update_mode"] is None:

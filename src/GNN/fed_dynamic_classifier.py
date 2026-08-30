@@ -663,11 +663,47 @@ class FedDynamicClassifier(DynamicClassifier):
     def head_dim_in(self, d):
         return 2 * d if self.fusion == "concat" else d
 
-    def encode(self, data=_UNSET, hs=_UNSET):
-        z, new_hs = super().encode(data, hs)
+    def encode(self, data=_UNSET, hs=_UNSET, inject=None):
+        # inject_at decides WHERE S enters. At 'output' (default) it is fused with the
+        # final z, after every layer and every state update, so new_hs never sees it.
+        # At 'last_mp' it is handed to the encoder and added to the last recurrent
+        # layer's MP output before the state update -- and the output fusion is
+        # SUPPRESSED, so S enters exactly once. Injecting at both points would put the
+        # same signal through two different downstream paths and neither arm would be
+        # interpretable.
+        sp = config["spectral"]
+        where = sp["inject_at"] if "inject_at" in sp else "output"
+        if where == "last_mp":
+            S = self.smodel.get_embeddings()
+            z, new_hs = super().encode(data, hs, inject=S)
+            self._record_inject_scale(S, new_hs)
+            return z, new_hs
+        z, new_hs = super().encode(data, hs, inject=inject)
         S = self.smodel.get_embeddings()
+        self._record_inject_scale(S, new_hs)
         z = torch.cat([z, S], dim=-1) if self.fusion == "concat" else z + S
         return z, new_hs
+
+    def _record_inject_scale(self, S, new_hs):
+        """Relative magnitude of the structural term against the state it joins.
+
+        This is a GATE on interpreting any injection result, not a diagnostic.
+        `spectral.output_bn` zero-inits the smodel's BatchNorm gamma and its bias, so
+        S is EXACTLY zero at initialisation -- deliberately, so training starts at the
+        feature-only baseline. If it never leaves zero, a `last_mp` null means the term
+        was never injected rather than that the injection point does not matter, and
+        the two are indistinguishable without this number. The opposite failure is on
+        record too: W7 measured the spectral branch growing to ~10x the recurrent
+        representation when unconstrained.
+        """
+        try:
+            if S is None or not new_hs:
+                self.inject_scale = float("nan"); return
+            h = new_hs[-1]
+            hn = float(h.norm())
+            self.inject_scale = float(S.norm()) / hn if hn > 0 else float("nan")
+        except Exception:
+            self.inject_scale = float("nan")
 
     # ---- spectral delegation (FedMixin surface) ---- #
 

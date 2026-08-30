@@ -54,6 +54,7 @@ def _wandb_meta():
     sfv_life = [k for k in ("sfv_reset_per_snapshot", "freeze_sfv")
                 if k in smc and smc[k]]
     custom_freq = isinstance(sf, str) and sf.endswith("s") and sf[:-1].isdigit()
+    inject_at = spc["inject_at"] if "inject_at" in spc else "output"
     parts = [ds, temporal, str(dt), f"C{C}"]
     # Every condition axis below must appear in the GROUP: the wandb run id is
     # sha1(group + seed) with resume='allow', so two arms sharing a group also
@@ -76,11 +77,21 @@ def _wandb_meta():
         parts += [f"um-{um}", f"sfv-{sfv}"]
         if um in ("update", "recompute"):  # procrustes only applies to these modes
             parts.append(f"proc-{'on' if proc_eff else 'off'}")
+        # basis_source is the placebo switch on this path too -- f+pe has carried
+        # it since 680688a but f+s did not, so a real arm and its shuffled_fixed
+        # control collapsed into ONE group and therefore ONE wandb id. Appended
+        # only when non-default, so every banked f+s group stays byte-identical.
+        if config["spectral"]["basis_source"] != "laplacian":
+            parts.append(f"basis-{config['spectral']['basis_source']}")
     elif dt == "f+pe":
         # basis_source is the condition axis of the PE experiments — without it
         # the treatment and its placebo would collapse into one group.
         parts += [f"um-{um}", f"pe{config['spectral']['pe_dim']}",
                   f"basis-{config['spectral']['basis_source']}"]
+    # Where the structural embedding enters the model is a condition axis: at
+    # 'last_mp' it reaches the recurrent state, at 'output' it never does.
+    if inject_at != "output":
+        parts.append(f"inj-{inject_at}")
     if custom_freq:  # coarsened window; keep distinct from the default calendar-freq groups
         parts.append(f"freq-{sf}")
     if config["wandb"]["group_suffix"]:
@@ -97,6 +108,7 @@ def _wandb_meta():
         "pe_dim": config["spectral"]["pe_dim"],
         "basis_source": config["spectral"]["basis_source"],
         "encoder_edge_drop": edrop,
+        "inject_at": inject_at,
     }
     tags = [ds, str(dt), f"C{C}", temporal]
     if cum_tok:
@@ -112,8 +124,12 @@ def _wandb_meta():
         tags += [f"um-{um}", f"sfv-{sfv}"]
         if um in ("update", "recompute"):
             tags.append(f"proc-{'on' if proc_eff else 'off'}")
+        if config["spectral"]["basis_source"] != "laplacian":
+            tags.append(f"basis-{config['spectral']['basis_source']}")
     elif dt == "f+pe":
         tags += [f"um-{um}", f"basis-{config['spectral']['basis_source']}"]
+    if inject_at != "output":
+        tags.append(f"inj-{inject_at}")
     if custom_freq:
         tags.append(f"freq-{sf}")
         tags += ["coarse-snap", f"coarse-{round(int(sf[:-1]) / 86400)}d"]
